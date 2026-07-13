@@ -1,0 +1,10 @@
+# Mangrove pod root-growth break simulation
+rhino3dm>=8.0      # read the .3dm Rhino model
+trimesh>=4.0       # mesh handling, ray casting
+rtree>=1.0         # spatial index for trimesh ray queries
+numpy>=1.26
+scipy>=1.11
+matplotlib>=3.8    # static figure rendering
+plotly>=5.20       # interactive 3-D heatmaps
+flask>=3.0         # local web app
+waitress>=3.0      # robust WSGI server for the web app

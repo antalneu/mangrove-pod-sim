@@ -1,0 +1,16 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+
+# runtime / generated
+webapp/server.log
+
+# regenerated on first app start (large, from plotly package)
+webapp/static/plotly.min.js
+
+# local editor / tooling
+.claude/settings.local.json
+.DS_Store
+Thumbs.db

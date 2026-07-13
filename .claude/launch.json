@@ -1,0 +1,17 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "mangrove-web",
+      "runtimeExecutable": ".venv/Scripts/python.exe",
+      "runtimeArgs": ["webapp/app.py"],
+      "port": 5000
+    },
+    {
+      "name": "docs-site",
+      "runtimeExecutable": ".venv/Scripts/python.exe",
+      "runtimeArgs": ["-m", "http.server", "8000", "--directory", "docs"],
+      "port": 8000
+    }
+  ]
+}

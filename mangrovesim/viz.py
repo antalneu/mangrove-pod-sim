@@ -322,13 +322,19 @@ def build_pressure_figure(pod, face_values, title="Mangrove pod wall stress",
     vert_val = face_field_to_vertex(pod, field, log=log)
     vmax = np.percentile(vert_val[vert_val > 0], 99) if np.any(vert_val > 0) else 1.0
 
+    # 4-stop calm -> warning -> critical scale (reads clearly at a glance)
+    stress_scale = [[0.0, "#2f6f5e"], [0.35, "#e9c46a"],
+                    [0.7, "#e76f51"], [1.0, "#c1121f"]]
     mesh3d = go.Mesh3d(
         x=pod.V[:, 0], y=pod.V[:, 1], z=pod.V[:, 2],
         i=pod.F[:, 0], j=pod.F[:, 1], k=pod.F[:, 2],
-        intensity=vert_val, colorscale="Inferno", cmin=0, cmax=max(vmax, 1e-9),
+        intensity=vert_val, colorscale=stress_scale, cmin=0, cmax=max(vmax, 1e-9),
         showscale=True, opacity=1.0,
         colorbar=dict(title=("log stress" if log else "stress")),
-        lighting=dict(ambient=0.55, diffuse=0.6, specular=0.1),
+        lighting=dict(ambient=0.42, diffuse=0.9, specular=0.18,
+                      roughness=0.55, fresnel=0.15),
+        lightposition=dict(x=180, y=260, z=520),
+        flatshading=False,
         name="pod wall", hoverinfo="skip",
     )
     data = [mesh3d]

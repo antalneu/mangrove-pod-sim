@@ -91,9 +91,15 @@ or just double-click **`start_web.bat`**, then open **http://127.0.0.1:5000**.
   rotational offset, **material** (Clay / Concrete / Bioplastic), **species &
   salinity**, **root pressure (MPa) + Calibration Mode**, root-growth bias, and
   pressure/failure knobs (contact stiffness, time steps, planting-team pull).
-- **Centre** — the real pod mesh in 3-D. "▶ Run simulation" grows one root system
-  and paints the cumulative wall-stress heatmap with the roots overlaid; toggles
-  switch the roots on/off and project the stress onto the outer surface.
+- **Centre** — the real pod mesh in 3-D, softly lit so the trumpet/waist/feet form
+  reads on its own. The **4 seam lines** (rim → slot → foot) are always drawn as
+  raised gold tubes, and a **Intact / Exploded** toggle pulls the pod into its 4
+  quarter-pieces so the intended split is clear before running anything.
+  "▶ Run simulation" grows one root system — rendered as **tapered woody tubes**
+  (thick at the base, tapering to the tips) rather than wireframe lines — and paints
+  the cumulative wall-stress heatmap on a clear **calm → warning → critical** colour
+  scale; toggles switch the seams/roots on/off and project the stress onto the outer
+  surface.
 - **Right panel** — the verdict (breaks at step N / no breakthrough), stat cards,
   the per-break-site bar chart, and the activation order. "📊 Monte Carlo" runs
   many randomized growths and reports reliability, mean ± std breakthrough time,

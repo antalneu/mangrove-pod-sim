@@ -23,6 +23,7 @@ sys.path.insert(0, ROOT)
 from mangrovesim.podmesh import PodMesh
 from mangrovesim import growth, perforation as perf, pressure as pr, montecarlo as mc, viz
 from mangrovesim import materials as materials_mod, species as species_mod, provenance
+from mangrovesim import render3d
 from mangrovesim.physical import PhysicalContext
 
 app = Flask(__name__)
@@ -124,14 +125,9 @@ def vertex_intensity(field, project_outer=False, log=False):
     return np.round(vv, 2).tolist(), max(vmax, 1e-9)
 
 
-def root_segments(roots):
-    """Flat x/y/z arrays (with None breaks) for a Scatter3d root overlay."""
-    xs, ys, zs = [], [], []
-    for a, b in roots.segments():
-        xs += [round(float(a[0]), 1), round(float(b[0]), 1), None]
-        ys += [round(float(a[1]), 1), round(float(b[1]), 1), None]
-        zs += [round(float(a[2]), 1), round(float(b[2]), 1), None]
-    return {"x": xs, "y": ys, "z": zs}
+def root_tubes(roots):
+    """Tapered tube mesh (x/y/z + i/j/k) for a realistic 3-D root overlay."""
+    return render3d.root_tube_mesh(roots)
 
 
 # ----------------------------------------------------------------------------- #
@@ -200,9 +196,29 @@ def api_base_figure():
     fig.data[0].showscale = False
     fig.data[0].cmin = 0
     fig.data[0].cmax = 5
+    # richer shading so the trumpet/waist/feet silhouette reads on its own
+    fig.data[0].lighting = dict(ambient=0.42, diffuse=0.9, specular=0.18,
+                                roughness=0.55, fresnel=0.15)
+    fig.data[0].lightposition = dict(x=180, y=260, z=520)
+    fig.data[0].flatshading = False
     # Plotly encodes the numpy arrays as compact base64 typed-arrays; gzip does
     # the rest. Plotly.js on the client understands this encoding natively.
     return jgz(fig_json(fig))
+
+
+@app.route("/api/seams")
+def api_seams():
+    """The 4 always-visible seam lines (rim -> slot -> foot) as a raised tube mesh."""
+    return jgz({"seams": render3d.seam_tube_mesh(POD),
+                "angles": render3d.seam_angles_deg(POD)})
+
+
+@app.route("/api/exploded")
+def api_exploded():
+    """The pod wall split into its 4 quarter-pieces, pushed apart along the seams.
+    Each sector carries per-vertex original indices so a stress field can be
+    re-applied client-side."""
+    return jgz({"sectors": render3d.exploded_sectors(POD)})
 
 
 @app.route("/api/simulate", methods=["POST"])
@@ -222,7 +238,8 @@ def api_simulate():
 
     field = res.cum_stress_faces()
     intensity, cmax = vertex_intensity(field, project_outer=project_outer)
-    roots_payload = root_segments(roots) if show_roots else None
+    # always return the root tubes; the client toggles their visibility
+    roots_payload = root_tubes(roots)
 
     T = sp.n_time_steps
     sites = []
@@ -269,7 +286,7 @@ def api_montecarlo():
                           growth_jitter_scale=0.5, phys=phys)
     rep = growth.grow(POD, gp, seed=7)
     intensity, cmax = vertex_intensity(r.mean_cum_stress_faces)
-    roots_payload = root_segments(rep)
+    roots_payload = root_tubes(rep)
 
     from collections import Counter
     orders = Counter(" → ".join(r.site_labels[s] for s in o[:3])

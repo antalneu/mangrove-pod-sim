@@ -165,3 +165,16 @@ button.ghost:hover{border-color:var(--accent);color:var(--text);background:trans
 .pcite td{color:var(--muted);font-size:11.5px;line-height:1.5;padding-top:0;padding-bottom:8px}
 .lvtag{display:inline-block;font-size:10px;font-weight:700;padding:2px 8px;border-radius:10px;
   border:1px solid;white-space:nowrap}
+
+/* ---- segmented view control ---- */
+.seg{display:flex;gap:6px;margin:4px 0 2px}
+.segbtn{flex:1;padding:9px 8px;font-size:12.5px;font-weight:600;border:1px solid var(--line);
+  background:var(--panel2);color:var(--muted);border-radius:8px;cursor:pointer;transition:.15s}
+.segbtn:hover{border-color:var(--accent);color:var(--text);background:#28323b}
+.segbtn.active{background:var(--accent);border-color:var(--accent);color:#0c130f}
+
+/* ---- sidebar grouping polish ---- */
+#controls section{margin-bottom:22px;padding-bottom:18px}
+#controls h2{display:flex;align-items:center;gap:9px}
+#controls h2::before{content:"";width:3px;height:13px;border-radius:2px;
+  background:var(--accent);display:inline-block;flex:0 0 auto}

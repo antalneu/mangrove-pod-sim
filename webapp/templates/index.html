@@ -139,7 +139,18 @@
         <input type="range" id="n_time_steps" min="60" max="160" step="5" value="120"></label>
       <label>Planting-team pull assist <output id="o_pull_assist">0</output>
         <input type="range" id="pull_assist" min="0" max="4" step="0.2" value="0"></label>
+    </section>
+
+    <section>
+      <h2>Display</h2>
+      <div class="seg" id="viewSeg">
+        <button type="button" class="segbtn active" data-view="intact">Intact</button>
+        <button type="button" class="segbtn" data-view="exploded">Exploded (4 pieces)</button>
+      </div>
+      <p class="hint">Exploded pulls the 4 quarter-pieces apart along the seams so the
+        intended split is clear before running anything.</p>
       <div class="toggles">
+        <label class="chk"><input type="checkbox" id="show_seams" checked> show 4 seam lines</label>
         <label class="chk"><input type="checkbox" id="show_roots" checked> show roots</label>
         <label class="chk"><input type="checkbox" id="project_outer"> stress on outer surface</label>
       </div>

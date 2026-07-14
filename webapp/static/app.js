@@ -162,43 +162,103 @@ function cfg(extra) {
   return Object.assign(c, extra || {});
 }
 
-// ---- Plotly theming ---------------------------------------------------------
+// ---- render state -----------------------------------------------------------
+// 4-stop calm -> warning -> critical stress scale (clear at a glance)
+const STRESS_SCALE = [[0.0,"#2f6f5e"],[0.35,"#e9c46a"],[0.7,"#e76f51"],[1.0,"#c1121f"]];
+const SEAM_COLOR = "#f2c14e";     // gold seam lines
+const ROOT_COLOR = "#6b4525";     // woody brown roots
+const PIECE_COLOR = "#c7b291";    // neutral pod colour for exploded pieces
+const ROOT_LIGHT = { ambient:0.5, diffuse:0.85, specular:0.15, roughness:0.75 };
+const MESH_LIGHT = { ambient:0.42, diffuse:0.9, specular:0.18, roughness:0.55, fresnel:0.15 };
+const LIGHT_POS  = { x:180, y:260, z:520 };
+
+let BASE_MESH = null, BASE_LAYOUT = null, SEAM_TRACE = null, EXPLODED = null;
+let LAST = { intensity: null, cmax: 1, roots: null };
+let viewMode = "intact";
+
 function themeLayout(layout) {
   layout = layout || {};
   layout.paper_bgcolor = "rgba(0,0,0,0)";
   layout.plot_bgcolor = "rgba(0,0,0,0)";
   layout.font = { color: "#c9d4de", size: 12 };
-  layout.margin = { l: 0, r: 0, t: 34, b: 0 };
+  layout.margin = { l: 0, r: 0, t: 20, b: 0 };
   const ax = { visible: false, showbackground: false, showgrid: false,
                zeroline: false, showspikes: false };
   layout.scene = Object.assign({
     xaxis: ax, yaxis: ax, zaxis: { ...ax },
     bgcolor: "rgba(0,0,0,0)", aspectmode: "data",
+    camera: { eye: { x: 1.5, y: 1.5, z: 0.9 } },
     uirevision: "keep",
   }, layout.scene || {});
-  if (layout.title) layout.title = { text: (layout.title.text || layout.title),
-                                     font: { color: "#e7edf3", size: 15 } };
+  layout.title = "";
   return layout;
 }
-function drawFigure(fig) {
-  Plotly.react(plotDiv, fig.data, themeLayout(fig.layout),
-               { responsive: true, displaylogo: false });
+
+function buildSeamTrace(g) {
+  if (!g) return null;
+  return { type:"mesh3d", x:g.x, y:g.y, z:g.z, i:g.i, j:g.j, k:g.k,
+    color: SEAM_COLOR, flatshading:false, hoverinfo:"skip", name:"seams",
+    lighting:{ ambient:0.55, diffuse:0.75, specular:0.5, roughness:0.4 },
+    lightposition: LIGHT_POS };
+}
+function buildRootTrace(g) {
+  if (!g) return null;
+  return { type:"mesh3d", x:g.x, y:g.y, z:g.z, i:g.i, j:g.j, k:g.k,
+    color: ROOT_COLOR, flatshading:false, hoverinfo:"skip", name:"roots",
+    lighting: ROOT_LIGHT, lightposition: LIGHT_POS };
 }
 
-function updateStress(intensity, cmax, roots) {
-  Plotly.restyle(plotDiv, {
-    intensity: [intensity], cmin: [0], cmax: [cmax],
-    colorscale: ["Inferno"], showscale: [true],
-  }, [0]);
-  const extra = [];
-  for (let i = 1; i < plotDiv.data.length; i++) extra.push(i);
-  if (extra.length) Plotly.deleteTraces(plotDiv, extra);
-  if (roots) {
-    Plotly.addTraces(plotDiv, {
-      type: "scatter3d", mode: "lines", x: roots.x, y: roots.y, z: roots.z,
-      line: { color: "#c98a3a", width: 2 }, hoverinfo: "skip", name: "roots",
-    });
+// build the full trace list for the current view + colouring, then react
+function render() {
+  if (!BASE_MESH) return;
+  const data = [];
+  if (viewMode === "exploded" && EXPLODED) {
+    for (const s of EXPLODED) {
+      const t = { type:"mesh3d", x:s.x, y:s.y, z:s.z, i:s.i, j:s.j, k:s.k,
+        flatshading:false, hoverinfo:"skip", name:"piece",
+        lighting: MESH_LIGHT, lightposition: LIGHT_POS };
+      if (LAST.intensity) {
+        t.intensity = s.orig.map(o => LAST.intensity[o]);
+        t.colorscale = STRESS_SCALE; t.cmin = 0; t.cmax = LAST.cmax;
+        t.showscale = (data.length === 0);
+      } else { t.color = PIECE_COLOR; }
+      data.push(t);
+    }
+  } else {
+    const m = Object.assign({}, BASE_MESH);
+    m.lighting = MESH_LIGHT; m.lightposition = LIGHT_POS; m.flatshading = false;
+    if (LAST.intensity) {
+      m.intensity = LAST.intensity; m.colorscale = STRESS_SCALE;
+      m.cmin = 0; m.cmax = LAST.cmax; m.showscale = true;
+    }
+    data.push(m);
+    if ($("show_seams").checked && SEAM_TRACE) data.push(SEAM_TRACE);
+    if ($("show_roots").checked && LAST.roots) data.push(LAST.roots);
   }
+  Plotly.react(plotDiv, data, BASE_LAYOUT, { responsive:true, displaylogo:false });
+}
+
+// called after a simulation: store field + root tubes, then re-render
+function updateStress(intensity, cmax, roots) {
+  LAST.intensity = intensity; LAST.cmax = cmax;
+  if (roots) LAST.roots = buildRootTrace(roots);
+  render();
+}
+
+async function ensureExploded() {
+  if (EXPLODED) return;
+  const r = await (await fetch("/api/exploded")).json();
+  EXPLODED = r.sectors;
+}
+function setView(v) {
+  viewMode = v;
+  document.querySelectorAll("#viewSeg .segbtn")
+    .forEach(b => b.classList.toggle("active", b.dataset.view === v));
+  if (v === "exploded") {
+    busy(true, "building exploded view…");
+    ensureExploded().then(() => { busy(false); render(); })
+      .catch(e => { busy(false); alert("Exploded view failed:\n" + e.message); });
+  } else { render(); }
 }
 
 // ---- overlay / spinner ------------------------------------------------------
@@ -418,9 +478,18 @@ async function init() {
       `${f.n_faces.toLocaleString()} triangles · ${f.n_slots} waist slots · ${f.n_feet} feet · ` +
       `waist R≈${f.outer_r_waist.toFixed(0)} · wall≈${f.wall_thickness.toFixed(0)}`;
   } catch(e){ $("podinfo").textContent = "pod loaded"; }
+  // view-mode segmented control + display toggles
+  document.querySelectorAll("#viewSeg .segbtn").forEach(b =>
+    b.addEventListener("click", () => setView(b.dataset.view)));
+  ["show_seams","show_roots"].forEach(id =>
+    $(id).addEventListener("change", render));
   try {
     const fig = await (await fetch("/api/base_figure")).json();
-    drawFigure(fig);
+    BASE_MESH = fig.data[0];
+    BASE_LAYOUT = themeLayout(fig.layout || {});
+    const sm = await (await fetch("/api/seams")).json();
+    SEAM_TRACE = buildSeamTrace(sm.seams);
+    render();
   } catch(e){ console.error(e); }
 }
 init();

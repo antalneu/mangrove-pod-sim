@@ -1,0 +1,1035 @@
+"use strict";
+/* ============================================================================
+ * engine.js — client-side port of the mangrove-pod break simulator
+ * ----------------------------------------------------------------------------
+ * A faithful JavaScript re-implementation of the Python engine (growth.py,
+ * perforation.py, pressure.py, physical.py, materials/species/provenance,
+ * render3d.py) so the whole tool runs in the browser with NO backend.
+ *
+ * The physics/logic mirror the Python 1:1 and use the same calibration
+ * constants. The only unavoidable difference: JavaScript can't reproduce NumPy's
+ * exact random stream, so for a given seed the specific root realisation differs
+ * from Python — but the algorithm, constants and statistics are the same, so
+ * results land in the same range. (Disclosed as the "tiny numeric drift".)
+ * ========================================================================== */
+
+// ---------------------------------------------------------------------------
+//  small math helpers
+// ---------------------------------------------------------------------------
+function mulberry32(seed) {
+  let a = (seed >>> 0) || 1;
+  return function () {
+    a |= 0; a = (a + 0x6D2B79F5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+function makeNormal(rng) {
+  let spare = null;
+  return function () {
+    if (spare !== null) { const s = spare; spare = null; return s; }
+    let u = 0, v = 0, s = 0;
+    do { u = 2 * rng() - 1; v = 2 * rng() - 1; s = u * u + v * v; } while (s >= 1 || s === 0);
+    const m = Math.sqrt(-2 * Math.log(s) / s);
+    spare = v * m; return u * m;
+  };
+}
+function interp(xs, ys, x) {
+  const n = xs.length;
+  if (x <= xs[0]) return ys[0];
+  if (x >= xs[n - 1]) return ys[n - 1];
+  let lo = 0, hi = n - 1;
+  while (hi - lo > 1) { const mid = (lo + hi) >> 1; if (xs[mid] <= x) lo = mid; else hi = mid; }
+  const t = (x - xs[lo]) / (xs[hi] - xs[lo]);
+  return ys[lo] + t * (ys[hi] - ys[lo]);
+}
+function angdiff(a, b) { return Math.abs(((a - b + 180) % 360 + 360) % 360 - 180); }
+function clip(v, lo, hi) { return v < lo ? lo : (v > hi ? hi : v); }
+function percentile(arr, p) {
+  const a = Array.from(arr).filter(v => v > 0).sort((x, y) => x - y);
+  if (!a.length) return 1;
+  const idx = clip((p / 100) * (a.length - 1), 0, a.length - 1);
+  const lo = Math.floor(idx), hi = Math.ceil(idx);
+  return a[lo] + (a[hi] - a[lo]) * (idx - lo);
+}
+
+// ---------------------------------------------------------------------------
+//  uniform-grid spatial index (nearest + ball queries)
+// ---------------------------------------------------------------------------
+class Grid {
+  constructor(pts, n, cell) {
+    this.pts = pts; this.n = n; this.cell = cell; this.map = new Map();
+    for (let i = 0; i < n; i++) {
+      const k = this._key(pts[3 * i], pts[3 * i + 1], pts[3 * i + 2]);
+      let a = this.map.get(k); if (!a) { a = []; this.map.set(k, a); } a.push(i);
+    }
+  }
+  _key(x, y, z) {
+    const c = this.cell;
+    return Math.floor(x / c) + "|" + Math.floor(y / c) + "|" + Math.floor(z / c);
+  }
+  _d2(i, x, y, z) {
+    const p = this.pts, dx = p[3 * i] - x, dy = p[3 * i + 1] - y, dz = p[3 * i + 2] - z;
+    return dx * dx + dy * dy + dz * dz;
+  }
+  nearest(x, y, z, maxRing) {
+    if (maxRing === undefined) maxRing = 200;
+    const c = this.cell, cx = Math.floor(x / c), cy = Math.floor(y / c), cz = Math.floor(z / c);
+    let best = -1, bd = Infinity;
+    for (let ring = 0; ring <= maxRing; ring++) {
+      if (best >= 0 && (ring - 1) * c > Math.sqrt(bd)) break;
+      for (let dx = -ring; dx <= ring; dx++)
+        for (let dy = -ring; dy <= ring; dy++)
+          for (let dz = -ring; dz <= ring; dz++) {
+            if (Math.max(Math.abs(dx), Math.abs(dy), Math.abs(dz)) !== ring) continue;
+            const a = this.map.get((cx + dx) + "|" + (cy + dy) + "|" + (cz + dz));
+            if (!a) continue;
+            for (let t = 0; t < a.length; t++) {
+              const d = this._d2(a[t], x, y, z); if (d < bd) { bd = d; best = a[t]; }
+            }
+          }
+    }
+    return { idx: best, dist: Math.sqrt(bd) };
+  }
+  ball(x, y, z, r) {
+    const c = this.cell, cr = Math.ceil(r / c), r2 = r * r;
+    const cx = Math.floor(x / c), cy = Math.floor(y / c), cz = Math.floor(z / c), out = [];
+    for (let dx = -cr; dx <= cr; dx++)
+      for (let dy = -cr; dy <= cr; dy++)
+        for (let dz = -cr; dz <= cr; dz++) {
+          const a = this.map.get((cx + dx) + "|" + (cy + dy) + "|" + (cz + dz));
+          if (!a) continue;
+          for (let t = 0; t < a.length; t++) if (this._d2(a[t], x, y, z) <= r2) out.push(a[t]);
+        }
+    return out;
+  }
+}
+
+// ---------------------------------------------------------------------------
+//  pod geometry (derived from the exported static JSON)
+// ---------------------------------------------------------------------------
+let POD = null;
+
+function buildPod(raw) {
+  const V = Float64Array.from(raw.V), F = Int32Array.from(raw.F);
+  const nV = raw.n_verts, nF = raw.n_faces;
+  const cx = new Float64Array(nF), cy = new Float64Array(nF), cz = new Float64Array(nF);
+  const rFace = new Float64Array(nF), thetaFace = new Float64Array(nF), zFace = new Float64Array(nF);
+  const area = new Float64Array(nF);
+  for (let f = 0; f < nF; f++) {
+    const a = F[3 * f], b = F[3 * f + 1], c = F[3 * f + 2];
+    const ax = V[3 * a], ay = V[3 * a + 1], az = V[3 * a + 2];
+    const bx = V[3 * b], by = V[3 * b + 1], bz = V[3 * b + 2];
+    const dx2 = V[3 * c], dy2 = V[3 * c + 1], dz2 = V[3 * c + 2];
+    const mx = (ax + bx + dx2) / 3, my = (ay + by + dy2) / 3, mz = (az + bz + dz2) / 3;
+    cx[f] = mx; cy[f] = my; cz[f] = mz;
+    rFace[f] = Math.hypot(mx, my); thetaFace[f] = Math.atan2(my, mx); zFace[f] = mz;
+    const e1x = bx - ax, e1y = by - ay, e1z = bz - az, e2x = dx2 - ax, e2y = dy2 - ay, e2z = dz2 - az;
+    const crx = e1y * e2z - e1z * e2y, cry = e1z * e2x - e1x * e2z, crz = e1x * e2y - e1y * e2x;
+    area[f] = 0.5 * Math.hypot(crx, cry, crz);
+  }
+  const radialDot = Float64Array.from(raw.radial_dot);
+  const innerMask = new Uint8Array(nF), outerMask = new Uint8Array(nF), innerIdxArr = [];
+  for (let f = 0; f < nF; f++) {
+    if (radialDot[f] < -0.30) { innerMask[f] = 1; innerIdxArr.push(f); }
+    if (radialDot[f] > 0.30) outerMask[f] = 1;
+  }
+  POD = {
+    V, F, nV, nF, cx, cy, cz, rFace, thetaFace, zFace, area, radialDot,
+    innerMask, outerMask, innerIdx: Int32Array.from(innerIdxArr),
+    thickness: Float64Array.from(raw.thickness),
+    features: raw.features, innerProf: raw.inner_prof, outerProf: raw.outer_prof,
+  };
+  return POD;
+}
+function rInnerAt(z) { return interp(POD.innerProf.z, POD.innerProf.r, z); }
+function rOuterAt(z) { return interp(POD.outerProf.z, POD.outerProf.r, z); }
+
+// ---------------------------------------------------------------------------
+//  default parameter sets (match the Python dataclasses exactly)
+// ---------------------------------------------------------------------------
+const G_DEFAULT = {
+  step_size: 7, influence_radius: 45, kill_radius: 10, n_attractors: 2600,
+  max_steps: 200, n_seeds: 3, jitter: 0.35, down_bias: 0.55, slot_bias: 2.2,
+  wall_bias: 0.75, seed_depth_frac: 0.92, tip_radius: 1.4, pipe_exponent: 2.3,
+  radius_gain: 1.7,
+};
+const S_DEFAULT = {
+  n_time_steps: 120, growth_fraction: 0.6, maturation: 30, swell_rate: 0.012,
+  max_swell: 2.6, contact_stiffness: 20, base_wedge: 0.6, contact_patch_factor: 1.6,
+  min_patch_radius: 7, dt: 1, span_frac: 0.6, hoop_factor: 0.9,
+  breakthrough_frac: 0.75, pull_assist: 0,
+};
+const MAT_PARAMS = {
+  yield_stress: 1, slot_tip_scf: 3, split_scf: 1.8, tip_zone: 22,
+  ligament_halfwidth_deg: 26,
+};
+
+// ---------------------------------------------------------------------------
+//  materials / species / provenance  (data + coupling)
+// ---------------------------------------------------------------------------
+const REF_FRACTURE_MPA = 55, REF_ROOT_PRESSURE_MPA = 0.75, STRENGTH_SENSITIVITY = 0.9;
+
+const MATERIALS = {
+  bioplastic: {
+    key: "bioplastic", name: "Bioplastic (marine-degradable PHA/PLA)",
+    fracture_strength_mpa: 55, fracture_range_mpa: [40, 75], stiffness_mpa: 2800,
+    wet_strength_loss_per_month: 0.05, biodegradable: true,
+    biodegradability: "Marine-biodegradable (formulation-dependent)",
+    biodegradability_note: "Designed to hold shape initially, then weaken and biodegrade over the establishment window. Real degradation rate is highly formulation/site-dependent (PHA degrades faster than PLA in seawater). Estimate — verify with immersion testing.",
+    warn: false, warn_text: "",
+    blurb: "Strong at first, then degrades to release the seedling cleanly. The design-intent baseline.",
+  },
+  clay: {
+    key: "clay", name: "Clay (low-fired earthenware)",
+    fracture_strength_mpa: 15, fracture_range_mpa: [8, 25], stiffness_mpa: 8000,
+    wet_strength_loss_per_month: 0.03, biodegradable: true,
+    biodegradability: "Inert mineral — environmentally benign",
+    biodegradability_note: "Fired clay is not 'biodegradable' in the polymer sense, but it is an inert, non-toxic mineral that breaks down to sediment. Unfired/low-fired clay slakes faster in water (higher degradation). Estimate.",
+    warn: false, warn_text: "",
+    blurb: "Brittle ceramic; cracks readily at a scored seam. Benign if it stays behind.",
+  },
+  concrete: {
+    key: "concrete", name: "Concrete (unreinforced, thin-wall)",
+    fracture_strength_mpa: 4, fracture_range_mpa: [3, 6], stiffness_mpa: 25000,
+    wet_strength_loss_per_month: 0.004, biodegradable: false,
+    biodegradability: "Not biodegradable — persistent",
+    biodegradability_note: "LEAST biodegradable option. Persists in the marine environment for decades; alkaline leachate can locally raise pH. Cracks in tension at a scored seam, but the fragments remain. Not recommended for leave-in-place / dissolving pod designs. Estimate.",
+    warn: true,
+    warn_text: "⚠ Concrete is the LEAST biodegradable material: it persists in the marine environment and can leach alkalinity. It may crack at the seam, but fragments stay behind — avoid for leave-in-place pods.",
+    blurb: "Durable and cheap, but persistent. Weak in tension so a thin scored seam still cracks.",
+  },
+};
+function matStrengthScale(m) { return Math.pow(m.fracture_strength_mpa / REF_FRACTURE_MPA, STRENGTH_SENSITIVITY); }
+function matDegrade(m, months) { return Math.max(0.05, 1 - m.wet_strength_loss_per_month * Math.max(months, 0)); }
+function materialCard(m) {
+  return Object.assign({}, m, {
+    strength_scale: Math.round(matStrengthScale(m) * 1000) / 1000,
+    estimate_disclaimer: "Engineering estimate — requires lab verification.",
+  });
+}
+
+const SPECIES = {
+  rhizophora: {
+    key: "rhizophora", name: "Rhizophora mangle", latin: "Rhizophora mangle",
+    window_months: 12, outplant_months: 12, mature_growth_m_yr: [1.0, 1.5],
+    salinity_optimum_ppt: [5, 25], node_interval_days: null,
+    early_root_note: "Early root growth very slow (~0.1 mm at 4 weeks, R. mucronata).",
+    ramp_base: 0.20, ramp_exp: 1.5, ramp_peak: 1.15,
+    blurb: "Red mangrove; the tall propagule this pod is shaped for. Slow-start roots.",
+  },
+  avicennia: {
+    key: "avicennia", name: "Avicennia marina", latin: "Avicennia marina",
+    window_months: 11, outplant_months: 10, mature_growth_m_yr: [0.6, 1.0],
+    salinity_optimum_ppt: [5, 15], node_interval_days: 37.5,
+    early_root_note: "Node-paced growth; ~37-38 day node interval as a biological clock.",
+    ramp_base: 0.30, ramp_exp: 1.2, ramp_peak: 1.12,
+    blurb: "Grey mangrove; steady node-paced growth, salinity-sensitive early on.",
+  },
+};
+function spForceRamp(sp, frac) {
+  frac = clip(frac, 0, 1);
+  return sp.ramp_base + (sp.ramp_peak - sp.ramp_base) * Math.pow(frac, sp.ramp_exp);
+}
+function spGrowthMod(sp, sal) {
+  if (sal === null || sal === undefined) return 1;
+  const [lo, hi] = sp.salinity_optimum_ppt;
+  if (sal >= lo && sal <= hi) return 1;
+  const half = Math.max(0.5 * (hi - lo), 1e-6);
+  const d = (sal - (sal > hi ? hi : lo)) / half;
+  return Math.max(0.4, Math.exp(-0.5 * d * d));
+}
+function spElapsedMonths(sp, frac, sal) { return frac * sp.window_months / Math.max(spGrowthMod(sp, sal), 1e-6); }
+function spTimeContext(sp, step, T, sal) {
+  if (step === null || !isFinite(step)) return { months: null, weeks: null, nodes: null, label: "—" };
+  const frac = step / Math.max(T, 1);
+  const months = spElapsedMonths(sp, frac, sal), weeks = months * 4.345;
+  const nodes = sp.node_interval_days ? months * 30.437 / sp.node_interval_days : null;
+  let label = months < 3 ? `~${weeks.toFixed(0)} weeks` : `~${months.toFixed(1)} months`;
+  if (nodes !== null) label += ` · ~${nodes.toFixed(0)} nodes`;
+  return { months: +months.toFixed(2), weeks: +weeks.toFixed(1), nodes: nodes === null ? null : +nodes.toFixed(1), label };
+}
+
+// physical context
+function physFromCfg(cfg) {
+  const material = MATERIALS[cfg.material] || MATERIALS.bioplastic;
+  const species = SPECIES[cfg.species] || SPECIES.rhizophora;
+  let sal = (cfg.salinity_ppt === "" || cfg.salinity_ppt == null) ? null : +cfg.salinity_ppt;
+  let p = (cfg.root_pressure_mpa === "" || cfg.root_pressure_mpa == null) ? REF_ROOT_PRESSURE_MPA : +cfg.root_pressure_mpa;
+  const f = (cfg.calibration_force_n === "" || cfg.calibration_force_n == null) ? null : +cfg.calibration_force_n;
+  const a = (cfg.calibration_area_mm2 === "" || cfg.calibration_area_mm2 == null) ? null : +cfg.calibration_area_mm2;
+  let active = !!cfg.calibration_active && !!(f && a);
+  if (active) p = f / Math.max(a, 1e-6);
+  return { material, species, root_pressure_mpa: p, salinity_ppt: sal, calibration_active: active };
+}
+function physLoadFactor(ph) { return ph.root_pressure_mpa / REF_ROOT_PRESSURE_MPA; }
+function physPerStep(ph, T) {
+  const drive = new Float64Array(T), cap = new Float64Array(T), months = new Float64Array(T);
+  const lf = physLoadFactor(ph), ss = matStrengthScale(ph.material);
+  for (let t = 1; t <= T; t++) {
+    const fr = t / T;
+    drive[t - 1] = lf * spForceRamp(ph.species, fr);
+    months[t - 1] = spElapsedMonths(ph.species, fr, ph.salinity_ppt);
+    cap[t - 1] = ss * matDegrade(ph.material, months[t - 1]);
+  }
+  return { drive, cap, months };
+}
+function physSummary(ph) {
+  return {
+    material: ph.material.key, material_name: ph.material.name,
+    species: ph.species.key, species_name: ph.species.name,
+    root_pressure_mpa: +ph.root_pressure_mpa.toFixed(3), salinity_ppt: ph.salinity_ppt,
+    calibration_active: ph.calibration_active, window_months: ph.species.window_months,
+    load_factor: +physLoadFactor(ph).toFixed(3), strength_scale: +matStrengthScale(ph.material).toFixed(3),
+  };
+}
+
+// ---------------------------------------------------------------------------
+//  provenance registry
+// ---------------------------------------------------------------------------
+const LEVELS = {
+  literature: { label: "Literature-sourced", color: "#5aa469", blurb: "Published / well-established; citation given." },
+  estimate: { label: "Estimated — needs lab validation", color: "#c98a3a", blurb: "Engineering estimate or adjacent-field proxy. Validate physically." },
+  geometry: { label: "Measured off the 3-D model", color: "#5a8fce", blurb: "A shape fact from your Rhino model, not a material property." },
+  calibrated: { label: "Calibrated (relative surrogate)", color: "#8a7bd8", blurb: "Chosen for sensible relative behaviour; not a measured quantity." },
+  measured: { label: "Measured (your prototype)", color: "#48c9b0", blurb: "From your physical Calibration-Mode input; overrides the estimate." },
+};
+const VALIDATION_ROADMAP = "Industry deployment requires physical prototype testing to replace the estimated root-force constants with measured ones. Published data covers mangrove growth TIMING well, but not the mechanical FORCE a propagule root exerts against a substrate. Recommended path: grow real propagules of each candidate species inside scored 4-piece pods of each candidate material, under representative tidal wetting, and record the actual break timing and which seam releases first. Feed the measured root force (N) back through Calibration Mode to convert this tool from a relative design explorer into a quantitatively validated predictor.";
+
+function C(key, label, value, unit, level, citation, note, group) {
+  return { key, label, value, unit: unit || "", level, level_label: LEVELS[level].label, level_color: LEVELS[level].color, citation: citation || "", note: note || "", group: group || "general" };
+}
+function buildRegistry(cfg) {
+  const ph = physFromCfg(cfg || {});
+  const f = POD.features, cs = [];
+  cs.push(C("model_type", "Failure model", "Reduced-order engineering surrogate (not FEA)", "", "calibrated", "This project's own transparent model.", "Calibrated for RELATIVE comparison of designs/materials and to locate failure hot-spots - not for absolute load numbers. An FEA cross-check is recommended before trusting absolute margins.", "model"));
+  cs.push(C("root_pressure_working_range", "Root-pressure working range (default)", "0.5 - 1.0", "MPa", "estimate", "General plant/tree root biomechanics literature (NOT mangrove-specific).", "Grounded proxy: general max axial root growth pressure ~0.1-1.0 MPa (turgor-limited), with ~0.5-0.6 MPa commonly cited for fully impeded roots; tree-specific values reach ~0.91 MPa radial / ~1.45 MPa axial. Treat as a STARTING POINT pending physical validation.", "root force"));
+  cs.push(C("contact_stiffness", "Root contact stiffness", "20 (surrogate units)", "", "calibrated", "Chosen for sensible relative behaviour.", "Pressure per unit radial penetration of the swelling root into the wall. Scaled by (root pressure / reference) so the physical slider drives it; the base number itself is not a measured quantity.", "root force"));
+  cs.push(C("slot_tip_scf", "Stress-concentration factor at slot tips", "3.0", "x", "estimate", "Order-of-magnitude fracture-mechanics estimate for a rounded notch.", "Real value depends on tip radius and material; verify with FEA / a notched-sample test.", "failure"));
+  cs.push(C("span_frac", "Seam tear criterion (crack span)", "0.6", "fraction", "calibrated", "Chosen so a taller bridge is genuinely harder to sever.", "A slot->foot seam/ligament 'tears' once failed faces span this fraction of its stacked z-bands.", "failure"));
+  cs.push(C("breakthrough_frac", "Breakthrough criterion", "0.75", "fraction", "calibrated", "Design choice.", "Pod 'breaks through' once this fraction of the 4 seams have torn - the point it can release into petals.", "failure"));
+  cs.push(C("geom_height", "Pod height", f.height.toFixed(1), "model units (~11x a 30 cm propagule)", "geometry", "Measured off mangrovepod.3dm.", "", "geometry"));
+  cs.push(C("geom_wall", "Median wall thickness", f.wall_thickness_median.toFixed(1), "model units", "geometry", "Measured off mangrovepod.3dm.", "Local thickness sets each face's baseline capacity.", "geometry"));
+  cs.push(C("geom_slots", "Detected waist slots", String(f.slots.length), "count", "geometry", "Auto-detected from the mesh.", "", "geometry"));
+  cs.push(C("geom_feet", "Detected base feet", String(f.feet.length), "count", "geometry", "Auto-detected from the mesh.", "", "geometry"));
+  cs.push(C("ref_root_pressure", "Reference root pressure (surrogate anchor)", String(REF_ROOT_PRESSURE_MPA), "MPa", "calibrated", "Mid-point of the grounded working range.", "Root pressure enters the surrogate only as pressure/this-reference; at this value the drive equals the original calibration.", "coupling"));
+  cs.push(C("ref_fracture", "Reference fracture strength (surrogate anchor)", String(REF_FRACTURE_MPA), "MPa", "calibrated", "Bioplastic flexural-strength estimate (see materials).", `Seam capacity scales as (material strength / this reference) ^ ${STRENGTH_SENSITIVITY}; bioplastic reproduces the original calibration.`, "coupling"));
+  cs.push(C("strength_sensitivity", "Strength-to-capacity sensitivity", String(STRENGTH_SENSITIVITY), "exponent", "calibrated", "Modelling choice.", "Compresses the between-material capacity spread in this reduced-order surrogate. A tunable modelling knob, not a physical constant.", "coupling"));
+  // material entries
+  const m = ph.material, lo = m.fracture_range_mpa[0], hi = m.fracture_range_mpa[1];
+  cs.push(C(`mat_${m.key}_strength`, `${m.name}: fracture strength (flexural)`, `${m.fracture_strength_mpa}  (range ${lo}-${hi})`, "MPa", "estimate", "Engineering estimate for a thin scored wall of this class.", "NOT a datasheet value and NOT measured on a pod. Sets seam capacity relative to the reference material. Verify by testing notched samples.", "material"));
+  cs.push(C(`mat_${m.key}_stiffness`, `${m.name}: stiffness (elastic modulus)`, `~${m.stiffness_mpa}`, "MPa", "estimate", "Order-of-magnitude estimate for the material class.", "Indicative only; verify by testing.", "material"));
+  cs.push(C(`mat_${m.key}_degrade`, `${m.name}: wet/tidal strength loss`, `${m.wet_strength_loss_per_month * 100}`, "% per month", "estimate", "Engineering estimate of marine/tidal degradation.", "Strongly formulation- and site-dependent. Verify with immersion testing. Drives how the seam weakens over the window.", "material"));
+  cs.push(C(`mat_${m.key}_biodeg`, `${m.name}: biodegradability`, m.biodegradability, "", "estimate", "Environmental classification (estimate).", m.biodegradability_note, "material"));
+  // species entries
+  const sp = ph.species, sl = sp.salinity_optimum_ppt, gr = sp.mature_growth_m_yr;
+  cs.push(C(`sp_${sp.key}_outplant`, `${sp.name}: outplant-readiness`, `~${sp.outplant_months}`, "months", "literature", "Mangrove nursery/silviculture literature (verify primary source).", "Anchors the real-time window mapped across the step axis.", "species"));
+  cs.push(C(`sp_${sp.key}_growth`, `${sp.name}: mature growth rate`, `${gr[0]}-${gr[1]}`, "m/year", "literature", "Mangrove growth studies on productive sites (verify primary source).", "Context for pacing; not used directly for force.", "species"));
+  cs.push(C(`sp_${sp.key}_earlyroot`, `${sp.name}: early root growth`, "very slow initially", "", "literature", "R. mucronata early-root data (~0.1 mm at ~4 weeks); verify primary source.", "Justifies the concave (slow-start) root-force ramp — root force is NOT linear in time. The force magnitude itself is the general tree-root proxy (estimate), not mangrove-measured.", "species"));
+  if (sp.node_interval_days) cs.push(C(`sp_${sp.key}_node`, `${sp.name}: node-production interval`, `~${sp.node_interval_days}`, "days/node", "literature", "Avicennia marina phenology (verify primary source).", "Biological clock used to pace growth stages and report node count.", "species"));
+  cs.push(C(`sp_${sp.key}_salinity`, `${sp.name}: optimal early-growth salinity`, `${sl[0]}-${sl[1]}`, "ppt", "literature", "Mangrove salinity-response literature (verify primary source).", "Optional environmental input: outside this band growth slows, stretching real elapsed time (and thus wet degradation).", "species"));
+  cs.push(C(`sp_${sp.key}_forcemap`, `${sp.name}: growth-stage → root-force map`, "concave ramp (modelling choice)", "", "calibrated", "This project's modelling choice.", "How biological growth stage translates to wall force is assumed, not measured. Calibration Mode + prototype testing should replace it.", "species"));
+  // selected root pressure
+  cs.push(C("root_pressure_selected", "Root pressure in use", ph.root_pressure_mpa.toFixed(2), "MPa", ph.calibration_active ? "measured" : "estimate", ph.calibration_active ? "Your Calibration-Mode measurement." : "General tree-root biomechanics proxy (not mangrove-specific).", ph.calibration_active ? "Derived from a measured load-cell force." : "Estimated - validate physically.", "root force"));
+  const counts = {};
+  for (const c of cs) counts[c.level] = (counts[c.level] || 0) + 1;
+  return { levels: LEVELS, constants: cs, counts, validation_roadmap: VALIDATION_ROADMAP };
+}
+
+// ---------------------------------------------------------------------------
+//  growth (space colonization) — port of growth.py
+// ---------------------------------------------------------------------------
+function sampleAttractors(gp, rng, nrm) {
+  const H = POD.features.height, zc = POD.innerProf.z, ri = POD.innerProf.r;
+  const slotTh = POD.features.slots.map(s => s.theta_deg * Math.PI / 180);
+  const x = [], y = [], z = []; let tries = 0; const n = gp.n_attractors;
+  while (x.length < n && tries < n * 60) {
+    tries++;
+    const zz = 0.04 * H + rng() * (0.98 * H - 0.04 * H);
+    const w = 1 - 0.7 * gp.down_bias * (zz / H);
+    if (rng() > w) continue;
+    const rIn = Math.max(interp(zc, ri, zz), 2);
+    const frac = Math.pow(rng(), 1 - 0.85 * gp.wall_bias);
+    const rad = frac * 0.95 * rIn;
+    let th;
+    if (slotTh.length && rng() < gp.slot_bias / (gp.slot_bias + 1))
+      th = slotTh[Math.floor(rng() * slotTh.length)] + nrm() * (20 * Math.PI / 180);
+    else th = -Math.PI + rng() * 2 * Math.PI;
+    x.push(rad * Math.cos(th)); y.push(rad * Math.sin(th)); z.push(zz);
+  }
+  return { x, y, z, n: x.length };
+}
+
+function grow(gp, seed) {
+  const rng = mulberry32(seed), nrm = makeNormal(rng);
+  const H = POD.features.height;
+  const attr = sampleAttractors(gp, rng, nrm);
+  const nx = [], ny = [], nz = [], parent = [], birth = [];
+  const add = (x, y, z, par, st) => { nx.push(x); ny.push(y); nz.push(z); parent.push(par); birth.push(st); };
+  const zSeed = gp.seed_depth_frac * H, rSeed = Math.max(rInnerAt(zSeed) * 0.4, 3);
+  for (let k = 0; k < gp.n_seeds; k++) {
+    const th = 2 * Math.PI * k / gp.n_seeds + rng();
+    add(rSeed * Math.cos(th) * 0.3, rSeed * Math.sin(th) * 0.3, zSeed, -1, 0);
+  }
+  const aAlive = new Uint8Array(attr.n).fill(1); let remaining = attr.n;
+  // cell = influence_radius so any node within influence of an attractor is found
+  // in a single 3x3x3 ring scan (capped) — avoids pathological ring expansion.
+  const cell = gp.influence_radius;
+  for (let step = 1; step <= gp.max_steps; step++) {
+    if (remaining === 0) break;
+    const npos = new Float64Array(nx.length * 3);
+    for (let i = 0; i < nx.length; i++) { npos[3 * i] = nx[i]; npos[3 * i + 1] = ny[i]; npos[3 * i + 2] = nz[i]; }
+    const grid = new Grid(npos, nx.length, cell);
+    const near = new Int32Array(attr.n).fill(-1), dist = new Float64Array(attr.n).fill(Infinity);
+    for (let a = 0; a < attr.n; a++) {
+      if (!aAlive[a]) continue;
+      const q = grid.nearest(attr.x[a], attr.y[a], attr.z[a], 1);
+      near[a] = q.idx; dist[a] = q.dist;
+    }
+    let within = [];
+    for (let a = 0; a < attr.n; a++) if (aAlive[a] && dist[a] < gp.influence_radius) within.push(a);
+    if (!within.length) {
+      // nothing within influence: advance the single globally-nearest tip
+      // (linear scan; only reached early on when nodes are sparse — cheap)
+      let bestA = -1, bestNi = -1, bestD = Infinity;
+      for (let a = 0; a < attr.n; a++) {
+        if (!aAlive[a]) continue;
+        const ax = attr.x[a], ay = attr.y[a], az = attr.z[a];
+        for (let i = 0; i < nx.length; i++) {
+          const dx = nx[i] - ax, dy = ny[i] - ay, dz = nz[i] - az, d = dx * dx + dy * dy + dz * dz;
+          if (d < bestD) { bestD = d; bestA = a; bestNi = i; }
+        }
+      }
+      if (bestA < 0) break;
+      near[bestA] = bestNi; dist[bestA] = Math.sqrt(bestD); within = [bestA];
+    }
+    const acc = new Map();
+    for (const a of within) {
+      const ni = near[a], dx = attr.x[a] - nx[ni], dy = attr.y[a] - ny[ni], dz = attr.z[a] - nz[ni];
+      const m = Math.hypot(dx, dy, dz); if (m < 1e-6) continue;
+      let o = acc.get(ni); if (!o) { o = { sx: 0, sy: 0, sz: 0, c: 0 }; acc.set(ni, o); }
+      o.sx += dx / m; o.sy += dy / m; o.sz += dz / m; o.c++;
+    }
+    if (!acc.size) break;
+    const newNodes = [];
+    for (const [ni, o] of acc) {
+      let vx = o.sx / o.c, vy = o.sy / o.c, vz = o.sz / o.c;
+      vz += gp.down_bias * 0.5 * -1;
+      vx += gp.jitter * nrm(); vy += gp.jitter * nrm(); vz += gp.jitter * nrm();
+      const nv = Math.hypot(vx, vy, vz); if (nv < 1e-6) continue;
+      vx /= nv; vy /= nv; vz /= nv;
+      let px = nx[ni] + vx * gp.step_size, py = ny[ni] + vy * gp.step_size, pz = nz[ni] + vz * gp.step_size;
+      const rHere = rInnerAt(pz), rr = Math.hypot(px, py);
+      if (rr > 0.98 * rHere && rr > 1e-6) { px *= 0.98 * rHere / rr; py *= 0.98 * rHere / rr; }
+      pz = clip(pz, 0.02 * H, 0.99 * H);
+      newNodes.push([ni, px, py, pz]);
+    }
+    if (!newNodes.length) break;
+    for (const [ni, px, py, pz] of newNodes) add(px, py, pz, ni, step);
+    const npos2 = new Float64Array(nx.length * 3);
+    for (let i = 0; i < nx.length; i++) { npos2[3 * i] = nx[i]; npos2[3 * i + 1] = ny[i]; npos2[3 * i + 2] = nz[i]; }
+    const grid2 = new Grid(npos2, nx.length, cell);
+    for (let a = 0; a < attr.n; a++) {
+      if (!aAlive[a]) continue;
+      const q = grid2.nearest(attr.x[a], attr.y[a], attr.z[a], 1);
+      if (q.dist <= gp.kill_radius) { aAlive[a] = 0; remaining--; }
+    }
+  }
+  // pipe-model radii
+  const n = nx.length, rad = new Float64Array(n).fill(gp.tip_radius);
+  const children = Array.from({ length: n }, () => []);
+  for (let i = 0; i < n; i++) if (parent[i] >= 0) children[parent[i]].push(i);
+  const order = [...Array(n).keys()].sort((a, b) => birth[b] - birth[a]);
+  const p = gp.pipe_exponent;
+  for (const i of order) {
+    if (children[i].length) {
+      let s = 0; for (const c of children[i]) s += Math.pow(rad[c], p);
+      rad[i] = Math.max(gp.tip_radius, Math.pow(s, 1 / p));
+    }
+  }
+  for (let i = 0; i < n; i++) rad[i] *= gp.radius_gain;
+  return { nx, ny, nz, parent, birth, radius: rad, n };
+}
+
+// ---------------------------------------------------------------------------
+//  perforation fields — port of perforation.py
+// ---------------------------------------------------------------------------
+function detectedPattern() {
+  const f = POD.features;
+  return {
+    slots: f.slots.map(s => ({ theta_deg: s.theta_deg, width_deg: s.width_deg, z_lo: s.z_lo, z_hi: s.z_hi })),
+    split_lines: f.split_line_deg.map(a => ({ theta_deg: a, depth_frac: 1.3, score: 0.35 })),
+    mat: Object.assign({}, MAT_PARAMS), seam_score: 0, seam_width_deg: 0, name: "as-drawn",
+  };
+}
+function parametricPattern(o) {
+  const f = POD.features, H = f.height, det = f.slots;
+  const mean = (arr, fn) => arr.length ? arr.reduce((s, x) => s + fn(x), 0) / arr.length : 0;
+  const baseLen = det.length ? mean(det, s => s.z_hi - s.z_lo) : 0.22 * H;
+  const baseWid = det.length ? mean(det, s => s.width_deg) : 15;
+  const baseZc = det.length ? mean(det, s => 0.5 * (s.z_lo + s.z_hi)) : f.z_waist_mid + 20;
+  const n_slots = o.n_slots != null ? o.n_slots : 4;
+  const length = o.slot_length_frac != null ? o.slot_length_frac * H : baseLen;
+  const width = o.slot_width_deg != null ? o.slot_width_deg : baseWid;
+  const detTop = det.length ? mean(det, s => s.z_hi) : (baseZc + baseLen / 2);
+  let zc;
+  if (o.slot_z_center_frac != null) zc = o.slot_z_center_frac * H;
+  else if (o.slot_length_frac != null) zc = detTop - length / 2;
+  else zc = baseZc;
+  let centers = (o.align === "split") ? f.split_line_deg.slice() : f.feet.map(ft => ft.theta_deg);
+  if (centers.length !== n_slots || !centers.length) {
+    centers = []; for (let i = 0; i < n_slots; i++) centers.push(-180 + 360 * i / n_slots);
+  }
+  const off = o.theta_offset_deg || 0;
+  centers = centers.map(c => ((c + off + 180) % 360 + 360) % 360 - 180);
+  const slots = centers.map(c => ({ theta_deg: c, width_deg: width, z_lo: zc - length / 2, z_hi: zc + length / 2 }));
+  const sc = centers.slice().sort((a, b) => a - b), split_th = [];
+  for (let i = 0; i < sc.length; i++) {
+    const a = sc[i], b = sc[(i + 1) % sc.length] + (i === sc.length - 1 ? 360 : 0);
+    split_th.push(((a + b) / 2 + 180) % 360 - 180);
+  }
+  const split_lines = split_th.map(a => ({ theta_deg: a, depth_frac: o.split_depth_frac != null ? o.split_depth_frac : 1.3, score: o.split_score != null ? o.split_score : 0.35 }));
+  return {
+    slots, split_lines, mat: Object.assign({}, MAT_PARAMS),
+    seam_score: o.seam_score || 0, seam_width_deg: o.seam_width_deg || 0, name: o.name || "custom",
+  };
+}
+
+function buildFields(pat) {
+  const m = pat.mat, nF = POD.nF, th = POD.thetaFace, z = POD.zFace, r = POD.rFace;
+  const inner = POD.innerMask, thickness = POD.thickness;
+  const z_base_top = POD.features.z_base_top;
+  const open_frac = new Float64Array(nF), scf = new Float64Array(nF).fill(1);
+  const ligament = new Int32Array(nF).fill(-1), ligScale = new Float64Array(nF).fill(1);
+  const thd = new Float64Array(nF);
+  for (let i = 0; i < nF; i++) thd[i] = th[i] * 180 / Math.PI;
+  for (let si = 0; si < pat.slots.length; si++) {
+    const s = pat.slots[si];
+    for (let i = 0; i < nF; i++) {
+      const ad = angdiff(thd[i], s.theta_deg);
+      if (ad < s.width_deg / 2 && z[i] > s.z_lo && z[i] < s.z_hi) open_frac[i] = 1;
+    }
+    for (const ztip of [s.z_lo, s.z_hi]) {
+      for (let i = 0; i < nF; i++) {
+        const ad = angdiff(thd[i], s.theta_deg) * Math.PI / 180 * Math.max(r[i], 1);
+        const d = Math.hypot(ad, z[i] - ztip);
+        const v = 1 + (m.slot_tip_scf - 1) * Math.exp(-((d / m.tip_zone) ** 2));
+        if (v > scf[i]) scf[i] = v;
+      }
+    }
+    let halfw = Math.max(m.ligament_halfwidth_deg, s.width_deg * 0.8);
+    if (pat.seam_width_deg > 0) halfw = Math.max(halfw, pat.seam_width_deg / 2);
+    const lw = 1 - 0.4 * clip(s.width_deg / 90, 0, 0.6);
+    for (let i = 0; i < nF; i++) {
+      if (inner[i] && angdiff(thd[i], s.theta_deg) < halfw && z[i] < s.z_lo && z[i] > z_base_top) {
+        ligament[i] = si; ligScale[i] = lw;
+      }
+    }
+  }
+  for (const sp of pat.split_lines) {
+    for (let i = 0; i < nF; i++) {
+      if (angdiff(thd[i], sp.theta_deg) < 6 && z[i] < z_base_top * sp.depth_frac) {
+        const v = 1 + (m.split_scf - 1); if (v > scf[i]) scf[i] = v;
+      }
+    }
+  }
+  const weaken = new Float64Array(nF);
+  for (const sp of pat.split_lines)
+    for (let i = 0; i < nF; i++)
+      if (angdiff(thd[i], sp.theta_deg) < 6 && z[i] < z_base_top * sp.depth_frac)
+        weaken[i] = Math.max(weaken[i], sp.score);
+  if (pat.seam_score > 0) {
+    const shw = pat.seam_width_deg > 0 ? pat.seam_width_deg / 2 : m.ligament_halfwidth_deg;
+    for (const s of pat.slots)
+      for (let i = 0; i < nF; i++)
+        if (inner[i] && angdiff(thd[i], s.theta_deg) < shw) weaken[i] = Math.max(weaken[i], pat.seam_score);
+  }
+  const strength = new Float64Array(nF);
+  for (let i = 0; i < nF; i++) {
+    let v = thickness[i] * m.yield_stress * (1 - open_frac[i]) * (1 - weaken[i]) * ligScale[i];
+    if (!inner[i]) v = Infinity;
+    if (open_frac[i] > 0.5) v = 1e-6;
+    strength[i] = v;
+  }
+  const split_site = new Int32Array(nF).fill(-1);
+  for (let spi = 0; spi < pat.split_lines.length; spi++) {
+    const sp = pat.split_lines[spi];
+    for (let i = 0; i < nF; i++)
+      if (inner[i] && angdiff(thd[i], sp.theta_deg) < m.ligament_halfwidth_deg * 0.6 && z[i] < z_base_top * sp.depth_frac)
+        split_site[i] = spi;
+  }
+  const labels = pat.slots.map(s => `slot@${s.theta_deg.toFixed(0)}°`)
+    .concat(pat.split_lines.map(s => `split@${s.theta_deg.toFixed(0)}°`));
+  return { open_frac, strength, scf, ligament, split_site, n_slots: pat.slots.length, n_splits: pat.split_lines.length, labels, pattern: pat };
+}
+
+// ---------------------------------------------------------------------------
+//  wall model + pressure simulation — port of pressure.py
+// ---------------------------------------------------------------------------
+function buildWallModel(wall) {
+  const innerIdx = POD.innerIdx, nIn = innerIdx.length;
+  const Cin = new Float64Array(nIn * 3);
+  const strength_in = new Float64Array(nIn), scf_in = new Float64Array(nIn), z_in = new Float64Array(nIn), r_in = new Float64Array(nIn);
+  const lig = new Int32Array(nIn), split = new Int32Array(nIn);
+  for (let l = 0; l < nIn; l++) {
+    const g = innerIdx[l];
+    Cin[3 * l] = POD.cx[g]; Cin[3 * l + 1] = POD.cy[g]; Cin[3 * l + 2] = POD.cz[g];
+    strength_in[l] = wall.strength[g]; scf_in[l] = wall.scf[g];
+    z_in[l] = POD.zFace[g]; r_in[l] = POD.rFace[g];
+    lig[l] = wall.ligament[g]; split[l] = wall.split_site[g];
+  }
+  const grid = new Grid(Cin, nIn, 8);
+  const n_slots = wall.n_slots, n_splits = wall.n_splits, n_sites = n_slots + n_splits;
+  const site_faces = [], is_lig = [];
+  for (let si = 0; si < n_slots; si++) { const fs = []; for (let l = 0; l < nIn; l++) if (lig[l] === si) fs.push(l); site_faces.push(fs); is_lig.push(true); }
+  for (let spi = 0; spi < n_splits; spi++) { const fs = []; for (let l = 0; l < nIn; l++) if (split[l] === spi) fs.push(l); site_faces.push(fs); is_lig.push(false); }
+  const band_h = 12, site_band = new Array(n_sites).fill(null), site_nbands = new Int32Array(n_sites).fill(1);
+  for (let si = 0; si < n_sites; si++) {
+    const fs = site_faces[si]; if (!is_lig[si] || !fs.length) continue;
+    let zlo = Infinity, zhi = -Infinity; for (const l of fs) { if (z_in[l] < zlo) zlo = z_in[l]; if (z_in[l] > zhi) zhi = z_in[l]; }
+    const K = Math.max(3, Math.round((zhi - zlo) / band_h));
+    const b = new Int32Array(fs.length);
+    for (let t = 0; t < fs.length; t++) b[t] = clip(Math.floor((z_in[fs[t]] - zlo) / Math.max(zhi - zlo, 1e-6) * K), 0, K - 1);
+    site_band[si] = b; site_nbands[si] = K;
+  }
+  const split_capacity = new Float64Array(n_sites).fill(Infinity);
+  for (let si = 0; si < n_sites; si++) {
+    if (is_lig[si]) continue;
+    const fs = site_faces[si]; if (!fs.length) continue;
+    let cap = 0; for (const l of fs) if (isFinite(strength_in[l])) cap += strength_in[l];
+    split_capacity[si] = cap > 0 ? cap : Infinity;
+  }
+  return { innerIdx, nIn, Cin, grid, strength_in, scf_in, z_in, r_in, n_slots, n_splits, n_sites, labels: wall.labels, site_faces, is_lig, site_band, site_nbands, split_capacity };
+}
+
+function nodeRadius(pipe, age, sp) {
+  const mature = clip(age / sp.maturation, 0.05, 1);
+  const swell = clip(1 + sp.swell_rate * Math.max(age - sp.maturation, 0), 1, sp.max_swell);
+  return pipe * mature * swell;
+}
+
+function runSimulation(wm, roots, sp, ph) {
+  const T = sp.n_time_steps;
+  let drive, cap;
+  if (ph) { const ps = physPerStep(ph, T); drive = ps.drive; cap = ps.cap; }
+  else { drive = new Float64Array(T).fill(1); cap = new Float64Array(T).fill(1); }
+  const N = roots.n, Px = roots.nx, Py = roots.ny, Pz = roots.nz, pipe = roots.radius, birth = roots.birth;
+  let maxBirth = 1; for (let i = 0; i < N; i++) if (birth[i] > maxBirth) maxBirth = birth[i];
+  const birthTime = new Float64Array(N);
+  for (let i = 0; i < N; i++) birthTime[i] = birth[i] / maxBirth * (sp.growth_fraction * T);
+  const rNode = new Float64Array(N), rInnerHere = new Float64Array(N), baseNode = new Uint8Array(N);
+  const zBase = POD.features.z_base_top;
+  for (let i = 0; i < N; i++) { rNode[i] = Math.hypot(Px[i], Py[i]); rInnerHere[i] = rInnerAt(Pz[i]); baseNode[i] = Pz[i] < zBase * 1.25 ? 1 : 0; }
+  // contact matrix: per inner-face contributions [nodeIdx, weight]
+  const contrib = Array.from({ length: wm.nIn }, () => []);
+  for (let j = 0; j < N; j++) {
+    const pr = Math.max(sp.contact_patch_factor * pipe[j], sp.min_patch_radius);
+    let fs = wm.grid.ball(Px[j], Py[j], Pz[j], pr);
+    if (!fs.length) fs = [wm.grid.nearest(Px[j], Py[j], Pz[j]).idx];
+    const w = new Float64Array(fs.length); let wsum = 0;
+    for (let t = 0; t < fs.length; t++) {
+      const l = fs[t], dx = wm.Cin[3 * l] - Px[j], dy = wm.Cin[3 * l + 1] - Py[j], dz = wm.Cin[3 * l + 2] - Pz[j];
+      const d = Math.hypot(dx, dy, dz);
+      w[t] = Math.max(1 - d / Math.max(pr, 1e-6), 0.05); wsum += w[t];
+    }
+    for (let t = 0; t < fs.length; t++) contrib[fs[t]].push([j, w[t] / wsum]);
+  }
+  const cum = new Float64Array(wm.nIn), peak = new Float64Array(wm.nIn);
+  const ratioHist = []; // not needed for UI beyond final; keep light
+  const activation = new Float64Array(wm.n_sites).fill(Infinity), order = [];
+  let baseWedgeCum = 0;
+  const z_waist_hi = POD.features.z_waist_hi;
+  const nLig = wm.n_slots, needed = Math.max(1, Math.ceil(nLig * sp.breakthrough_frac));
+  let breakthrough = Infinity;
+  const pressNode = new Float64Array(N), stepPress = new Float64Array(wm.nIn);
+  for (let t = 1; t <= T; t++) {
+    const dmult = drive[t - 1], cmult = cap[t - 1];
+    let wedgeSum = 0;
+    for (let i = 0; i < N; i++) {
+      const alive = birthTime[i] <= t;
+      if (!alive) { pressNode[i] = 0; continue; }
+      const age = t - birthTime[i], rad = nodeRadius(pipe[i], age, sp);
+      const pen = (rNode[i] + rad) - rInnerHere[i];
+      const radial = sp.contact_stiffness * Math.max(pen, 0);
+      const wedge = baseNode[i] ? sp.base_wedge * rad : 0;
+      pressNode[i] = (radial + wedge) * dmult;
+      wedgeSum += wedge;
+    }
+    baseWedgeCum += wedgeSum * dmult * sp.dt;
+    for (let l = 0; l < wm.nIn; l++) {
+      let s = 0; const cc = contrib[l];
+      for (let t2 = 0; t2 < cc.length; t2++) s += cc[t2][1] * pressNode[cc[t2][0]];
+      if (sp.pull_assist > 0 && wm.z_in[l] < z_waist_hi) s += sp.pull_assist;
+      stepPress[l] = s;
+      if (s > peak[l]) peak[l] = s;
+      cum[l] += s * sp.dt;
+    }
+    // per-site failure
+    for (let si = 0; si < wm.n_sites; si++) {
+      const fs = wm.site_faces[si]; if (!fs.length) continue;
+      let ratio;
+      if (wm.is_lig[si]) {
+        const bands = wm.site_band[si], seen = new Set();
+        for (let t2 = 0; t2 < fs.length; t2++) {
+          const l = fs[t2];
+          if (cum[l] * wm.scf_in[l] >= wm.strength_in[l] * cmult) seen.add(bands[t2]);
+        }
+        ratio = seen.size / wm.site_nbands[si];
+      } else {
+        ratio = (sp.hoop_factor * baseWedgeCum) / (wm.split_capacity[si] * cmult);
+      }
+      const thresh = wm.is_lig[si] ? sp.span_frac : 1;
+      if (ratio >= thresh && !isFinite(activation[si])) { activation[si] = t; order.push(si); }
+    }
+    let nActive = 0; for (let si = 0; si < nLig; si++) if (isFinite(activation[si])) nActive++;
+    if (nActive >= needed && !isFinite(breakthrough)) breakthrough = t;
+  }
+  let firstSite = -1, firstStep = Infinity;
+  for (let si = 0; si < wm.n_sites; si++) if (isFinite(activation[si]) && activation[si] < firstStep) { firstStep = activation[si]; firstSite = si; }
+  // scatter cum to full-face field
+  const faceField = new Float64Array(POD.nF);
+  for (let l = 0; l < wm.nIn; l++) faceField[wm.innerIdx[l]] = cum[l];
+  return { faceField, activation, order, firstStep, firstSite, breakthrough, nNodes: N };
+}
+
+// ---------------------------------------------------------------------------
+//  vertex intensity + projection
+// ---------------------------------------------------------------------------
+function faceFieldToVertex(fv) {
+  const nV = POD.nV, F = POD.F, area = POD.area, vv = new Float64Array(nV), ws = new Float64Array(nV);
+  for (let f = 0; f < POD.nF; f++) {
+    const a = F[3 * f], b = F[3 * f + 1], c = F[3 * f + 2], w = area[f], val = fv[f] * w;
+    vv[a] += val; vv[b] += val; vv[c] += val; ws[a] += w; ws[b] += w; ws[c] += w;
+  }
+  for (let i = 0; i < nV; i++) vv[i] = ws[i] > 0 ? vv[i] / ws[i] : 0;
+  return vv;
+}
+let _innerGrid = null;
+function projectInnerToOuter(field) {
+  if (!_innerGrid) {
+    const nIn = POD.innerIdx.length, C = new Float64Array(nIn * 3);
+    for (let l = 0; l < nIn; l++) { const g = POD.innerIdx[l]; C[3 * l] = POD.cx[g]; C[3 * l + 1] = POD.cy[g]; C[3 * l + 2] = POD.cz[g]; }
+    _innerGrid = { C, nIn, grid: new Grid(C, nIn, 8) };
+  }
+  const out = new Float64Array(POD.nF);
+  for (let f = 0; f < POD.nF; f++) {
+    const q = _innerGrid.grid.nearest(POD.cx[f], POD.cy[f], POD.cz[f]);
+    out[f] = field[POD.innerIdx[q.idx]];
+  }
+  return out;
+}
+function vertexIntensity(field, projectOuter) {
+  let f = field;
+  if (projectOuter) f = projectInnerToOuter(field);
+  const vv = faceFieldToVertex(f);
+  const vmax = percentile(vv, 99);
+  const out = new Array(vv.length);
+  for (let i = 0; i < vv.length; i++) out[i] = Math.round(vv[i] * 100) / 100;
+  return { intensity: out, cmax: Math.max(vmax, 1e-9) };
+}
+
+// ---------------------------------------------------------------------------
+//  render3d — tapered tubes, seams, exploded (port of render3d.py)
+// ---------------------------------------------------------------------------
+function frame(tx, ty, tz) {
+  const L = Math.hypot(tx, ty, tz) || 1e-12; tx /= L; ty /= L; tz /= L;
+  let rx = 0, ry = 0, rz = 1; if (Math.abs(tz) >= 0.9) { rx = 1; rz = 0; }
+  let n1x = ty * rz - tz * ry, n1y = tz * rx - tx * rz, n1z = tx * ry - ty * rx;
+  const l1 = Math.hypot(n1x, n1y, n1z) || 1e-12; n1x /= l1; n1y /= l1; n1z /= l1;
+  const n2x = ty * n1z - tz * n1y, n2y = tz * n1x - tx * n1z, n2z = tx * n1y - ty * n1x;
+  return [n1x, n1y, n1z, n2x, n2y, n2z];
+}
+class TubeAccum {
+  constructor(sides) {
+    this.sides = sides; this.cs = []; this.sn = [];
+    for (let k = 0; k < sides; k++) { const a = 2 * Math.PI * k / sides; this.cs.push(Math.cos(a)); this.sn.push(Math.sin(a)); }
+    this.x = []; this.y = []; this.z = []; this.i = []; this.j = []; this.k = []; this.n = 0;
+  }
+  addFrustum(ax, ay, az, bx, by, bz, ra, rb) {
+    const tx = bx - ax, ty = by - ay, tz = bz - az, L = Math.hypot(tx, ty, tz);
+    if (L < 1e-6) return;
+    const [n1x, n1y, n1z, n2x, n2y, n2z] = frame(tx, ty, tz);
+    const s = this.sides, base = this.n;
+    ra = Math.max(ra, 1e-3); rb = Math.max(rb, 1e-3);
+    for (let k = 0; k < s; k++) {
+      this.x.push(ax + ra * (this.cs[k] * n1x + this.sn[k] * n2x));
+      this.y.push(ay + ra * (this.cs[k] * n1y + this.sn[k] * n2y));
+      this.z.push(az + ra * (this.cs[k] * n1z + this.sn[k] * n2z));
+    }
+    for (let k = 0; k < s; k++) {
+      this.x.push(bx + rb * (this.cs[k] * n1x + this.sn[k] * n2x));
+      this.y.push(by + rb * (this.cs[k] * n1y + this.sn[k] * n2y));
+      this.z.push(bz + rb * (this.cs[k] * n1z + this.sn[k] * n2z));
+    }
+    this.n += 2 * s;
+    for (let k = 0; k < s; k++) {
+      const k2 = (k + 1) % s, a0 = base + k, a1 = base + k2, b0 = base + s + k, b1 = base + s + k2;
+      this.i.push(a0, a0); this.j.push(a1, b1); this.k.push(b1, b0);
+    }
+  }
+  addPolyline(pts, radii) {
+    for (let i = 0; i < pts.length - 1; i++)
+      this.addFrustum(pts[i][0], pts[i][1], pts[i][2], pts[i + 1][0], pts[i + 1][1], pts[i + 1][2], radii[i], radii[i + 1]);
+  }
+  payload() {
+    if (!this.x.length) return null;
+    const rnd = a => a.map(v => Math.round(v * 10) / 10);
+    return { x: rnd(this.x), y: rnd(this.y), z: rnd(this.z), i: this.i, j: this.j, k: this.k };
+  }
+}
+function rootTubeMesh(roots, sides = 6, scale = 1.35, rMin = 0.8, rMax = 7, iters = 2) {
+  const n = roots.n; if (n < 2) return null;
+  const parent = roots.parent, children = Array.from({ length: n }, () => []);
+  for (let i = 0; i < n; i++) if (parent[i] >= 0) children[parent[i]].push(i);
+  let Qx = roots.nx.slice(), Qy = roots.ny.slice(), Qz = roots.nz.slice();
+  for (let it = 0; it < iters; it++) {
+    const nx = Qx.slice(), ny = Qy.slice(), nz = Qz.slice();
+    for (let i = 0; i < n; i++) {
+      if (parent[i] < 0) continue;
+      const neigh = children[i].slice(); neigh.push(parent[i]);
+      let sx = 0, sy = 0, sz = 0; for (const g of neigh) { sx += Qx[g]; sy += Qy[g]; sz += Qz[g]; }
+      const c = neigh.length, w = 0.45;
+      nx[i] = (1 - w) * Qx[i] + w * sx / c; ny[i] = (1 - w) * Qy[i] + w * sy / c; nz[i] = (1 - w) * Qz[i] + w * sz / c;
+    }
+    Qx = nx; Qy = ny; Qz = nz;
+  }
+  const acc = new TubeAccum(sides);
+  for (let i = 0; i < n; i++) {
+    const p = parent[i]; if (p < 0) continue;
+    acc.addFrustum(Qx[p], Qy[p], Qz[p], Qx[i], Qy[i], Qz[i],
+      clip(roots.radius[p] * scale, rMin, rMax), clip(roots.radius[i] * scale, rMin, rMax));
+  }
+  return acc.payload();
+}
+function seamAngles() {
+  const s = POD.features.slots; return s.length ? s.map(x => x.theta_deg) : POD.features.split_line_deg.slice();
+}
+function seamTubeMesh(sides = 5, npt = 60, lift = 1.03) {
+  const H = POD.features.height, angles = seamAngles();
+  const radius = Math.max(0.9, 0.02 * POD.features.outer_r_waist);
+  const acc = new TubeAccum(sides);
+  const z = []; for (let i = 0; i < npt; i++) z.push(0.02 * H + (0.985 * H - 0.02 * H) * i / (npt - 1));
+  for (const a of angles) {
+    const ar = a * Math.PI / 180, pts = [], radii = [];
+    for (let i = 0; i < npt; i++) { const rr = rOuterAt(z[i]) * lift; pts.push([rr * Math.cos(ar), rr * Math.sin(ar), z[i]]); radii.push(radius); }
+    acc.addPolyline(pts, radii);
+  }
+  return acc.payload();
+}
+function explodedSectors(gapFrac = 0.30) {
+  let seams = seamAngles().map(a => ((a + 180) % 360 + 360) % 360 - 180).sort((a, b) => a - b);
+  if (seams.length < 2) seams = [-135, -45, 45, 135];
+  const th = POD.thetaFace, nF = POD.nF, K = seams.length;
+  const sectorOf = a => {
+    for (let k = 0; k < K; k++) {
+      const lo = seams[k], hi = seams[(k + 1) % K];
+      if (k === K - 1) { if (a >= lo || a < hi) return k; }
+      else if (a >= lo && a < hi) return k;
+    }
+    return 0;
+  };
+  const gap = gapFrac * POD.features.outer_r_waist, sectors = [];
+  for (let k = 0; k < K; k++) {
+    const lo = seams[k], hi = seams[(k + 1) % K] + (k === K - 1 ? 360 : 0);
+    const center = ((lo + hi) / 2 + 180) % 360 - 180, cdx = Math.cos(center * Math.PI / 180), cdy = Math.sin(center * Math.PI / 180);
+    const faces = []; for (let f = 0; f < nF; f++) if (sectorOf(th[f] * 180 / Math.PI) === k) faces.push(f);
+    if (!faces.length) continue;
+    const remap = new Map(), used = [];
+    for (const f of faces) for (let t = 0; t < 3; t++) { const v = POD.F[3 * f + t]; if (!remap.has(v)) { remap.set(v, used.length); used.push(v); } }
+    const x = [], y = [], z = [];
+    for (const v of used) { x.push(Math.round((POD.V[3 * v] + gap * cdx) * 10) / 10); y.push(Math.round((POD.V[3 * v + 1] + gap * cdy) * 10) / 10); z.push(Math.round(POD.V[3 * v + 2] * 10) / 10); }
+    const ii = [], jj = [], kk = [];
+    for (const f of faces) { ii.push(remap.get(POD.F[3 * f])); jj.push(remap.get(POD.F[3 * f + 1])); kk.push(remap.get(POD.F[3 * f + 2])); }
+    sectors.push({ x, y, z, i: ii, j: jj, k: kk, orig: used });
+  }
+  return sectors;
+}
+
+// ---------------------------------------------------------------------------
+//  base mesh trace (region-coloured) for the viewer
+// ---------------------------------------------------------------------------
+function regionLabels() {
+  const f = POD.features, z = POD.zFace, nF = POD.nF, th = POD.thetaFace, lab = new Int32Array(nF).fill(1);
+  for (let i = 0; i < nF; i++) {
+    const zz = z[i];
+    if (zz < f.z_base_top) lab[i] = 0;
+    if (zz >= f.z_waist_lo && zz <= f.z_waist_hi) lab[i] = 2;
+    if (zz > f.z_trumpet_bottom) lab[i] = 5;
+    if (zz > f.z_waist_hi && zz <= f.z_trumpet_bottom) lab[i] = 4;
+  }
+  for (const s of f.slots)
+    for (let i = 0; i < nF; i++) {
+      const ad = angdiff(th[i] * 180 / Math.PI, s.theta_deg);
+      if (ad < s.width_deg / 2 + 3 && z[i] > s.z_lo - 6 && z[i] < s.z_hi + 6) lab[i] = 3;
+    }
+  return lab;
+}
+function baseMesh() {
+  const lab = regionLabels(), fv = new Float64Array(POD.nF);
+  for (let i = 0; i < POD.nF; i++) fv[i] = lab[i];
+  const vert = faceFieldToVertex(fv);
+  const F = POD.F, nF = POD.nF;
+  const ii = new Int32Array(nF), jj = new Int32Array(nF), kk = new Int32Array(nF);
+  for (let f = 0; f < nF; f++) { ii[f] = F[3 * f]; jj[f] = F[3 * f + 1]; kk[f] = F[3 * f + 2]; }
+  const x = new Float64Array(POD.nV), y = new Float64Array(POD.nV), z = new Float64Array(POD.nV);
+  for (let v = 0; v < POD.nV; v++) { x[v] = POD.V[3 * v]; y[v] = POD.V[3 * v + 1]; z[v] = POD.V[3 * v + 2]; }
+  return {
+    type: "mesh3d", x: Array.from(x), y: Array.from(y), z: Array.from(z),
+    i: Array.from(ii), j: Array.from(jj), k: Array.from(kk),
+    intensity: Array.from(vert),
+    colorscale: [[0.0, "#b5834a"], [0.2, "#9fb0bf"], [0.4, "#4a76b5"], [0.6, "#d63b3b"], [0.8, "#9fb0bf"], [1.0, "#5aa469"]],
+    cmin: 0, cmax: 5, showscale: false, name: "pod wall", hoverinfo: "skip",
+  };
+}
+
+// ---------------------------------------------------------------------------
+//  cfg -> pattern / params
+// ---------------------------------------------------------------------------
+function patternFromCfg(cfg) {
+  if ((cfg.pattern || "as-drawn") === "as-drawn") {
+    const pat = detectedPattern();
+    if (cfg.seam_score !== "" && cfg.seam_score != null) pat.seam_score = +cfg.seam_score;
+    if (cfg.seam_width_deg !== "" && cfg.seam_width_deg != null) pat.seam_width_deg = +cfg.seam_width_deg;
+    pat.name = "as-drawn"; return pat;
+  }
+  const o = { name: cfg.name || "custom", align: cfg.align || "feet" };
+  for (const key of ["n_slots"]) if (cfg[key] != null && cfg[key] !== "") o[key] = Math.round(+cfg[key]);
+  for (const key of ["slot_length_frac", "slot_width_deg", "slot_z_center_frac", "theta_offset_deg", "split_score", "split_depth_frac", "seam_score", "seam_width_deg"])
+    if (cfg[key] != null && cfg[key] !== "") o[key] = +cfg[key];
+  return parametricPattern(o);
+}
+function growthFromCfg(cfg) {
+  const gp = Object.assign({}, G_DEFAULT);
+  for (const key of ["down_bias", "slot_bias", "wall_bias", "step_size"]) if (cfg[key] != null && cfg[key] !== "") gp[key] = +cfg[key];
+  if (cfg.n_attractors) gp.n_attractors = Math.round(+cfg.n_attractors);
+  return gp;
+}
+function simFromCfg(cfg) {
+  const sp = Object.assign({}, S_DEFAULT);
+  for (const key of ["contact_stiffness", "base_wedge", "pull_assist", "span_frac"]) if (cfg[key] != null && cfg[key] !== "") sp[key] = +cfg[key];
+  if (cfg.n_time_steps) sp.n_time_steps = Math.round(+cfg.n_time_steps);
+  return sp;
+}
+
+// ---------------------------------------------------------------------------
+//  public API — simulate / montecarlo (payloads match the old Flask endpoints)
+// ---------------------------------------------------------------------------
+function simulate(cfg) {
+  const pat = patternFromCfg(cfg), gp = growthFromCfg(cfg), sp = simFromCfg(cfg), ph = physFromCfg(cfg);
+  const wall = buildFields(pat), wm = buildWallModel(wall);
+  const roots = grow(gp, +(cfg.seed || 1));
+  const res = runSimulation(wm, roots, sp, ph);
+  const { intensity, cmax } = vertexIntensity(res.faceField, !!cfg.project_outer);
+  const roots_payload = rootTubeMesh(roots);
+  const T = sp.n_time_steps;
+  const sites = wm.labels.map((lab, i) => ({
+    label: lab, is_ligament: !!wm.is_lig[i],
+    activation_step: isFinite(res.activation[i]) ? res.activation[i] : null,
+  }));
+  const stats = {
+    n_nodes: roots.n,
+    first_crack_step: isFinite(res.firstStep) ? res.firstStep : null,
+    first_crack_site: res.firstSite >= 0 ? wm.labels[res.firstSite] : null,
+    breakthrough_step: isFinite(res.breakthrough) ? res.breakthrough : null,
+    n_time_steps: T,
+    activation_order: res.order.map(s => wm.labels[s]),
+    sites, pattern: pat.name,
+    slots: pat.slots.map(s => ({ theta: s.theta_deg, z_lo: s.z_lo, z_hi: s.z_hi, width: s.width_deg })),
+    physical: physSummary(ph),
+    breakthrough_time: spTimeContext(ph.species, isFinite(res.breakthrough) ? res.breakthrough : null, T, ph.salinity_ppt),
+    first_crack_time: spTimeContext(ph.species, isFinite(res.firstStep) ? res.firstStep : null, T, ph.salinity_ppt),
+    window_time: spTimeContext(ph.species, T, T, ph.salinity_ppt),
+    material_card: materialCard(ph.material),
+  };
+  return { intensity, cmax, roots: roots_payload, stats };
+}
+
+function montecarlo(cfg, nRuns) {
+  const pat = patternFromCfg(cfg), gp = growthFromCfg(cfg), sp = simFromCfg(cfg), ph = physFromCfg(cfg);
+  const wall = buildFields(pat), wm = buildWallModel(wall);
+  const n = clip(Math.round(nRuns || 24), 2, 120), T = sp.n_time_steps;
+  const jitterRng = mulberry32(12345), jNorm = makeNormal(jitterRng);
+  const first = [], brk = [], firstSite = [], orders = [], actSteps = [];
+  const cumAccum = new Float64Array(POD.nF);
+  for (let kk = 0; kk < n; kk++) {
+    let g = gp;
+    { // growth jitter (scale 0.5, like the Flask MC)
+      g = Object.assign({}, gp);
+      g.slot_bias = Math.max(0.2, gp.slot_bias * (1 + 0.5 * jNorm() * 0.3));
+      g.down_bias = clip(gp.down_bias * (1 + 0.5 * jNorm() * 0.3), 0.1, 1);
+    }
+    const roots = grow(g, kk);
+    const res = runSimulation(wm, roots, sp, ph);
+    first.push(isFinite(res.firstStep) ? res.firstStep : Infinity);
+    brk.push(isFinite(res.breakthrough) ? res.breakthrough : Infinity);
+    firstSite.push(res.firstSite);
+    orders.push(res.order.slice());
+    actSteps.push(res.activation.slice());
+    for (let f = 0; f < POD.nF; f++) cumAccum[f] += res.faceField[f];
+  }
+  for (let f = 0; f < POD.nF; f++) cumAccum[f] /= n;
+  const finite = a => a.filter(v => isFinite(v));
+  const mean = a => a.length ? a.reduce((s, x) => s + x, 0) / a.length : Infinity;
+  const std = a => { if (!a.length) return NaN; const m = mean(a); return Math.sqrt(a.reduce((s, x) => s + (x - m) * (x - m), 0) / a.length); };
+  const reliability = brk.filter(v => isFinite(v)).length / n;
+  const meanBrk = mean(finite(brk)), meanFirst = mean(finite(first));
+  // first-site counts
+  const fsc = {}; for (const s of firstSite) if (s >= 0) { const lab = wm.labels[s]; fsc[lab] = (fsc[lab] || 0) + 1; }
+  const fscSorted = Object.fromEntries(Object.entries(fsc).sort((a, b) => b[1] - a[1]));
+  // per-site activation rate + mean step
+  const rate = {}, meanStep = {};
+  for (let si = 0; si < wm.n_sites; si++) {
+    let cnt = 0, ssum = 0, sc = 0;
+    for (const as of actSteps) if (isFinite(as[si])) { cnt++; ssum += as[si]; sc++; }
+    rate[wm.labels[si]] = cnt / n;
+    meanStep[wm.labels[si]] = sc ? ssum / sc : null;
+  }
+  // top orders
+  const oc = {};
+  for (const o of orders) if (o.length) { const key = o.slice(0, 3).map(s => wm.labels[s]).join(" → "); oc[key] = (oc[key] || 0) + 1; }
+  const topOrders = Object.entries(oc).sort((a, b) => b[1] - a[1]).slice(0, 5);
+  const { intensity, cmax } = vertexIntensity(cumAccum, false);
+  const rep = grow(gp, 7), roots_payload = rootTubeMesh(rep);
+  const stats = {
+    pattern: pat.name, n_runs: n, reliability,
+    mean_breakthrough: isFinite(meanBrk) ? meanBrk : null,
+    std_breakthrough: isFinite(meanBrk) ? std(finite(brk)) : null,
+    mean_first_crack: isFinite(meanFirst) ? meanFirst : null,
+    n_time_steps: T,
+    first_site_counts: fscSorted, site_activation_rate: rate,
+    mean_site_activation_step: meanStep, top_orders: topOrders,
+    breakthrough_samples: brk.map(v => isFinite(v) ? v : null),
+    first_crack_samples: first.map(v => isFinite(v) ? v : null),
+    physical: physSummary(ph),
+    breakthrough_time: spTimeContext(ph.species, isFinite(meanBrk) ? meanBrk : null, T, ph.salinity_ppt),
+    window_time: spTimeContext(ph.species, T, T, ph.salinity_ppt),
+    material_card: materialCard(ph.material),
+  };
+  return { intensity, cmax, roots: roots_payload, stats };
+}
+
+function features() {
+  const f = POD.features;
+  return {
+    height: f.height, outer_r_waist: f.outer_r_waist, inner_r_waist: f.inner_r_waist,
+    wall_thickness: f.wall_thickness_median, n_slots: f.slots.length, n_feet: f.feet.length,
+    n_faces: POD.nF, n_verts: POD.nV,
+  };
+}
+
+async function loadPod() {
+  // geometry is provided by data/pod.js as window.POD_RAW (loaded via <script>,
+  // which avoids the large-body fetch() reset in the in-app preview proxy).
+  if (!window.POD_RAW) throw new Error("pod geometry (data/pod.js) not loaded");
+  buildPod(window.POD_RAW);
+  return features();
+}
+
+window.ENGINE = {
+  loadPod, features, simulate, montecarlo,
+  materials: () => ({ materials: Object.fromEntries(Object.entries(MATERIALS).map(([k, m]) => [k, materialCard(m)])), default: "bioplastic" }),
+  species: () => ({ species: SPECIES, default: "rhizophora" }),
+  provenance: buildRegistry,
+  baseMesh, seams: seamTubeMesh, exploded: explodedSectors,
+};

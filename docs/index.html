@@ -3,201 +3,205 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Mangrove Pod — Root-Growth Break Simulation</title>
-<style>
-  :root{--bg:#12161a;--panel:#1b2127;--line:#2f3945;--text:#e7edf3;--muted:#93a1b0;
-    --accent:#5aa469;--accent2:#c98a3a;--red:#d6564a;--blue:#5a8fce}
-  *{box-sizing:border-box}
-  body{margin:0;background:var(--bg);color:var(--text);
-    font-family:'Segoe UI',Roboto,system-ui,sans-serif;line-height:1.65}
-  a{color:var(--accent)}
-  .wrap{max-width:1000px;margin:0 auto;padding:0 22px}
-  header{background:linear-gradient(120deg,#182420,#12161a);border-bottom:1px solid var(--line);
-    padding:54px 0 40px}
-  header .wrap{display:flex;gap:22px;align-items:center;flex-wrap:wrap}
-  .leaf{font-size:64px;line-height:1}
-  h1{margin:0;font-size:30px;font-weight:700}
-  header p{margin:8px 0 0;color:var(--muted);font-size:16px;max-width:640px}
-  .stats{display:flex;gap:10px;flex-wrap:wrap;margin-top:18px}
-  .stat{background:var(--panel);border:1px solid var(--line);border-radius:10px;
-    padding:9px 14px;font-size:13px}
-  .stat b{color:var(--accent);font-size:16px}
-  section{padding:44px 0;border-bottom:1px solid var(--line)}
-  h2{font-size:22px;margin:0 0 6px}
-  h2 .num{color:var(--accent);font-size:14px;display:block;letter-spacing:.1em;
-    text-transform:uppercase;margin-bottom:6px}
-  .lead{color:var(--muted);margin:0 0 22px;max-width:720px}
-  figure{margin:0}
-  img{max-width:100%;border-radius:12px;border:1px solid var(--line);display:block}
-  figcaption{color:var(--muted);font-size:13px;margin-top:8px;text-align:center}
-  .frame{width:100%;height:560px;border:1px solid var(--line);border-radius:12px;
-    background:#0e1216;overflow:hidden}
-  .frame iframe{width:100%;height:100%;border:0}
-  .grid2{display:grid;grid-template-columns:1fr 1fr;gap:18px}
-  @media(max-width:760px){.grid2{grid-template-columns:1fr}}
-  .cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:14px;margin-top:8px}
-  .card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:16px}
-  .card h3{margin:0 0 6px;font-size:15px}
-  .card p{margin:0;color:var(--muted);font-size:14px}
-  .steps{counter-reset:s;list-style:none;padding:0;display:grid;gap:12px}
-  .steps li{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:14px 16px 14px 52px;position:relative}
-  .steps li::before{counter-increment:s;content:counter(s);position:absolute;left:14px;top:14px;
-    width:26px;height:26px;border-radius:50%;background:var(--accent);color:#0c130f;
-    font-weight:700;display:flex;align-items:center;justify-content:center;font-size:13px}
-  pre{background:#0d1115;border:1px solid var(--line);border-radius:10px;padding:14px 16px;
-    overflow-x:auto;font-size:13px;color:#cfe6d5}
-  .note{background:rgba(201,138,58,.10);border:1px solid var(--accent2);border-radius:10px;
-    padding:14px 16px;color:#e9cfa8;font-size:14px}
-  .pill{display:inline-block;background:var(--panel);border:1px solid var(--line);border-radius:20px;
-    padding:3px 11px;font-size:12px;margin:2px}
-  .pill.red{border-color:var(--red);color:#f0b3ac}
-  .pill.blue{border-color:var(--blue);color:#bcd6f2}
-  footer{padding:30px 0;color:var(--muted);font-size:13px}
-</style>
+<title>Mangrove Pod — Root-Growth Break Design Tool</title>
+<script src="https://cdn.plot.ly/plotly-2.35.2.min.js" charset="utf-8"></script>
+<link rel="stylesheet" href="static/style.css">
 </head>
 <body>
+<div id="boot"><div class="leaf">🌱</div><div id="bootmsg">loading the pod &amp; booting the in-browser engine…</div></div>
 
 <header>
-  <div class="wrap">
-    <div class="leaf">🌱</div>
+  <div class="brand">
+    <span class="leaf">🌱</span>
     <div>
       <h1>Mangrove Pod — Root-Growth Break Design Tool</h1>
-      <p>A physics-flavoured simulation on the real 3-D seed-pod geometry: grow the
-        sapling's roots, press them against the pod wall, and predict where and when
-        the pod tears apart at its seams so it reliably breaks away — now with material
-        and species comparison, real-time break estimates, and honestly labelled data
-        provenance.</p>
-      <div class="stats">
-        <span class="stat"><b>20,830</b> triangles</span>
-        <span class="stat"><b>4</b> quarter-piece seams</span>
-        <span class="stat"><b>3</b> materials</span>
-        <span class="stat"><b>2</b> species</span>
-        <span class="stat"><b>100%</b> break reliability</span>
-        <span class="stat"><b>provenance</b>-tagged constants</span>
-      </div>
+      <p id="podinfo">loading pod…</p>
     </div>
+  </div>
+  <div class="headright">
+    <div class="legend">
+      <span><i style="background:#5aa469"></i>trumpet</span>
+      <span><i style="background:#4a76b5"></i>waist</span>
+      <span><i style="background:#d63b3b"></i>seam/slot</span>
+      <span><i style="background:#b5834a"></i>feet</span>
+    </div>
+    <a class="ghost" href="showcase.html" title="how it works / findings">ℹ About</a>
+    <a class="ghost" href="https://github.com/antalneu/mangrove-pod-sim" target="_blank" rel="noopener">★ GitHub</a>
+    <button id="provBtn" class="ghost">🔬 Data provenance</button>
   </div>
 </header>
 
-<section>
-  <div class="wrap">
-    <h2><span class="num">01 · geometry</span>The pod, parsed from the Rhino model</h2>
-    <p class="lead">The <code>.3dm</code> solid is welded into a triangle mesh and its features
-      auto-detected: the flared trumpet opening, the narrow waist with its four vertical
-      slots, and the splayed starfish base with four feet. Each slot sits directly above a foot.</p>
-    <figure>
-      <img src="img/confirmation.png" alt="Pod parse and feature detection: 3D renders, unwrapped slot map, base feet map">
-      <figcaption>Region-coloured pod, the unwrapped wall with the 4 detected slots (red boxes), and the base feet + split-lines.</figcaption>
-    </figure>
-  </div>
-</section>
+<main>
+  <aside id="controls">
+    <section>
+      <h2>Perforation &amp; quarter-piece seams</h2>
+      <label>Preset
+        <select id="preset">
+          <option value="as-drawn">As-drawn (detected)</option>
+          <option value="shorter-slots">Shorter slots</option>
+          <option value="longer-slots">Longer slots</option>
+          <option value="slots-higher">Slots higher</option>
+          <option value="slots-lower">Slots lower</option>
+          <option value="wider-slots">Wider slots</option>
+          <option value="narrower-slots">Narrower slots</option>
+          <option value="8-slots">8 slots</option>
+          <option value="slots-over-splits">Slots over splits</option>
+          <option value="deep-base-score">Deep base score</option>
+          <option value="deep-seams">Deep quarter-piece seams</option>
+          <option value="custom">Custom…</option>
+        </select>
+      </label>
+      <div id="paramBox">
+        <label>Number of slots <output id="o_n_slots">4</output>
+          <input type="range" id="n_slots" min="3" max="10" step="1" value="4"></label>
+        <label>Slot length (× height) <output id="o_slot_length_frac">0.22</output>
+          <input type="range" id="slot_length_frac" min="0.08" max="0.40" step="0.01" value="0.22"></label>
+        <label>Slot width (deg) <output id="o_slot_width_deg">15</output>
+          <input type="range" id="slot_width_deg" min="6" max="30" step="1" value="15"></label>
+        <label>Slot centre height (× height) <output id="o_slot_z_center_frac">0.55</output>
+          <input type="range" id="slot_z_center_frac" min="0.35" max="0.70" step="0.01" value="0.55"></label>
+        <label>Align slots over
+          <select id="align"><option value="feet">feet</option><option value="split">splits (between feet)</option></select></label>
+        <label>Base split score <output id="o_split_score">0.35</output>
+          <input type="range" id="split_score" min="0" max="0.9" step="0.05" value="0.35"></label>
+      </div>
+      <div class="subhead">Vertical seams (4 quarter-pieces: rim → slot → foot)</div>
+      <label>Seam depth / score <output id="o_seam_score">0.0</output>
+        <input type="range" id="seam_score" min="0" max="0.9" step="0.05" value="0.0"></label>
+      <label>Seam width (deg) <output id="o_seam_width_deg">40</output>
+        <input type="range" id="seam_width_deg" min="10" max="80" step="2" value="40"></label>
+      <label>Seam rotational offset (deg) <output id="o_theta_offset_deg">0</output>
+        <input type="range" id="theta_offset_deg" min="-45" max="45" step="1" value="0"></label>
+    </section>
 
-<section>
-  <div class="wrap">
-    <h2><span class="num">02 · interactive</span>Rotate the 3-D stress heatmap</h2>
-    <p class="lead">Cumulative wall stress from the expanding root system, painted on the real
-      mesh. Brightest = highest stress. Drag to orbit, scroll to zoom. The hotspot wraps the
-      waist — exactly where the slots are.</p>
-    <div class="frame"><iframe src="stress_interactive.html" title="Interactive wall-stress heatmap" loading="lazy"></iframe></div>
-    <p class="lead" style="margin-top:14px">
-      <a href="stress_interactive.html">Open the single-run viewer full-screen ↗</a> &nbsp;·&nbsp;
-      <a href="mean_stress_interactive.html">Open the 40-run mean-stress viewer ↗</a>
-    </p>
-  </div>
-</section>
+    <section>
+      <h2>Material</h2>
+      <label>Pod material
+        <select id="material">
+          <option value="bioplastic">Bioplastic (marine-degradable)</option>
+          <option value="clay">Clay (low-fired earthenware)</option>
+          <option value="concrete">Concrete (unreinforced)</option>
+        </select>
+      </label>
+      <div id="materialWarn" class="warn hidden"></div>
+      <div id="materialCard" class="matcard"></div>
+      <p class="estnote">⚠ All material constants are <b>engineering estimates requiring lab
+        verification</b> — not datasheet or pod-measured values.</p>
+    </section>
 
-<section>
-  <div class="wrap">
-    <h2><span class="num">03 · model</span>How it works</h2>
-    <div class="cards">
-      <div class="card"><h3>🌿 Root growth</h3><p>A branching root system grows by space-colonization from the top opening, down through the waist and out into the feet.</p></div>
-      <div class="card"><h3>⬈ Wall pressure</h3><p>Roots swell over time; where a root reaches the inner wall it presses outward. Pressure is integrated into a per-face cumulative-stress field.</p></div>
-      <div class="card"><h3>✂ Crack &amp; tear</h3><p>A slot→foot ligament tears when a crack spans it; the pod "breaks through" once most ligaments have torn.</p></div>
-      <div class="card"><h3>🎲 Monte Carlo</h3><p>Many randomized growths give the mean breakthrough time, which site cracks first, and run-to-run consistency.</p></div>
+    <section>
+      <h2>Species &amp; environment</h2>
+      <label>Propagule species
+        <select id="species">
+          <option value="rhizophora">Rhizophora mangle</option>
+          <option value="avicennia">Avicennia marina</option>
+        </select>
+      </label>
+      <div id="speciesInfo" class="matcard"></div>
+      <label>Salinity (ppt) <output id="o_salinity_ppt">20</output>
+        <input type="range" id="salinity_ppt" min="0" max="40" step="1" value="20"></label>
+      <p class="hint" id="salNote">Optimal early-growth band shown per species; outside it,
+        growth slows and the same steps span more real time.</p>
+    </section>
+
+    <section>
+      <h2>Root force <span class="tag est">estimate</span></h2>
+      <label>Root growth pressure (MPa) <output id="o_root_pressure_mpa">0.75</output>
+        <input type="range" id="root_pressure_mpa" min="0.5" max="1.0" step="0.05" value="0.75"></label>
+      <p class="hint">Default 0.5–1.0 MPa is <b>estimated from general tree-root
+        biomechanics</b> (not mangrove-specific). Treat as a starting point pending
+        physical validation.</p>
+      <div class="calib">
+        <label class="chk"><input type="checkbox" id="calibration_active"> Calibration Mode — use a measured force</label>
+        <div id="calibBox" class="calibbox">
+          <label>Measured root force (N)
+            <input type="number" id="calibration_force_n" placeholder="e.g. 3.5" step="0.1" min="0"></label>
+          <label>Root-tip contact area (mm²)
+            <input type="number" id="calibration_area_mm2" value="5" step="0.5" min="0.1"></label>
+          <div id="calibOut" class="calibout">enter a load-cell reading to override the estimate</div>
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <h2>Root growth</h2>
+      <label>Random seed <output id="o_seed">1</output>
+        <input type="range" id="seed" min="0" max="60" step="1" value="1"></label>
+      <label>Downward bias <output id="o_down_bias">0.55</output>
+        <input type="range" id="down_bias" min="0.1" max="1.0" step="0.05" value="0.55"></label>
+      <label>Bias toward slots/feet <output id="o_slot_bias">2.2</output>
+        <input type="range" id="slot_bias" min="0" max="4" step="0.1" value="2.2"></label>
+      <label>Root density (attractors) <output id="o_n_attractors">2600</output>
+        <input type="range" id="n_attractors" min="1000" max="4000" step="100" value="2600"></label>
+    </section>
+
+    <section>
+      <h2>Pressure &amp; failure</h2>
+      <label>Root contact stiffness <output id="o_contact_stiffness">20</output>
+        <input type="range" id="contact_stiffness" min="5" max="40" step="1" value="20"></label>
+      <label>Time steps <output id="o_n_time_steps">120</output>
+        <input type="range" id="n_time_steps" min="60" max="160" step="5" value="120"></label>
+      <label>Planting-team pull assist <output id="o_pull_assist">0</output>
+        <input type="range" id="pull_assist" min="0" max="4" step="0.2" value="0"></label>
+    </section>
+
+    <section>
+      <h2>Display</h2>
+      <div class="seg" id="viewSeg">
+        <button type="button" class="segbtn active" data-view="intact">Intact</button>
+        <button type="button" class="segbtn" data-view="exploded">Exploded (4 pieces)</button>
+      </div>
+      <p class="hint">Exploded pulls the 4 quarter-pieces apart along the seams so the
+        intended split is clear before running anything.</p>
+      <div class="toggles">
+        <label class="chk"><input type="checkbox" id="show_seams" checked> show 4 seam lines</label>
+        <label class="chk"><input type="checkbox" id="show_roots" checked> show roots</label>
+        <label class="chk"><input type="checkbox" id="project_outer"> stress on outer surface</label>
+      </div>
+    </section>
+
+    <section class="actions">
+      <button id="runBtn" class="primary">▶ Run simulation</button>
+      <div class="mcrow">
+        <button id="mcBtn">📊 Monte Carlo</button>
+        <input type="number" id="n_runs" value="24" min="2" max="120" title="number of runs">
+      </div>
+      <p class="hint">Single run shows one root system &amp; its stress. Monte Carlo averages many randomized growths. Everything runs in your browser.</p>
+    </section>
+  </aside>
+
+  <div id="viewpane">
+    <div id="plot"></div>
+    <div id="overlay" class="hidden"><div class="spinner"></div><span id="overlayMsg">simulating…</span></div>
+    <div class="modelnote">Reduced-order engineering surrogate — <b>relative</b> comparison, not FEA.</div>
+    <div class="staticnote">Runs <b>100% in your browser</b> — no server.</div>
+  </div>
+
+  <aside id="results">
+    <div id="verdict" class="verdict idle">Run a simulation to see where and when the pod breaks.</div>
+    <div id="timeline" class="timeline hidden"></div>
+    <div id="statcards"></div>
+    <h3>Break sites</h3>
+    <div id="siteChart"></div>
+    <div id="detail"></div>
+    <div id="provMini" class="provmini"></div>
+  </aside>
+</main>
+
+<div id="provPanel" class="provpanel hidden">
+  <div class="provinner">
+    <div class="provtop">
+      <h2>🔬 Data provenance — what's proven vs. assumed</h2>
+      <button id="provClose" class="ghost">✕ close</button>
     </div>
+    <div id="provRoadmap" class="roadmap"></div>
+    <div id="provCounts" class="provcounts"></div>
+    <div id="provTable"></div>
   </div>
-</section>
+</div>
 
-<section>
-  <div class="wrap">
-    <h2><span class="num">04 · findings</span>Where &amp; when it breaks</h2>
-    <p class="lead">The pod breaks along the four slot→foot ligaments (red), not the between-feet
-      split-lines (blue) — a symmetric, reliable 4-petal release. Failure is fastest when a
-      slot's tearing ligament overlaps the peak root-pressure band in the upper waist.</p>
-    <p style="margin:0 0 18px">
-      <span class="pill red">slot ligaments — tear in ~100% of runs</span>
-      <span class="pill blue">base splits — weak secondary path</span>
-    </p>
-    <figure><img src="img/results_analysis.png" alt="Monte-Carlo results: outer heatmap, unwrapped stress, per-site activation, timing histogram"></figure>
-    <div class="grid2" style="margin-top:18px">
-      <figure><img src="img/perforation_comparison.png" alt="Perforation pattern comparison ranking"><figcaption>Design sweep — earlier bar = breaks sooner.</figcaption></figure>
-      <figure><img src="img/roots.png" alt="Root system grown inside the translucent pod"><figcaption>A grown root system inside the pod.</figcaption></figure>
-    </div>
-  </div>
-</section>
-
-<section>
-  <div class="wrap">
-    <h2><span class="num">05 · design tool</span>Materials, species &amp; honest provenance</h2>
-    <p class="lead">The tool doubles as an <b>industry design explorer</b>: compare real
-      pod materials and propagule species, read break timing in real months, and treat the
-      pod as <b>4 seam-defined quarter-pieces</b> (rim → slot → foot) with adjustable seam
-      depth/width/offset. Crucially, <b>every constant is labelled by how well-grounded it
-      is</b> — nothing assumed is shown as fact.</p>
-    <div class="cards">
-      <div class="card"><h3>🧱 Materials</h3><p><b>Clay · Concrete · Bioplastic</b>, each with
-        strength, stiffness, wet/tidal degradation and a biodegradability flag. Concrete is
-        flagged with a visible warning as the least biodegradable. All values are labelled
-        <i>engineering estimates requiring lab verification</i>.</p></div>
-      <div class="card"><h3>🌏 Species &amp; real time</h3><p><i>Rhizophora mangle</i> and
-        <i>Avicennia marina</i>: the step axis maps to real weeks/months, root force ramps up
-        <b>slowly at first</b> (matching early root biology), and salinity modifies growth rate.</p></div>
-      <div class="card"><h3>⚖️ Root pressure + calibration</h3><p>Grounded default
-        <b>0.5–1.0 MPa</b> from general tree-root biomechanics (not mangrove-specific).
-        <b>Calibration Mode</b> lets a measured load-cell force (N) override the estimate.</p></div>
-      <div class="card"><h3>🔬 Data provenance</h3><p>A permanent panel lists every constant as
-        <i>Literature-sourced</i>, <i>Estimated — needs lab validation</i>, <i>Measured off the
-        model</i>, or <i>Calibrated surrogate</i>, each with its source.</p></div>
-    </div>
-    <p style="margin:16px 0 0">
-      <span class="pill" style="border-color:#5aa469;color:#b7e3bf">Literature-sourced</span>
-      <span class="pill">Calibrated (relative surrogate)</span>
-      <span class="pill blue">Measured off the 3-D model</span>
-      <span class="pill" style="border-color:#c98a3a;color:#e9cfa8">Estimated — needs lab validation</span>
-    </p>
-    <div class="note" style="margin-top:18px"><b>Validation roadmap.</b> There is no
-      mangrove-specific root-force data in the literature, so the root-pressure constants are
-      estimates. Industry deployment requires <b>physical prototype testing</b> — growing real
-      propagules in scored 4-piece pods of each candidate material under tidal wetting and
-      recording the actual break timing — to replace the estimates (via Calibration Mode) with
-      measured values.</div>
-  </div>
-</section>
-
-<section>
-  <div class="wrap">
-    <h2><span class="num">06 · run it</span>The live, interactive app</h2>
-    <div class="note">This site is a static showcase. The live app — with sliders to change the
-      perforation pattern, growth, and failure parameters and re-run instantly — is a Python
-      (Flask) program, so it runs on your machine, not on GitHub Pages.</div>
-    <ol class="steps" style="margin-top:18px">
-      <li>Clone the repo and enter it.</li>
-      <li>Create the environment and install deps:
-        <pre>py -m venv .venv
-.venv\Scripts\python -m pip install -r requirements.txt</pre></li>
-      <li>Launch the app (or double-click <code>start_web.bat</code>):
-        <pre>.venv\Scripts\python webapp\app.py</pre>
-        then open <code>http://127.0.0.1:5000</code>.</li>
-    </ol>
-    <p class="lead" style="margin-top:16px">Want the live app hosted online too? It can be deployed
-      to any Python host (Render, Railway, Fly.io, PythonAnywhere) — GitHub Pages alone can't run it.</p>
-  </div>
-</section>
-
-<footer>
-  <div class="wrap">Built with trimesh · rhino3dm · numpy/scipy · Plotly · Flask.
-    Reduced-order engineering surrogate — calibrated for relative comparison, not FEA.</div>
-</footer>
-
+<script src="data/pod.js?v=8"></script>
+<script src="static/engine.js?v=8"></script>
+<script src="static/app.js?v=8"></script>
 </body>
 </html>

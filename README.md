@@ -74,6 +74,15 @@ Then run the four steps (each writes to `outputs/`):
 
 ## Interactive web app (local host)
 
+> **Live in your browser (no install):** the whole tool now also runs **100%
+> client-side** at **https://antalneu.github.io/mangrove-pod-sim/** — the engine
+> (growth, pressure, materials, species, Monte-Carlo, tube/seam/exploded geometry)
+> is ported to JavaScript in `docs/`, so GitHub Pages serves it with no backend.
+> The Flask app below is the same thing driven by the original Python engine; use
+> it for full-fidelity runs. To preview the static build locally:
+> `.venv\Scripts\python serve_docs.py` → http://127.0.0.1:8010 (or regenerate its
+> geometry with `python export_geometry.py`).
+
 A Flask app lets you drive the whole simulation from the browser — spin the pod
 in 3-D, adjust the perforation / growth / failure parameters with sliders, and
 watch where and when it breaks.

@@ -12,6 +12,12 @@
       "runtimeExecutable": ".venv/Scripts/python.exe",
       "runtimeArgs": ["-m", "http.server", "8000", "--directory", "docs"],
       "port": 8000
+    },
+    {
+      "name": "docs-app",
+      "runtimeExecutable": ".venv/Scripts/python.exe",
+      "runtimeArgs": ["serve_docs.py"],
+      "port": 8010
     }
   ]
 }

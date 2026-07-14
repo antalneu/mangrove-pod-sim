@@ -22,6 +22,8 @@ sys.path.insert(0, ROOT)
 
 from mangrovesim.podmesh import PodMesh
 from mangrovesim import growth, perforation as perf, pressure as pr, montecarlo as mc, viz
+from mangrovesim import materials as materials_mod, species as species_mod, provenance
+from mangrovesim.physical import PhysicalContext
 
 app = Flask(__name__)
 STATIC = os.path.join(os.path.dirname(__file__), "static")
@@ -55,13 +57,19 @@ def build_pattern(cfg):
     """Build a PerforationPattern from a request config dict."""
     kind = cfg.get("pattern", "as-drawn")
     if kind == "as-drawn":
-        return perf.PerforationPattern.detected(POD, name="as-drawn")
+        pat = perf.PerforationPattern.detected(POD, name="as-drawn")
+        if cfg.get("seam_score") not in (None, ""):
+            pat.seam_score = float(cfg["seam_score"])
+        if cfg.get("seam_width_deg") not in (None, ""):
+            pat.seam_width_deg = float(cfg["seam_width_deg"])
+        return pat
     kw = {}
     for key in ("n_slots",):
         if cfg.get(key) is not None:
             kw[key] = int(cfg[key])
     for key in ("slot_length_frac", "slot_width_deg", "slot_z_center_frac",
-                "theta_offset_deg", "split_score", "split_depth_frac"):
+                "theta_offset_deg", "split_score", "split_depth_frac",
+                "seam_score", "seam_width_deg"):
         if cfg.get(key) is not None and cfg.get(key) != "":
             kw[key] = float(cfg[key])
     kw["align"] = cfg.get("align", "feet")
@@ -86,6 +94,11 @@ def sim_params(cfg):
     if cfg.get("n_time_steps"):
         sp.n_time_steps = int(cfg["n_time_steps"])
     return sp
+
+
+def physical_ctx(cfg):
+    """Build the physical (material/species/root-pressure/calibration) context."""
+    return PhysicalContext.from_config(cfg)
 
 
 def jgz(obj):
@@ -150,6 +163,29 @@ def api_features():
     })
 
 
+@app.route("/api/materials")
+def api_materials():
+    return jgz({"materials": materials_mod.materials_payload(),
+                "default": materials_mod.DEFAULT_MATERIAL})
+
+
+@app.route("/api/species")
+def api_species():
+    return jgz({"species": species_mod.species_payload(),
+                "default": species_mod.DEFAULT_SPECIES})
+
+
+@app.route("/api/provenance", methods=["POST", "GET"])
+def api_provenance():
+    cfg = request.get_json(force=True, silent=True) or {}
+    phys = physical_ctx(cfg)
+    reg = provenance.build_registry(
+        POD, material=phys.material, species=phys.species,
+        root_pressure_mpa=phys.root_pressure_mpa,
+        calibration={"active": phys.calibration_active})
+    return jgz(reg)
+
+
 @app.route("/api/base_figure")
 def api_base_figure():
     """Pod coloured by region (no simulation yet)."""
@@ -175,18 +211,20 @@ def api_simulate():
     pattern = build_pattern(cfg)
     gp = growth_params(cfg)
     sp = sim_params(cfg)
+    phys = physical_ctx(cfg)
     seed = int(cfg.get("seed", 1))
     show_roots = bool(cfg.get("show_roots", True))
     project_outer = bool(cfg.get("project_outer", False))
 
     wm = pr.WallModel(POD, pattern.build_fields(POD))
     roots = growth.grow(POD, gp, seed=seed)
-    res = pr.run_simulation(POD, wm, roots, sp)
+    res = pr.run_simulation(POD, wm, roots, sp, phys=phys)
 
     field = res.cum_stress_faces()
     intensity, cmax = vertex_intensity(field, project_outer=project_outer)
     roots_payload = root_segments(roots) if show_roots else None
 
+    T = sp.n_time_steps
     sites = []
     for i, lab in enumerate(res.site_labels):
         step = res.site_activation_step[i]
@@ -200,12 +238,18 @@ def api_simulate():
         "first_crack_step": None if not np.isfinite(res.first_crack_step) else int(res.first_crack_step),
         "first_crack_site": res.site_labels[res.first_crack_site] if res.first_crack_site >= 0 else None,
         "breakthrough_step": None if not np.isfinite(res.breakthrough_step) else int(res.breakthrough_step),
-        "n_time_steps": sp.n_time_steps,
+        "n_time_steps": T,
         "activation_order": [res.site_labels[s] for s in res.activation_order],
         "sites": sites,
         "pattern": pattern.name,
         "slots": [{"theta": s.theta_deg, "z_lo": s.z_lo, "z_hi": s.z_hi,
                    "width": s.width_deg} for s in pattern.slots],
+        # --- physical context: real elapsed time + material/species ---
+        "physical": phys.summary(),
+        "breakthrough_time": phys.elapsed_context(res.breakthrough_step, T),
+        "first_crack_time": phys.elapsed_context(res.first_crack_step, T),
+        "window_time": phys.elapsed_context(T, T),
+        "material_card": phys.material.as_dict(),
     }
     return jgz({"intensity": intensity, "cmax": cmax,
                     "roots": roots_payload, "stats": stats})
@@ -217,11 +261,12 @@ def api_montecarlo():
     pattern = build_pattern(cfg)
     gp = growth_params(cfg)
     sp = sim_params(cfg)
+    phys = physical_ctx(cfg)
     n_runs = int(cfg.get("n_runs", 24))
     n_runs = max(2, min(n_runs, 120))
 
     r = mc.run_montecarlo(POD, pattern, n_runs=n_runs, gparams=gp, sparams=sp,
-                          growth_jitter_scale=0.5)
+                          growth_jitter_scale=0.5, phys=phys)
     rep = growth.grow(POD, gp, seed=7)
     intensity, cmax = vertex_intensity(r.mean_cum_stress_faces)
     roots_payload = root_segments(rep)
@@ -246,6 +291,11 @@ def api_montecarlo():
                                  for x in r.breakthrough],
         "first_crack_samples": [None if not np.isfinite(x) else float(x)
                                 for x in r.first_crack],
+        # --- physical context ---
+        "physical": phys.summary(),
+        "breakthrough_time": phys.elapsed_context(r.mean_breakthrough(), sp.n_time_steps),
+        "window_time": phys.elapsed_context(sp.n_time_steps, sp.n_time_steps),
+        "material_card": phys.material.as_dict(),
     }
     return jgz({"intensity": intensity, "cmax": cmax,
                     "roots": roots_payload, "stats": stats})

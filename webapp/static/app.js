@@ -6,6 +6,7 @@ const plotDiv = $("plot");
 const DEFAULTS = {
   n_slots: 4, slot_length_frac: 0.22, slot_width_deg: 15,
   slot_z_center_frac: 0.55, align: "feet", split_score: 0.35,
+  seam_score: 0.0, seam_width_deg: 40, theta_offset_deg: 0,
 };
 const PRESETS = {
   "as-drawn": {},
@@ -18,9 +19,18 @@ const PRESETS = {
   "8-slots": { n_slots: 8 },
   "slots-over-splits": { align: "split" },
   "deep-base-score": { split_score: 0.7 },
+  "deep-seams": { seam_score: 0.6, seam_width_deg: 50 },
 };
-const PARAM_IDS = ["n_slots","slot_length_frac","slot_width_deg",
-                   "slot_z_center_frac","split_score"];
+// ids applyPreset writes (all pattern/seam knobs)
+const WRITE_IDS = ["n_slots","slot_length_frac","slot_width_deg","slot_z_center_frac",
+                   "split_score","seam_score","seam_width_deg","theta_offset_deg"];
+// ids that, when the user drags them, switch the preset to "custom"
+// (seam depth/width are intentionally excluded: they apply to ANY pattern,
+//  including the detected as-drawn one, so they should not force parametric mode)
+const TRIGGER_IDS = ["n_slots","slot_length_frac","slot_width_deg","slot_z_center_frac",
+                     "split_score","theta_offset_deg"];
+
+let MATERIALS = {}, SPECIES = {};
 
 // ---- slider <-> output sync -------------------------------------------------
 function syncOutputs() {
@@ -30,10 +40,10 @@ function syncOutputs() {
   });
 }
 document.querySelectorAll("input[type=range]").forEach(r =>
-  r.addEventListener("input", () => { $("o_"+r.id).textContent = r.value; }));
+  r.addEventListener("input", () => { const o=$("o_"+r.id); if(o) o.textContent = r.value; }));
 
 // changing a perforation slider -> switch to "custom"
-PARAM_IDS.concat(["align"]).forEach(id =>
+TRIGGER_IDS.concat(["align"]).forEach(id =>
   $(id).addEventListener("input", () => { $("preset").value = "custom"; }));
 
 $("preset").addEventListener("change", applyPreset);
@@ -41,7 +51,7 @@ function applyPreset() {
   const name = $("preset").value;
   if (name === "custom") { setParamBox(true); return; }
   const p = { ...DEFAULTS, ...(PRESETS[name] || {}) };
-  for (const k of PARAM_IDS) if ($(k)) $(k).value = p[k];
+  for (const k of WRITE_IDS) if ($(k)) $(k).value = p[k];
   $("align").value = p.align;
   setParamBox(name !== "as-drawn");
   syncOutputs();
@@ -49,6 +59,72 @@ function applyPreset() {
 function setParamBox(enabled) {
   $("paramBox").style.opacity = enabled ? "1" : "0.4";
   $("paramBox").style.pointerEvents = enabled ? "auto" : "none";
+}
+
+// ---- material / species cards ----------------------------------------------
+$("material").addEventListener("change", renderMaterial);
+$("species").addEventListener("change", renderSpecies);
+$("salinity_ppt").addEventListener("input", renderSpecies);
+
+function renderMaterial() {
+  const m = MATERIALS[$("material").value];
+  if (!m) return;
+  const bio = m.biodegradable
+    ? `<span class="tag lit">${m.biodegradability}</span>`
+    : `<span class="tag bad">${m.biodegradability}</span>`;
+  $("materialCard").innerHTML =
+    `<div class="matblurb">${m.blurb}</div>` +
+    row("Fracture strength", `${m.fracture_strength_mpa} MPa`,
+        `range ${m.fracture_range_mpa[0]}–${m.fracture_range_mpa[1]} · estimate`) +
+    row("Stiffness", `~${m.stiffness_mpa} MPa`, "estimate") +
+    row("Wet/tidal loss", `${(m.wet_strength_loss_per_month*100)}%/month`, "estimate") +
+    `<div class="matrow"><span class="mk">Biodegradability</span>${bio}</div>`;
+  const w = $("materialWarn");
+  if (m.warn) { w.classList.remove("hidden"); w.textContent = m.warn_text; }
+  else w.classList.add("hidden");
+}
+function row(k, v, u) {
+  return `<div class="matrow"><span class="mk">${k}</span>` +
+    `<span class="mv">${v}</span><span class="mu">${u||""}</span></div>`;
+}
+function renderSpecies() {
+  const s = SPECIES[$("species").value];
+  if (!s) return;
+  const sal = +$("salinity_ppt").value;
+  const [lo, hi] = s.salinity_optimum_ppt;
+  const inband = sal >= lo && sal <= hi;
+  let info = `<div class="matblurb"><i>${s.latin}</i> — ${s.blurb}</div>` +
+    row("Outplant readiness", `~${s.outplant_months} months`, "literature") +
+    row("Mature growth", `${s.mature_growth_m_yr[0]}–${s.mature_growth_m_yr[1]} m/yr`, "literature") +
+    row("Time window", `~${s.window_months} months`, "full step axis");
+  if (s.node_interval_days)
+    info += row("Node interval", `~${s.node_interval_days} days`, "biological clock");
+  info += row("Early root", s.early_root_note, "→ slow-start force ramp");
+  $("speciesInfo").innerHTML = info;
+  $("salNote").innerHTML = `Optimal early-growth salinity <b>${lo}–${hi} ppt</b>. ` +
+    (inband ? `<span class="ok">at ${sal} ppt: normal growth rate.</span>`
+            : `<span class="warnt">at ${sal} ppt: outside band → growth slowed, real elapsed time stretched.</span>`);
+}
+
+// ---- calibration mode -------------------------------------------------------
+["calibration_active","calibration_force_n","calibration_area_mm2"].forEach(id =>
+  $(id).addEventListener("input", renderCalib));
+function renderCalib() {
+  const on = $("calibration_active").checked;
+  $("calibBox").style.opacity = on ? "1" : "0.45";
+  $("calibBox").style.pointerEvents = on ? "auto" : "none";
+  const f = parseFloat($("calibration_force_n").value);
+  const a = parseFloat($("calibration_area_mm2").value);
+  const out = $("calibOut");
+  if (on && f > 0 && a > 0) {
+    const mpa = f / a;
+    out.innerHTML = `→ <b>${mpa.toFixed(2)} MPa</b> ` +
+      `<span class="tag meas">MEASURED — overrides the estimate</span>`;
+  } else if (on) {
+    out.textContent = "enter force (N) and contact area (mm²) to compute MPa";
+  } else {
+    out.textContent = "using the estimated root pressure above";
+  }
 }
 
 // ---- gather config ----------------------------------------------------------
@@ -63,6 +139,16 @@ function cfg(extra) {
     slot_z_center_frac: +$("slot_z_center_frac").value,
     align: $("align").value,
     split_score: +$("split_score").value,
+    seam_score: +$("seam_score").value,
+    seam_width_deg: +$("seam_width_deg").value,
+    theta_offset_deg: +$("theta_offset_deg").value,
+    material: $("material").value,
+    species: $("species").value,
+    salinity_ppt: +$("salinity_ppt").value,
+    root_pressure_mpa: +$("root_pressure_mpa").value,
+    calibration_active: $("calibration_active").checked,
+    calibration_force_n: $("calibration_force_n").value,
+    calibration_area_mm2: $("calibration_area_mm2").value,
     seed: +$("seed").value,
     down_bias: +$("down_bias").value,
     slot_bias: +$("slot_bias").value,
@@ -88,7 +174,7 @@ function themeLayout(layout) {
   layout.scene = Object.assign({
     xaxis: ax, yaxis: ax, zaxis: { ...ax },
     bgcolor: "rgba(0,0,0,0)", aspectmode: "data",
-    uirevision: "keep",  // preserve camera across updates
+    uirevision: "keep",
   }, layout.scene || {});
   if (layout.title) layout.title = { text: (layout.title.text || layout.title),
                                      font: { color: "#e7edf3", size: 15 } };
@@ -99,8 +185,6 @@ function drawFigure(fig) {
                { responsive: true, displaylogo: false });
 }
 
-// update just the stress colouring + root overlay on the already-drawn mesh
-// (keeps the mesh geometry & camera; tiny payloads)
 function updateStress(intensity, cmax, roots) {
   Plotly.restyle(plotDiv, {
     intensity: [intensity], cmin: [0], cmax: [cmax],
@@ -160,28 +244,47 @@ function card(k, v, u) {
   return `<div class="card"><div class="k">${k}</div>
           <div class="v">${v}</div><div class="u">${u||""}</div></div>`;
 }
+function phys_line(s) {
+  const p = s.physical || {};
+  return `<span class="chip">${p.material_name||""}</span>` +
+         `<span class="chip">${p.species_name||""}</span>` +
+         `<span class="chip">${(p.root_pressure_mpa!=null?p.root_pressure_mpa.toFixed(2):"?")} MPa` +
+         `${p.calibration_active?" (measured)":" (est.)"}</span>` +
+         (p.salinity_ppt!=null?`<span class="chip">${p.salinity_ppt} ppt</span>`:"");
+}
+function timeStrip(s) {
+  const t = s.breakthrough_time, w = s.window_time;
+  const el = $("timeline");
+  if (!t || t.label === "—") { el.classList.add("hidden"); return; }
+  el.classList.remove("hidden");
+  el.innerHTML = `<span class="tclock">⏱ breaks at <b>${t.label}</b></span>` +
+    `<span class="tsub">of a ${w? w.label : ""} window · ${phys_line(s)}</span>`;
+}
 function renderSingle(s) {
   const N = s.n_time_steps, bt = s.breakthrough_step, fc = s.first_crack_step;
+  const bm = s.breakthrough_time, fm = s.first_crack_time;
   const vd = $("verdict");
   if (bt != null) {
     vd.className = "verdict broke";
-    vd.innerHTML = `✔ Pod <b>breaks at step ${bt}</b> of ${N} — releases along the ` +
-      `slot→foot ligaments.`;
+    vd.innerHTML = `✔ Pod <b>breaks at step ${bt}</b> of ${N}` +
+      (bm && bm.months!=null ? ` — <b>${bm.label}</b>` : "") +
+      `, releasing along the seam / slot→foot ligaments.`;
   } else if (fc != null) {
     vd.className = "verdict nobreak";
-    vd.innerHTML = `⚠ Cracks start at step ${fc} but <b>no full breakthrough</b> ` +
-      `within ${N} steps.`;
+    vd.innerHTML = `⚠ Cracks start at step ${fc}` +
+      (fm && fm.months!=null ? ` (~${fm.label})` : "") +
+      ` but <b>no full breakthrough</b> within ${N} steps.`;
   } else {
     vd.className = "verdict nobreak";
     vd.innerHTML = `✖ No wall failure within ${N} steps — roots never overcome the wall.`;
   }
+  timeStrip(s);
   $("statcards").innerHTML =
-    card("Breakthrough", bt ?? "—", bt!=null?`of ${N} steps`:"no break") +
+    card("Breakthrough", bt ?? "—", bt!=null?(bm&&bm.months!=null?bm.label:`of ${N}`):"no break") +
     card("First crack", fc ?? "—", s.first_crack_site || "") +
     card("Root nodes", s.n_nodes, "grown") +
     card("Pattern", s.slots.length + " slots", s.pattern);
 
-  // per-site activation-step bar chart
   const labels = s.sites.map(x => x.label);
   const steps = s.sites.map(x => x.activation_step == null ? N : x.activation_step);
   const colors = s.sites.map(x => x.activation_step == null ? "#3a4550"
@@ -197,25 +300,28 @@ function renderSingle(s) {
     ? s.activation_order.map((l,i)=>`<span class="chip ${l.startsWith('slot')?'lig':'split'}">${i+1}. ${l}</span>`).join("")
     : "<span class='chip'>none</span>";
   $("detail").innerHTML = `<h3>Activation order</h3><div class="chips">${order}</div>`;
+  renderProvMini();
 }
 
 // ---- render Monte-Carlo results --------------------------------------------
 function renderMC(s) {
   const N = s.n_time_steps;
   const rel = Math.round(s.reliability * 100);
+  const bm = s.breakthrough_time;
   const vd = $("verdict");
   vd.className = "verdict " + (rel >= 80 ? "broke" : "nobreak");
   vd.innerHTML = `${rel>=80?"✔":"⚠"} Breaks in <b>${rel}% of ${s.n_runs} runs</b>` +
     (s.mean_breakthrough!=null ? ` — mean breakthrough <b>step ${s.mean_breakthrough.toFixed(1)}</b>` +
+      (bm && bm.months!=null ? ` (~${bm.label})` : "") +
       ` ± ${(s.std_breakthrough||0).toFixed(1)}.` : ".");
+  timeStrip(s);
   $("statcards").innerHTML =
     card("Reliability", rel + "%", `${s.n_runs} runs`) +
     card("Breakthrough", s.mean_breakthrough!=null? s.mean_breakthrough.toFixed(1):"—",
-         `mean ± ${(s.std_breakthrough||0).toFixed(1)}`) +
+         bm&&bm.months!=null? bm.label : `mean ± ${(s.std_breakthrough||0).toFixed(1)}`) +
     card("First crack", s.mean_first_crack!=null? s.mean_first_crack.toFixed(1):"—", "mean step") +
     card("Pattern", s.pattern, "");
 
-  // per-site activation-rate bar
   const labels = Object.keys(s.site_activation_rate);
   const rates = labels.map(l => s.site_activation_rate[l]*100);
   const colors = labels.map(l => l.startsWith("slot") ? "#d6564a" : "#5a8fce");
@@ -232,6 +338,7 @@ function renderMC(s) {
   $("detail").innerHTML =
     `<h3>First site to crack</h3><div class="chips">${fs}</div>` +
     `<h3>Most common activation orders</h3><table>${orders}</table>`;
+  renderProvMini();
 }
 
 function themeBar(xtitle, xrange) {
@@ -242,10 +349,69 @@ function themeBar(xtitle, xrange) {
     yaxis:{automargin:true}, bargap:0.28 };
 }
 
+// ---- data provenance panel --------------------------------------------------
+let LAST_PROV = null;
+$("provBtn").addEventListener("click", openProv);
+$("provClose").addEventListener("click", () => $("provPanel").classList.add("hidden"));
+async function openProv() {
+  try {
+    const reg = await post("/api/provenance", cfg());
+    LAST_PROV = reg;
+    renderProv(reg);
+    renderProvMini();
+  } catch(e){ alert("Could not load provenance:\n"+e.message); }
+  $("provPanel").classList.remove("hidden");
+}
+function renderProv(reg) {
+  $("provRoadmap").innerHTML = `<b>Validation roadmap.</b> ${reg.validation_roadmap}`;
+  const lv = reg.levels;
+  $("provCounts").innerHTML = Object.entries(reg.counts).map(([k,v]) =>
+    `<span class="lvchip" style="border-color:${lv[k].color};color:${lv[k].color}">` +
+    `${lv[k].label}: ${v}</span>`).join("");
+  // group constants
+  const groups = {};
+  reg.constants.forEach(c => { (groups[c.group] ||= []).push(c); });
+  let html = "";
+  for (const g of Object.keys(groups)) {
+    html += `<h4>${g}</h4><table class="provtbl">`;
+    for (const c of groups[g]) {
+      html += `<tr><td class="pn">${c.label}</td>` +
+        `<td class="pv">${c.value}${c.unit? " "+c.unit : ""}</td>` +
+        `<td><span class="lvtag" style="background:${c.level_color}22;` +
+        `border-color:${c.level_color};color:${c.level_color}">${c.level_label}</span></td>` +
+        `</tr>` +
+        `<tr class="pcite"><td colspan="3"><b>Source:</b> ${c.citation||"—"}` +
+        (c.note? ` &nbsp;·&nbsp; ${c.note}`:"") + `</td></tr>`;
+    }
+    html += `</table>`;
+  }
+  $("provTable").innerHTML = html;
+}
+function renderProvMini() {
+  if (!LAST_PROV) { $("provMini").innerHTML =
+    `<button class="linklike" onclick="openProv()">🔬 Open data provenance — see what's proven vs. assumed</button>`;
+    return; }
+  const lv = LAST_PROV.levels, c = LAST_PROV.counts;
+  const chips = Object.entries(c).map(([k,v]) =>
+    `<span class="lvchip sm" style="border-color:${lv[k].color};color:${lv[k].color}">${v} ${lv[k].label.split(" ")[0]}</span>`).join("");
+  $("provMini").innerHTML =
+    `<h3>Data provenance</h3><div class="chips">${chips}</div>` +
+    `<button class="linklike" onclick="openProv()">open full provenance panel →</button>`;
+}
+
 // ---- init -------------------------------------------------------------------
 async function init() {
   syncOutputs();
   applyPreset();
+  renderCalib();
+  try {
+    const m = await (await fetch("/api/materials")).json();
+    MATERIALS = m.materials;
+    const s = await (await fetch("/api/species")).json();
+    SPECIES = s.species;
+    renderMaterial(); renderSpecies();
+  } catch(e){ console.error("materials/species load failed", e); }
+  renderProvMini();
   try {
     const f = await (await fetch("/api/features")).json();
     $("podinfo").textContent =

@@ -61,16 +61,19 @@
   <div class="wrap">
     <div class="leaf">🌱</div>
     <div>
-      <h1>Mangrove Pod — Root-Growth Break Simulation</h1>
+      <h1>Mangrove Pod — Root-Growth Break Design Tool</h1>
       <p>A physics-flavoured simulation on the real 3-D seed-pod geometry: grow the
         sapling's roots, press them against the pod wall, and predict where and when
-        the pod tears apart at its perforations so it reliably breaks away.</p>
+        the pod tears apart at its seams so it reliably breaks away — now with material
+        and species comparison, real-time break estimates, and honestly labelled data
+        provenance.</p>
       <div class="stats">
         <span class="stat"><b>20,830</b> triangles</span>
-        <span class="stat"><b>4</b> waist slots</span>
-        <span class="stat"><b>4</b> base feet</span>
+        <span class="stat"><b>4</b> quarter-piece seams</span>
+        <span class="stat"><b>3</b> materials</span>
+        <span class="stat"><b>2</b> species</span>
         <span class="stat"><b>100%</b> break reliability</span>
-        <span class="stat"><b>~step 82</b> mean breakthrough</span>
+        <span class="stat"><b>provenance</b>-tagged constants</span>
       </div>
     </div>
   </div>
@@ -135,7 +138,45 @@
 
 <section>
   <div class="wrap">
-    <h2><span class="num">05 · run it</span>The live, interactive app</h2>
+    <h2><span class="num">05 · design tool</span>Materials, species &amp; honest provenance</h2>
+    <p class="lead">The tool doubles as an <b>industry design explorer</b>: compare real
+      pod materials and propagule species, read break timing in real months, and treat the
+      pod as <b>4 seam-defined quarter-pieces</b> (rim → slot → foot) with adjustable seam
+      depth/width/offset. Crucially, <b>every constant is labelled by how well-grounded it
+      is</b> — nothing assumed is shown as fact.</p>
+    <div class="cards">
+      <div class="card"><h3>🧱 Materials</h3><p><b>Clay · Concrete · Bioplastic</b>, each with
+        strength, stiffness, wet/tidal degradation and a biodegradability flag. Concrete is
+        flagged with a visible warning as the least biodegradable. All values are labelled
+        <i>engineering estimates requiring lab verification</i>.</p></div>
+      <div class="card"><h3>🌏 Species &amp; real time</h3><p><i>Rhizophora mangle</i> and
+        <i>Avicennia marina</i>: the step axis maps to real weeks/months, root force ramps up
+        <b>slowly at first</b> (matching early root biology), and salinity modifies growth rate.</p></div>
+      <div class="card"><h3>⚖️ Root pressure + calibration</h3><p>Grounded default
+        <b>0.5–1.0 MPa</b> from general tree-root biomechanics (not mangrove-specific).
+        <b>Calibration Mode</b> lets a measured load-cell force (N) override the estimate.</p></div>
+      <div class="card"><h3>🔬 Data provenance</h3><p>A permanent panel lists every constant as
+        <i>Literature-sourced</i>, <i>Estimated — needs lab validation</i>, <i>Measured off the
+        model</i>, or <i>Calibrated surrogate</i>, each with its source.</p></div>
+    </div>
+    <p style="margin:16px 0 0">
+      <span class="pill" style="border-color:#5aa469;color:#b7e3bf">Literature-sourced</span>
+      <span class="pill">Calibrated (relative surrogate)</span>
+      <span class="pill blue">Measured off the 3-D model</span>
+      <span class="pill" style="border-color:#c98a3a;color:#e9cfa8">Estimated — needs lab validation</span>
+    </p>
+    <div class="note" style="margin-top:18px"><b>Validation roadmap.</b> There is no
+      mangrove-specific root-force data in the literature, so the root-pressure constants are
+      estimates. Industry deployment requires <b>physical prototype testing</b> — growing real
+      propagules in scored 4-piece pods of each candidate material under tidal wetting and
+      recording the actual break timing — to replace the estimates (via Calibration Mode) with
+      measured values.</div>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <h2><span class="num">06 · run it</span>The live, interactive app</h2>
     <div class="note">This site is a static showcase. The live app — with sliders to change the
       perforation pattern, growth, and failure parameters and re-run instantly — is a Python
       (Flask) program, so it runs on your machine, not on GitHub Pages.</div>

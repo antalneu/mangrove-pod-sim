@@ -83,3 +83,85 @@ button:disabled{opacity:.5;cursor:wait}
 #detail td{padding:3px 6px;border-bottom:1px solid var(--line)}
 #detail td:last-child{text-align:right;color:var(--text);font-variant-numeric:tabular-nums}
 .ord{color:var(--text)}
+
+/* ---- header right / provenance button ---- */
+.headright{display:flex;align-items:center;gap:16px}
+button.ghost{background:transparent;border:1px solid var(--line);color:var(--muted);
+  font-size:12.5px;font-weight:600;padding:8px 12px}
+button.ghost:hover{border-color:var(--accent);color:var(--text);background:transparent}
+
+/* ---- subheads / tags ---- */
+.subhead{margin:16px 0 4px;font-size:11px;text-transform:uppercase;letter-spacing:.05em;
+  color:var(--accent2)}
+.tag{display:inline-block;font-size:10px;font-weight:700;padding:1px 7px;border-radius:10px;
+  border:1px solid var(--line);vertical-align:middle;text-transform:uppercase;letter-spacing:.03em}
+.tag.est{border-color:var(--accent2);color:var(--accent2)}
+.tag.lit{border-color:var(--accent);color:#b7e3bf}
+.tag.bad{border-color:var(--red);color:#f0b3ac}
+.tag.meas{border-color:#48c9b0;color:#48c9b0}
+.estnote{font-size:11px;color:var(--accent2);line-height:1.5;margin:10px 0 0;
+  background:rgba(201,138,58,.09);border:1px solid rgba(201,138,58,.4);border-radius:8px;padding:8px 10px}
+
+/* ---- material / species cards ---- */
+.matcard{margin-top:10px;background:var(--panel2);border:1px solid var(--line);
+  border-radius:9px;padding:11px}
+.matblurb{font-size:12px;color:var(--muted);line-height:1.5;margin-bottom:8px}
+.matrow{display:flex;align-items:baseline;gap:8px;font-size:12px;padding:3px 0;
+  border-top:1px solid rgba(47,57,69,.5)}
+.matrow:first-of-type{border-top:none}
+.mk{color:var(--muted);flex:0 0 42%}
+.mv{color:var(--text);font-weight:600;font-variant-numeric:tabular-nums}
+.mu{color:var(--accent2);font-size:10.5px;margin-left:auto;text-align:right}
+.warn{background:rgba(214,86,74,.14);border:1px solid var(--red);color:#f6c6c0;
+  border-radius:9px;padding:11px 12px;margin-top:10px;font-size:12px;line-height:1.55;font-weight:600}
+.ok{color:#b7e3bf}
+.warnt{color:#f0b3ac}
+
+/* ---- calibration ---- */
+.calib{margin-top:12px}
+.calibbox{margin-top:8px;padding:10px;background:var(--panel2);border:1px solid var(--line);
+  border-radius:9px}
+.calibbox label{margin:6px 0}
+.calibout{margin-top:8px;font-size:12px;color:var(--muted);line-height:1.6}
+
+/* ---- time strip ---- */
+.timeline{margin-top:12px;background:rgba(90,143,206,.10);border:1px solid var(--blue);
+  border-radius:9px;padding:10px 12px}
+.timeline.hidden{display:none}
+.tclock{display:block;font-size:14px;color:#bcd6f2;font-weight:600}
+.tsub{display:block;font-size:11px;color:var(--muted);margin-top:4px}
+.tsub .chip{margin:2px 3px 0 0}
+
+.modelnote{position:absolute;left:12px;bottom:10px;font-size:11px;color:var(--muted);
+  background:rgba(14,18,22,.6);border:1px solid var(--line);border-radius:6px;padding:4px 9px}
+
+/* ---- provenance mini + link ---- */
+.provmini{margin-top:18px;padding-top:14px;border-top:1px solid var(--line)}
+.linklike{background:none;border:none;color:var(--accent);font-size:12px;font-weight:600;
+  padding:8px 0 0;cursor:pointer}
+.linklike:hover{color:#6cb87a;background:none;border:none}
+.lvchip{display:inline-block;font-size:11px;font-weight:600;border:1px solid var(--line);
+  border-radius:20px;padding:3px 10px;margin:3px 4px 0 0}
+.lvchip.sm{font-size:10px;padding:2px 8px}
+
+/* ---- provenance panel (overlay drawer) ---- */
+.provpanel{position:fixed;inset:0;background:rgba(6,9,12,.72);z-index:50;
+  display:flex;justify-content:flex-end}
+.provpanel.hidden{display:none}
+.provinner{width:min(720px,94vw);height:100%;overflow-y:auto;background:var(--panel);
+  border-left:1px solid var(--line);padding:22px 26px}
+.provtop{display:flex;justify-content:space-between;align-items:center;gap:12px}
+.provtop h2{margin:0;color:var(--text);text-transform:none;letter-spacing:0;font-size:18px}
+.roadmap{margin:16px 0;background:rgba(201,138,58,.10);border:1px solid var(--accent2);
+  border-radius:10px;padding:14px 16px;font-size:13px;line-height:1.6;color:#e9cfa8}
+.provcounts{margin:6px 0 14px}
+.provinner h4{margin:20px 0 6px;font-size:12px;text-transform:uppercase;letter-spacing:.06em;
+  color:var(--accent)}
+.provtbl{width:100%;border-collapse:collapse;font-size:12.5px}
+.provtbl td{padding:6px 8px;vertical-align:top}
+.provtbl tr:not(.pcite){border-top:1px solid var(--line)}
+.provtbl .pn{color:var(--text);font-weight:600;width:45%}
+.provtbl .pv{color:var(--text);font-variant-numeric:tabular-nums;white-space:nowrap}
+.pcite td{color:var(--muted);font-size:11.5px;line-height:1.5;padding-top:0;padding-bottom:8px}
+.lvtag{display:inline-block;font-size:10px;font-weight:700;padding:2px 8px;border-radius:10px;
+  border:1px solid;white-space:nowrap}

@@ -10,8 +10,17 @@ gentle pull from a planting team).
 > **Model status:** this is a transparent *reduced-order* engineering surrogate,
 > not finite-element analysis. It is calibrated to be physically sensible and to
 > respond correctly to design changes, and every assumption is exposed as a
-> tunable parameter. Use it for *relative* comparison of perforation designs and
-> for locating failure hot-spots — not for absolute load numbers.
+> tunable parameter. Use it for *relative* comparison of perforation/material/
+> species designs and for locating failure hot-spots — not for absolute load
+> numbers.
+>
+> **Honesty first (industry design tool).** Every physical constant is tagged in a
+> permanent **Data-provenance panel** as *Literature-sourced*, *Estimated — needs
+> lab validation*, *Measured off the 3-D model*, or *Calibrated (relative
+> surrogate)*. Nothing assumed is presented as verified fact. In particular, there
+> is **no mangrove-specific root-force data in the literature**, so the root
+> pressure default (0.5–1.0 MPa) is an estimate borrowed from general tree-root
+> biomechanics — see the **Validation roadmap** below.
 
 ---
 
@@ -55,6 +64,7 @@ Then run the four steps (each writes to `outputs/`):
 .venv\Scripts\python run_02_simulate.py 2         # one growth + heatmaps (arg = seed)
 .venv\Scripts\python run_03_montecarlo.py 40      # N randomized runs + stats
 .venv\Scripts\python run_04_perforation_sweep.py 24  # compare pattern variants
+.venv\Scripts\python run_05_material_species.py 20   # per-(species x material) break report
 ```
 
 (`py` is the Windows launcher for the real Python 3.11 install; the bare
@@ -77,7 +87,9 @@ watch where and when it breaks.
 or just double-click **`start_web.bat`**, then open **http://127.0.0.1:5000**.
 
 - **Left panel** — perforation preset or custom sliders (slot count / length /
-  width / height / alignment / base score), root-growth bias, and
+  width / height / alignment / base score), **quarter-piece seam** depth / width /
+  rotational offset, **material** (Clay / Concrete / Bioplastic), **species &
+  salinity**, **root pressure (MPa) + Calibration Mode**, root-growth bias, and
   pressure/failure knobs (contact stiffness, time steps, planting-team pull).
 - **Centre** — the real pod mesh in 3-D. "▶ Run simulation" grows one root system
   and paints the cumulative wall-stress heatmap with the roots overlaid; toggles
@@ -89,6 +101,74 @@ or just double-click **`start_web.bat`**, then open **http://127.0.0.1:5000**.
 
 The pod mesh loads once at startup; each run takes a fraction of a second, a
 Monte-Carlo batch a few seconds.
+
+---
+
+## Industry design-tool layer (materials · species · provenance · calibration)
+
+On top of the geometry/growth/failure engine, the tool lets you compare **real
+material choices** and **real propagule species**, reports break timing in **real
+elapsed months**, and keeps every constant honestly labelled. The pod is treated
+as **4 seam-defined quarter-pieces** (rim → waist slot → base foot) with
+adjustable **seam depth / width / rotational offset**.
+
+### 1 · Material presets — *all values are engineering estimates, lab-verification required*
+
+| material | fracture strength (flexural) | stiffness | wet/tidal loss | biodegradable |
+|---|---|---|---|---|
+| **Bioplastic** (marine-degradable PHA/PLA) | ~55 MPa (40–75) | ~2 800 MPa | ~5 %/mo | ✅ marine-biodegradable |
+| **Clay** (low-fired earthenware) | ~15 MPa (8–25) | ~8 000 MPa | ~3 %/mo | ✅ inert mineral, benign |
+| **Concrete** (unreinforced, thin-wall) | ~4 MPa (3–6) | ~25 000 MPa | ~0.4 %/mo | ⚠️ **not biodegradable — persistent** |
+
+Concrete carries a visible **UI warning**: it is the least biodegradable option,
+persists in the marine environment, and can leach alkalinity — it may crack at a
+scored seam, but the fragments stay behind. A material acts on the physics through
+two *relative* multipliers (capacity ∝ strength, and a wet-degradation term over
+elapsed time), anchored so **bioplastic reproduces the original calibration**.
+
+### 2 · Species growth calibration (real time, slow-start roots)
+
+| species | outplant | mature growth | biological clock | optimal salinity |
+|---|---|---|---|---|
+| **Rhizophora mangle** | ~12 mo | 1–1.5 m/yr | slow-start roots (~0.1 mm at 4 wk, *R. mucronata*) | 5–25 ppt |
+| **Avicennia marina** | ~10 mo | 0.6–1 m/yr | node interval ~37–38 days | 5–15 ppt |
+
+The step axis maps to **real weeks/months** (shown alongside the step counter),
+root **force ramps up slowly at first** (concave, not linear — matching early root
+biology), and **salinity** outside the optimal band slows growth so the same steps
+span more real time. Biological *timing* figures are literature-sourced (verify
+the primary source before production use); the *force* they translate into is the
+tree-root estimate, not a mangrove measurement.
+
+### 3 · Root pressure — grounded default + Calibration Mode
+
+Default working range **0.5–1.0 MPa**, labelled *"estimated from general tree-root
+biomechanics (not mangrove-specific)"* — a starting point, not a measurement.
+**Calibration Mode** lets you enter a real load-cell force (N) and root-tip
+contact area (mm²); the tool converts it to MPa (1 MPa = 1 N/mm²), re-tags it
+**MEASURED**, and uses it in place of the estimate.
+
+### 4 · Data-provenance panel
+
+A permanent, on-demand panel (🔬 in the header) lists **every constant** grouped by
+role, each with its value, source/citation, and a colour-coded provenance tag, so
+anyone making a production decision sees exactly what is proven vs. assumed.
+
+### 5 · Validation roadmap
+
+**Industry deployment requires physical prototype testing.** Published data covers
+mangrove growth *timing* well, but not the mechanical *force* a propagule root
+exerts against a substrate. Recommended path: grow real propagules of each
+candidate species inside scored 4-piece pods of each candidate material, under
+representative tidal wetting, and record the actual break timing and which seam
+releases first. Feed the measured force back through **Calibration Mode** to turn
+this relative design explorer into a quantitatively validated predictor.
+
+### CLI report
+
+```powershell
+.venv\Scripts\python run_05_material_species.py 20   # per-(species x material) break table + provenance
+```
 
 ## Detected geometry (from your model)
 
@@ -135,11 +215,15 @@ See `outputs/04_perforation_comparison.png` and `outputs/03_results_analysis.png
 mangrovesim/
   podmesh.py      load .3dm -> mesh, detect waist/slots/feet/thickness, region masks
   growth.py       space-colonization root growth (GrowthParams)
-  perforation.py  parametric slots + base split-lines -> per-face strength field
-  pressure.py     inflate roots over time -> wall stress -> failure (SimParams)
+  perforation.py  parametric slots + base split-lines + quarter-piece seams -> strength field
+  pressure.py     inflate roots over time -> wall stress -> failure (SimParams, optional phys)
   montecarlo.py   many randomized runs -> aggregated statistics; compare_patterns
+  materials.py    Clay / Concrete / Bioplastic presets (all engineering estimates)
+  species.py      Rhizophora / Avicennia growth calibration (real-time, slow-start ramp)
+  physical.py     material/species/root-pressure -> per-step drive & capacity multipliers; Calibration Mode
+  provenance.py   registry of every constant tagged proven vs. estimated; validation roadmap
   viz.py          matplotlib renders + Plotly interactive heatmaps
-run_01..run_04    scripts for the four stages
+run_01..run_05    scripts for the pipeline stages (05 = per-material/species report)
 webapp/           Flask web app (app.py) + static/ + templates/
 start_web.bat     one-click launcher for the web app (Windows)
 pod_mesh.ply      cached welded mesh (regenerated from the .3dm on first run)
@@ -191,3 +275,8 @@ outputs/          all generated figures, interactive HTML, and pod_features.json
 - Absolute stiffness/strength constants are calibrated for sensible *relative*
   behaviour, not measured material properties. Plug in real values (and ideally a
   real FEA cross-check) before trusting absolute margins.
+- The **material and species constants are engineering estimates**, not datasheet
+  or pod-measured values; the material→physics coupling is a *relative* mapping,
+  not calibrated absolute physics. The Data-provenance panel tags each constant,
+  and the Validation-roadmap explains what physical testing is required before
+  these drive a real production decision.

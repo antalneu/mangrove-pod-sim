@@ -161,10 +161,25 @@ def _node_radius(pipe_r, age, sp: SimParams):
     return pipe_r * mature * swell
 
 
-def run_simulation(pod, wallmodel: WallModel, roots, sparams: Optional[SimParams] = None):
+def run_simulation(pod, wallmodel: WallModel, roots, sparams: Optional[SimParams] = None,
+                   phys=None):
+    """Run the time-stepped pressure/failure simulation.
+
+    `phys` (optional physical.PhysicalContext) applies *relative* per-step
+    multipliers derived from the chosen material/species/root-pressure:
+        drive    scales the applied wall pressure (root pressure x growth ramp)
+        capacity scales the wall strength (material strength x wet degradation)
+    With phys=None both default to 1.0 and the engine behaves exactly as before.
+    """
     sp = sparams or SimParams()
     wm = wallmodel
     T = sp.n_time_steps
+
+    if phys is not None:
+        drive_mult, cap_mult, _months = phys.per_step(T)
+    else:
+        drive_mult = np.ones(T)
+        cap_mult = np.ones(T)
 
     P = roots.positions()
     pipe = roots.radius
@@ -220,7 +235,9 @@ def run_simulation(pod, wallmodel: WallModel, roots, sparams: Optional[SimParams
         radial_press = sp.contact_stiffness * np.maximum(pen, 0.0)
         # base wedging: root ball splaying the conical base / feet
         wedge = np.where(base_node, sp.base_wedge * rad, 0.0)
-        press_node = np.where(alive, radial_press + wedge, 0.0)
+        # per-step drive multiplier: root pressure (MPa/reference) x growth ramp
+        dmult = drive_mult[t - 1]
+        press_node = np.where(alive, radial_press + wedge, 0.0) * dmult
         # spread each node's pressure over its wall contact patch
         step_press = M.dot(press_node)
         # optional external pull assist (planting team) on the upper wall
@@ -230,10 +247,13 @@ def run_simulation(pod, wallmodel: WallModel, roots, sparams: Optional[SimParams
         peak = np.maximum(peak, step_press)
         cum += step_press * sp.dt
         # cumulative feet-splaying wedge load -> hoop tension at the split-lines
-        base_wedge_cum += float(np.where(alive, wedge, 0.0).sum()) * sp.dt
+        base_wedge_cum += float(np.where(alive, wedge, 0.0).sum()) * dmult * sp.dt
 
+        # per-step capacity multiplier: material strength x wet/tidal degradation
+        cmult = cap_mult[t - 1]
+        eff_strength = wm.strength_in * cmult
         # per-face failure: local stress (x concentration) exceeds local capacity.
-        face_failed = (cum * wm.scf_in) >= wm.strength_in
+        face_failed = (cum * wm.scf_in) >= eff_strength
         for si in range(wm.n_sites):
             fs = wm.site_faces[si]
             if len(fs) == 0:
@@ -244,8 +264,8 @@ def run_simulation(pod, wallmodel: WallModel, roots, sparams: Optional[SimParams
                 failed_bands = np.unique(bands[face_failed[fs]])
                 ratio = len(failed_bands) / wm.site_nbands[si]
             else:
-                # split-line: feet-splaying hoop tension vs (scored) capacity
-                ratio = (sp.hoop_factor * base_wedge_cum) / wm.split_capacity[si]
+                # split-line: feet-splaying hoop tension vs (scored, degraded) capacity
+                ratio = (sp.hoop_factor * base_wedge_cum) / (wm.split_capacity[si] * cmult)
             ratio_hist[t - 1, si] = ratio
             thresh = sp.span_frac if wm.is_ligament[si] else 1.0
             if ratio >= thresh and not np.isfinite(activation_step[si]):

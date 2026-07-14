@@ -58,6 +58,15 @@ class PerforationPattern:
     split_lines: List[SplitLine]
     material: MaterialParams = field(default_factory=MaterialParams)
     name: str = "pattern"
+    # --- seam / quarter-piece design ---
+    # The pod is built as 4 quarter-pieces joined by vertical seams that run
+    # rim -> waist slot -> base foot (each seam sits on a slot meridian). A seam
+    # is a manufacturing score line: `seam_score` in [0,1] pre-weakens the wall
+    # along it (0 = none, 1 = fully pre-cut), over an angular band `seam_width_deg`
+    # wide, so a deeper/wider seam gives way sooner. Rotational offset of the whole
+    # seam set is the pattern's theta_offset (see parametric()).
+    seam_score: float = 0.0
+    seam_width_deg: float = 0.0        # 0 => default to ~2x the ligament half-width
 
     # ---------- constructors ---------- #
     @classmethod
@@ -70,11 +79,14 @@ class PerforationPattern:
     def parametric(cls, pod, n_slots=4, slot_length_frac=None, slot_width_deg=None,
                    slot_z_center_frac=None, theta_offset_deg=0.0,
                    align="feet", split_depth_frac=1.3, split_score=0.35,
+                   seam_score=0.0, seam_width_deg=0.0,
                    name="parametric", **mat) -> "PerforationPattern":
         """Build a fresh slot + split pattern.
 
         align="feet"  -> slots centred over the feet (default, matches as-drawn)
         align="split" -> slots centred over the between-feet split-lines
+        seam_score / seam_width_deg -> depth/width of the vertical quarter-piece
+        seams; theta_offset_deg -> their rotational offset.
         """
         f = pod.features
         H = f.height
@@ -116,7 +128,8 @@ class PerforationPattern:
         splits = [SplitLine(theta_deg=float(a), depth_frac=split_depth_frac,
                             score=split_score) for a in split_th]
         return cls(slots=slots, split_lines=splits,
-                   material=MaterialParams(**mat), name=name)
+                   material=MaterialParams(**mat), name=name,
+                   seam_score=seam_score, seam_width_deg=seam_width_deg)
 
     # ---------- field construction ---------- #
     def build_fields(self, pod) -> "WallFields":
@@ -153,7 +166,10 @@ class PerforationPattern:
             # ligament = load-bearing bridge between the slot bottom and the top
             # of the foot; this is the wall that must tear for the petal to release.
             # A wider slot removes more circumferential material, weakening it.
+            # A wider seam band widens the load-bearing bridge it defines.
             halfw = max(m.ligament_halfwidth_deg, s.width_deg * 0.8)
+            if self.seam_width_deg > 0:
+                halfw = max(halfw, self.seam_width_deg / 2.0)
             lig = inner & (angdiff(th, s.theta_deg) < halfw) & \
                 (z < s.z_lo) & (z > z_base_top)
             ligament[lig] = si
@@ -173,6 +189,19 @@ class PerforationPattern:
             near = angdiff(th, sp.theta_deg) < 6.0
             low = z < z_base_top * sp.depth_frac
             weaken = np.maximum(weaken, np.where(near & low, sp.score, 0.0))
+
+        # vertical quarter-piece SEAMS: a manufacturing score line down each slot
+        # meridian (rim -> waist slot -> foot) that pre-weakens the wall along it.
+        seam_weaken = np.zeros(n)
+        if self.seam_score > 0:
+            seam_hw = (self.seam_width_deg / 2.0 if self.seam_width_deg > 0
+                       else m.ligament_halfwidth_deg)
+            for s in self.slots:
+                on_seam = inner & (angdiff(th, s.theta_deg) < seam_hw)
+                seam_weaken = np.maximum(seam_weaken,
+                                         np.where(on_seam, self.seam_score, 0.0))
+        weaken = np.maximum(weaken, seam_weaken)
+
         strength = (thickness * m.yield_stress * (1.0 - open_frac)
                     * (1.0 - weaken) * lig_width_scale)
         strength[~inner] = np.inf              # only inner wall carries root load

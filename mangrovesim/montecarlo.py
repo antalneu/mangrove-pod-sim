@@ -89,7 +89,8 @@ class MCResult:
 def run_montecarlo(pod, pattern: PerforationPattern, n_runs=40,
                    gparams: Optional[GrowthParams] = None,
                    sparams: Optional[SimParams] = None,
-                   base_seed=0, growth_jitter_scale=0.0, verbose=False) -> MCResult:
+                   base_seed=0, growth_jitter_scale=0.0, verbose=False,
+                   phys=None) -> MCResult:
     """Monte-Carlo over randomized growth (each run a different RNG seed).
 
     growth_jitter_scale > 0 also perturbs a couple of growth parameters run to
@@ -117,7 +118,7 @@ def run_montecarlo(pod, pattern: PerforationPattern, n_runs=40,
             gp.down_bias = float(np.clip(gparams.down_bias *
                                  (1 + growth_jitter_scale * rng.normal(0, 0.3)), 0.1, 1.0))
         rs = growth.grow(pod, gp, seed=base_seed * 1000 + k)
-        res = run_simulation(pod, wm, rs, sparams)
+        res = run_simulation(pod, wm, rs, sparams, phys=phys)
         first_crack[k] = res.first_crack_step
         breakthrough[k] = res.breakthrough_step
         first_site[k] = res.first_crack_site
@@ -143,11 +144,11 @@ def run_montecarlo(pod, pattern: PerforationPattern, n_runs=40,
 
 
 def compare_patterns(pod, patterns: List[PerforationPattern], n_runs=30,
-                     gparams=None, sparams=None, verbose=True) -> Dict[str, MCResult]:
+                     gparams=None, sparams=None, verbose=True, phys=None) -> Dict[str, MCResult]:
     results = {}
     for p in patterns:
         if verbose:
             print(f"[compare] {p.name} ...")
         results[p.name] = run_montecarlo(pod, p, n_runs=n_runs,
-                                         gparams=gparams, sparams=sparams)
+                                         gparams=gparams, sparams=sparams, phys=phys)
     return results

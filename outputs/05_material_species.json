@@ -1,0 +1,59 @@
+{
+  "n_runs": 6,
+  "rows": [
+    {
+      "species": "rhizophora",
+      "material": "clay",
+      "reliability": 100.0,
+      "mean_breakthrough_step": 76.66666666666667,
+      "mean_breakthrough_time": "~7.7 months",
+      "first_seam": "slot@88deg"
+    },
+    {
+      "species": "rhizophora",
+      "material": "concrete",
+      "reliability": 100.0,
+      "mean_breakthrough_step": 72.83333333333333,
+      "mean_breakthrough_time": "~7.3 months",
+      "first_seam": "slot@88deg"
+    },
+    {
+      "species": "rhizophora",
+      "material": "bioplastic",
+      "reliability": 100.0,
+      "mean_breakthrough_step": 80.66666666666667,
+      "mean_breakthrough_time": "~8.1 months",
+      "first_seam": "slot@88deg"
+    },
+    {
+      "species": "avicennia",
+      "material": "clay",
+      "reliability": 100.0,
+      "mean_breakthrough_step": 76.16666666666667,
+      "mean_breakthrough_time": "~7.0 months \u00b7 ~6 nodes",
+      "first_seam": "slot@88deg"
+    },
+    {
+      "species": "avicennia",
+      "material": "concrete",
+      "reliability": 100.0,
+      "mean_breakthrough_step": 72.5,
+      "mean_breakthrough_time": "~6.6 months \u00b7 ~5 nodes",
+      "first_seam": "slot@88deg"
+    },
+    {
+      "species": "avicennia",
+      "material": "bioplastic",
+      "reliability": 100.0,
+      "mean_breakthrough_step": 80.5,
+      "mean_breakthrough_time": "~7.4 months \u00b7 ~6 nodes",
+      "first_seam": "slot@88deg"
+    }
+  ],
+  "counts": {
+    "calibrated": 8,
+    "estimate": 6,
+    "geometry": 4,
+    "literature": 4
+  }
+}

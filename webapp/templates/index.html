@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Mangrove Pod — Root-Growth Break Simulator</title>
+<title>Mangrove Pod — Root-Growth Break Design Tool</title>
 <script src="/static/plotly.min.js"></script>
 <link rel="stylesheet" href="/static/style.css">
 </head>
@@ -12,22 +12,25 @@
   <div class="brand">
     <span class="leaf">🌱</span>
     <div>
-      <h1>Mangrove Pod — Root-Growth Break Simulator</h1>
+      <h1>Mangrove Pod — Root-Growth Break Design Tool</h1>
       <p id="podinfo">loading pod…</p>
     </div>
   </div>
-  <div class="legend">
-    <span><i style="background:#5aa469"></i>trumpet</span>
-    <span><i style="background:#4a76b5"></i>waist</span>
-    <span><i style="background:#d63b3b"></i>slot</span>
-    <span><i style="background:#b5834a"></i>feet</span>
+  <div class="headright">
+    <div class="legend">
+      <span><i style="background:#5aa469"></i>trumpet</span>
+      <span><i style="background:#4a76b5"></i>waist</span>
+      <span><i style="background:#d63b3b"></i>seam/slot</span>
+      <span><i style="background:#b5834a"></i>feet</span>
+    </div>
+    <button id="provBtn" class="ghost">🔬 Data provenance</button>
   </div>
 </header>
 
 <main>
   <aside id="controls">
     <section>
-      <h2>Perforation pattern</h2>
+      <h2>Perforation &amp; quarter-piece seams</h2>
       <label>Preset
         <select id="preset">
           <option value="as-drawn">As-drawn (detected)</option>
@@ -40,6 +43,7 @@
           <option value="8-slots">8 slots</option>
           <option value="slots-over-splits">Slots over splits</option>
           <option value="deep-base-score">Deep base score</option>
+          <option value="deep-seams">Deep quarter-piece seams</option>
           <option value="custom">Custom…</option>
         </select>
       </label>
@@ -56,6 +60,62 @@
           <select id="align"><option value="feet">feet</option><option value="split">splits (between feet)</option></select></label>
         <label>Base split score <output id="o_split_score">0.35</output>
           <input type="range" id="split_score" min="0" max="0.9" step="0.05" value="0.35"></label>
+      </div>
+      <div class="subhead">Vertical seams (4 quarter-pieces: rim → slot → foot)</div>
+      <label>Seam depth / score <output id="o_seam_score">0.0</output>
+        <input type="range" id="seam_score" min="0" max="0.9" step="0.05" value="0.0"></label>
+      <label>Seam width (deg) <output id="o_seam_width_deg">40</output>
+        <input type="range" id="seam_width_deg" min="10" max="80" step="2" value="40"></label>
+      <label>Seam rotational offset (deg) <output id="o_theta_offset_deg">0</output>
+        <input type="range" id="theta_offset_deg" min="-45" max="45" step="1" value="0"></label>
+    </section>
+
+    <section>
+      <h2>Material</h2>
+      <label>Pod material
+        <select id="material">
+          <option value="bioplastic">Bioplastic (marine-degradable)</option>
+          <option value="clay">Clay (low-fired earthenware)</option>
+          <option value="concrete">Concrete (unreinforced)</option>
+        </select>
+      </label>
+      <div id="materialWarn" class="warn hidden"></div>
+      <div id="materialCard" class="matcard"></div>
+      <p class="estnote">⚠ All material constants are <b>engineering estimates requiring lab
+        verification</b> — not datasheet or pod-measured values.</p>
+    </section>
+
+    <section>
+      <h2>Species &amp; environment</h2>
+      <label>Propagule species
+        <select id="species">
+          <option value="rhizophora">Rhizophora mangle</option>
+          <option value="avicennia">Avicennia marina</option>
+        </select>
+      </label>
+      <div id="speciesInfo" class="matcard"></div>
+      <label>Salinity (ppt) <output id="o_salinity_ppt">20</output>
+        <input type="range" id="salinity_ppt" min="0" max="40" step="1" value="20"></label>
+      <p class="hint" id="salNote">Optimal early-growth band shown per species; outside it,
+        growth slows and the same steps span more real time.</p>
+    </section>
+
+    <section>
+      <h2>Root force <span class="tag est">estimate</span></h2>
+      <label>Root growth pressure (MPa) <output id="o_root_pressure_mpa">0.75</output>
+        <input type="range" id="root_pressure_mpa" min="0.5" max="1.0" step="0.05" value="0.75"></label>
+      <p class="hint">Default 0.5–1.0 MPa is <b>estimated from general tree-root
+        biomechanics</b> (not mangrove-specific). Treat as a starting point pending
+        physical validation.</p>
+      <div class="calib">
+        <label class="chk"><input type="checkbox" id="calibration_active"> Calibration Mode — use a measured force</label>
+        <div id="calibBox" class="calibbox">
+          <label>Measured root force (N)
+            <input type="number" id="calibration_force_n" placeholder="e.g. 3.5" step="0.1" min="0"></label>
+          <label>Root-tip contact area (mm²)
+            <input type="number" id="calibration_area_mm2" value="5" step="0.5" min="0.1"></label>
+          <div id="calibOut" class="calibout">enter a load-cell reading to override the estimate</div>
+        </div>
       </div>
     </section>
 
@@ -98,16 +158,32 @@
   <div id="viewpane">
     <div id="plot"></div>
     <div id="overlay" class="hidden"><div class="spinner"></div><span id="overlayMsg">simulating…</span></div>
+    <div class="modelnote">Reduced-order engineering surrogate — <b>relative</b> comparison, not FEA.</div>
   </div>
 
   <aside id="results">
     <div id="verdict" class="verdict idle">Run a simulation to see where and when the pod breaks.</div>
+    <div id="timeline" class="timeline hidden"></div>
     <div id="statcards"></div>
     <h3>Break sites</h3>
     <div id="siteChart"></div>
     <div id="detail"></div>
+    <div id="provMini" class="provmini"></div>
   </aside>
 </main>
+
+<!-- permanent, on-demand Data Provenance panel -->
+<div id="provPanel" class="provpanel hidden">
+  <div class="provinner">
+    <div class="provtop">
+      <h2>🔬 Data provenance — what's proven vs. assumed</h2>
+      <button id="provClose" class="ghost">✕ close</button>
+    </div>
+    <div id="provRoadmap" class="roadmap"></div>
+    <div id="provCounts" class="provcounts"></div>
+    <div id="provTable"></div>
+  </div>
+</div>
 
 <script src="/static/app.js"></script>
 </body>

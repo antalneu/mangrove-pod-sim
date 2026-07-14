@@ -847,6 +847,47 @@ function explodedSectors(gapFrac = 0.30) {
 }
 
 // ---------------------------------------------------------------------------
+//  propagule / seedling body — fills the cavity (the pod is a thin shell; in
+//  reality it houses the propagule the roots grow from). A tapered spindle
+//  (surface of revolution) following the inner bore, pointed at the base.
+// ---------------------------------------------------------------------------
+function propaguleMesh(nTheta = 26, nZ = 48, fillFrac = 0.72) {
+  const H = POD.features.height;
+  const zTop = 0.955 * H, zBot = 0.06 * H;
+  const maxR = 1.35 * POD.features.inner_r_waist;
+  const X = [], Y = [], Z = [], I = [], J = [], K = [], ringStart = [];
+  for (let k = 0; k < nZ; k++) {
+    const t = k / (nZ - 1);
+    const z = zBot + (zTop - zBot) * t;
+    const botT = Math.min(1, t / 0.12);                         // pointed base
+    const topT = Math.min(1, Math.pow(Math.max(1 - t, 0) / 0.16, 0.7)); // rounded tip
+    const taper = Math.max(0, Math.min(botT, topT));
+    const r = Math.min(fillFrac * rInnerAt(z), maxR) * taper;
+    ringStart.push(X.length);
+    for (let j = 0; j < nTheta; j++) {
+      const a = 2 * Math.PI * j / nTheta;
+      X.push(r * Math.cos(a)); Y.push(r * Math.sin(a)); Z.push(z);
+    }
+  }
+  for (let k = 0; k < nZ - 1; k++) {
+    for (let j = 0; j < nTheta; j++) {
+      const j2 = (j + 1) % nTheta;
+      const a0 = ringStart[k] + j, a1 = ringStart[k] + j2, b0 = ringStart[k + 1] + j, b1 = ringStart[k + 1] + j2;
+      I.push(a0, a0); J.push(a1, b1); K.push(b1, b0);
+    }
+  }
+  const topC = X.length; X.push(0); Y.push(0); Z.push(zTop);
+  const botC = X.length; X.push(0); Y.push(0); Z.push(zBot);
+  for (let j = 0; j < nTheta; j++) {
+    const j2 = (j + 1) % nTheta;
+    I.push(topC); J.push(ringStart[nZ - 1] + j2); K.push(ringStart[nZ - 1] + j);
+    I.push(botC); J.push(ringStart[0] + j); K.push(ringStart[0] + j2);
+  }
+  const rnd = a => a.map(v => Math.round(v * 10) / 10);
+  return { x: rnd(X), y: rnd(Y), z: rnd(Z), i: I, j: J, k: K };
+}
+
+// ---------------------------------------------------------------------------
 //  base mesh trace (region-coloured) for the viewer
 // ---------------------------------------------------------------------------
 function regionLabels() {
@@ -1031,5 +1072,5 @@ window.ENGINE = {
   materials: () => ({ materials: Object.fromEntries(Object.entries(MATERIALS).map(([k, m]) => [k, materialCard(m)])), default: "bioplastic" }),
   species: () => ({ species: SPECIES, default: "rhizophora" }),
   provenance: buildRegistry,
-  baseMesh, seams: seamTubeMesh, exploded: explodedSectors,
+  baseMesh, seams: seamTubeMesh, exploded: explodedSectors, propagule: propaguleMesh,
 };

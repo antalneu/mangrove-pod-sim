@@ -159,11 +159,12 @@ const STRESS_SCALE = [[0.0,"#2f6f5e"],[0.35,"#e9c46a"],[0.7,"#e76f51"],[1.0,"#c1
 const CBAR = { len:0.6, thickness:14, x:0.98, xpad:0, ypad:0,
   tickfont:{ color:"#c9d4de", size:10 }, title:{ text:"stress", font:{ color:"#c9d4de", size:11 } } };
 const SEAM_COLOR = "#f2c14e", ROOT_COLOR = "#6b4525", PIECE_COLOR = "#c7b291";
+const PROP_COLOR = "#7d8c4e";   // olive seedling / propagule body
 const ROOT_LIGHT = { ambient:0.5, diffuse:0.85, specular:0.15, roughness:0.75 };
 const MESH_LIGHT = { ambient:0.42, diffuse:0.9, specular:0.18, roughness:0.55, fresnel:0.15 };
 const LIGHT_POS  = { x:180, y:260, z:520 };
 
-let BASE_MESH = null, BASE_LAYOUT = null, SEAM_TRACE = null, EXPLODED = null;
+let BASE_MESH = null, BASE_LAYOUT = null, SEAM_TRACE = null, PROP_TRACE = null, EXPLODED = null;
 let LAST = { intensity: null, cmax: 1, roots: null };
 let viewMode = "intact";
 
@@ -188,6 +189,13 @@ function buildRootTrace(g) {
     color:ROOT_COLOR, flatshading:false, hoverinfo:"skip", name:"roots",
     lighting:ROOT_LIGHT, lightposition:LIGHT_POS };
 }
+function buildPropTrace(g) {
+  if (!g) return null;
+  return { type:"mesh3d", x:g.x, y:g.y, z:g.z, i:g.i, j:g.j, k:g.k,
+    color:PROP_COLOR, flatshading:false, hoverinfo:"skip", name:"seedling",
+    lighting:{ ambient:0.5, diffuse:0.8, specular:0.12, roughness:0.8 }, lightposition:LIGHT_POS };
+}
+function propOn() { const el = $("show_prop"); return el ? el.checked : true; }
 function render() {
   if (!BASE_MESH) return;
   const data = [];
@@ -202,6 +210,7 @@ function render() {
       } else { t.color = PIECE_COLOR; }
       data.push(t);
     }
+    if (propOn() && PROP_TRACE) data.push(PROP_TRACE);   // seedling revealed between the pieces
   } else {
     const m = Object.assign({}, BASE_MESH);
     m.lighting = MESH_LIGHT; m.lightposition = LIGHT_POS; m.flatshading = false;
@@ -210,6 +219,7 @@ function render() {
       m.cmin = 0; m.cmax = LAST.cmax; m.showscale = true; m.colorbar = CBAR;
     }
     data.push(m);
+    if (propOn() && PROP_TRACE) data.push(PROP_TRACE);
     if ($("show_seams").checked && SEAM_TRACE) data.push(SEAM_TRACE);
     if ($("show_roots").checked && LAST.roots) data.push(LAST.roots);
   }
@@ -429,10 +439,11 @@ async function init() {
       `waist R≈${f.outer_r_waist.toFixed(0)} · wall≈${f.wall_thickness.toFixed(0)} · runs in-browser`;
     document.querySelectorAll("#viewSeg .segbtn").forEach(b =>
       b.addEventListener("click", () => setView(b.dataset.view)));
-    ["show_seams","show_roots"].forEach(id => $(id).addEventListener("change", render));
+    ["show_seams","show_roots","show_prop"].forEach(id => { const el = $(id); if (el) el.addEventListener("change", render); });
     BASE_MESH = ENGINE.baseMesh();
     BASE_LAYOUT = baseLayout();
     SEAM_TRACE = buildSeamTrace(ENGINE.seams());
+    PROP_TRACE = buildPropTrace(ENGINE.propagule());
     render();
     $("boot").classList.add("hidden");
   } catch (e) {

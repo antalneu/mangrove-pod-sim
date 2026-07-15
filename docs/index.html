@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Mangrove Pod — Root-Growth Break Design Tool</title>
 <script src="https://cdn.plot.ly/plotly-2.35.2.min.js" charset="utf-8"></script>
-<link rel="stylesheet" href="static/style.css">
+<link rel="stylesheet" href="static/style.css?v=19">
 </head>
 <body>
 <div id="boot"><div class="leaf">🌱</div><div id="bootmsg">loading the pod &amp; booting the in-browser engine…</div></div>
@@ -20,10 +20,10 @@
   </div>
   <div class="headright">
     <div class="legend">
-      <span><i style="background:#5aa469"></i>trumpet</span>
-      <span><i style="background:#4a76b5"></i>waist</span>
-      <span><i style="background:#d63b3b"></i>seam/slot</span>
-      <span><i style="background:#b5834a"></i>feet</span>
+      <span><i style="background:#c07a52"></i>pod (material)</span>
+      <span><i style="background:#7c6f5d"></i>seams</span>
+      <span><i style="background:#6b4525"></i>roots</span>
+      <span><i style="background:#c1121f"></i>peak stress</span>
     </div>
     <a class="ghost" href="showcase.html" title="how it works / findings">ℹ About</a>
     <a class="ghost" href="https://github.com/antalneu/mangrove-pod-sim" target="_blank" rel="noopener">★ GitHub</a>
@@ -154,26 +154,46 @@
       <p class="hint">Exploded pulls the 4 quarter-pieces apart along the seams so the
         intended split is clear before running anything.</p>
       <div class="toggles">
-        <label class="chk"><input type="checkbox" id="show_prop" checked> show seedling (fills the pod)</label>
-        <label class="chk"><input type="checkbox" id="show_seams" checked> show 4 seam lines</label>
+        <label class="chk"><input type="checkbox" id="show_stress" checked> stress heatmap (overlay)</label>
         <label class="chk"><input type="checkbox" id="show_roots" checked> show roots</label>
+        <label class="chk"><input type="checkbox" id="show_ground" checked> show ground / substrate</label>
+        <label class="chk"><input type="checkbox" id="show_seams"> mark the 4 seams (with stress overlay)</label>
+        <label class="chk"><input type="checkbox" id="show_prop"> show seedling (fills the pod)</label>
         <label class="chk"><input type="checkbox" id="project_outer"> stress on outer surface</label>
       </div>
+      <label>Root growth stage <output id="o_root_stage">100</output>%
+        <input type="range" id="root_stage" min="0" max="100" step="1" value="100"></label>
+      <p class="hint">Scrub how far the prop-root cage has extended from the cracked-open
+        base into the substrate. Roots stay hidden inside the intact pod — they appear in
+        the <b>Exploded</b> view or once the animation breaks through. Visual only.</p>
     </section>
 
     <section class="actions">
       <button id="runBtn" class="primary">▶ Run simulation</button>
+      <button id="playBtn" class="primary alt">▶ Play growth</button>
       <div class="mcrow">
         <button id="mcBtn">📊 Monte Carlo</button>
         <input type="number" id="n_runs" value="24" min="2" max="120" title="number of runs">
       </div>
-      <p class="hint">Single run shows one root system &amp; its stress. Monte Carlo averages many randomized growths. Everything runs in your browser.</p>
+      <button id="crackBtn" class="ghost wide">📋 Crack analysis (current material)</button>
+      <p class="hint">Run = final snapshot. Play growth = animate the pod through its ~year-long
+        growth, roots emerging and the pod cracking open at breakthrough. Everything runs in your browser.</p>
     </section>
   </aside>
 
   <div id="viewpane">
     <div id="plot"></div>
     <div id="overlay" class="hidden"><div class="spinner"></div><span id="overlayMsg">simulating…</span></div>
+    <div id="animBar" class="animbar hidden">
+      <button id="animPlay" class="abtn" onclick="document.getElementById('playBtn').click()" title="play / pause">⏯</button>
+      <div class="seg small" id="speedSeg">
+        <button type="button" class="segbtn active" data-speed="1">1×</button>
+        <button type="button" class="segbtn" data-speed="2">2×</button>
+        <button type="button" class="segbtn" data-speed="4">4×</button>
+      </div>
+      <input type="range" id="anim_timeline" class="animrange" min="1" max="120" step="1" value="1" title="scrub through growth">
+      <div id="anim_readout" class="animreadout">—</div>
+    </div>
     <div class="modelnote">Reduced-order engineering surrogate — <b>relative</b> comparison, not FEA.</div>
     <div class="staticnote">Runs <b>100% in your browser</b> — no server.</div>
   </div>
@@ -201,8 +221,18 @@
   </div>
 </div>
 
-<script src="data/pod.js?v=9"></script>
-<script src="static/engine.js?v=9"></script>
-<script src="static/app.js?v=9"></script>
+<div id="crackPanel" class="provpanel hidden">
+  <div class="provinner">
+    <div class="provtop">
+      <h2>📋 Material crack analysis</h2>
+      <button id="crackClose" class="ghost">✕ close</button>
+    </div>
+    <div id="crackBody"></div>
+  </div>
+</div>
+
+<script src="data/pod.js?v=19"></script>
+<script src="static/engine.js?v=19"></script>
+<script src="static/app.js?v=19"></script>
 </body>
 </html>

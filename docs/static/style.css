@@ -188,3 +188,37 @@ a.ghost{text-decoration:none;display:inline-block;border-radius:8px}
   flex-direction:column;align-items:center;justify-content:center;gap:16px;color:var(--muted)}
 #boot.hidden{display:none}
 #boot .leaf{font-size:52px}
+
+/* ---- growth animation controls ---- */
+button.primary.alt{background:#3f7fa6;border-color:#3f7fa6;color:#eef6fb;margin-top:8px}
+button.primary.alt:hover{background:#4f93bb;border-color:#4f93bb}
+button.wide{width:100%;margin-top:12px}
+.animbar{position:absolute;left:50%;bottom:40px;transform:translateX(-50%);
+  display:flex;align-items:center;gap:12px;padding:9px 14px;z-index:8;
+  background:rgba(20,26,32,.88);border:1px solid var(--line);border-radius:12px;max-width:min(780px,92%)}
+.animbar.hidden{display:none}
+.abtn{font-size:15px;padding:5px 11px;border-radius:8px;line-height:1}
+.seg.small{margin:0;flex:0 0 auto}
+.seg.small .segbtn{padding:5px 9px;font-size:11.5px;flex:0 0 auto}
+.animrange{flex:1 1 auto;min-width:130px;margin:0}
+.animreadout{font-size:12px;color:var(--text);white-space:nowrap;min-width:270px}
+.animreadout .abig{font-size:15px;font-weight:700;color:#fff;letter-spacing:.01em}
+.animreadout .amuted{color:var(--muted)}
+.astatus{font-weight:600;margin-left:2px}
+.astatus.ok{color:var(--muted)}
+.astatus.crack{color:var(--accent2)}
+.astatus.broke{color:#e0654f}
+
+/* ---- crack-analysis report ---- */
+#crackBody{padding:4px 2px}
+.crackhead{font-size:13px;color:var(--muted);margin-bottom:12px}
+.cracksum{background:var(--panel2);border:1px solid var(--accent);border-left:4px solid var(--accent);
+  border-radius:8px;padding:13px 15px;font-size:14.5px;line-height:1.5;color:var(--text);margin-bottom:6px}
+#crackBody h4{margin:18px 0 5px;font-size:12px;text-transform:uppercase;letter-spacing:.06em;color:var(--accent)}
+#crackBody p{font-size:13.5px;line-height:1.55;color:#cdd8e2;margin:0}
+.cmptbl{width:100%;border-collapse:collapse;margin-top:8px;font-size:13px}
+.cmptbl th{text-align:left;color:var(--muted);font-weight:600;padding:6px 8px;
+  border-bottom:1px solid var(--line);font-size:11px;text-transform:uppercase;letter-spacing:.03em}
+.cmptbl td{padding:6px 8px;border-bottom:1px solid var(--line);color:#cdd8e2}
+.cmptbl tr.curmat td{background:rgba(90,164,105,.12);color:var(--text);font-weight:600}
+.crackfoot{margin-top:16px;font-size:11.5px;color:var(--muted);line-height:1.5}

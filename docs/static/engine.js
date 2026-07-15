@@ -609,7 +609,7 @@ function nodeRadius(pipe, age, sp) {
   return pipe * mature * swell;
 }
 
-function runSimulation(wm, roots, sp, ph) {
+function runSimulation(wm, roots, sp, ph, capFrames) {
   const T = sp.n_time_steps;
   let drive, cap;
   if (ph) { const ps = physPerStep(ph, T); drive = ps.drive; cap = ps.cap; }
@@ -684,6 +684,7 @@ function runSimulation(wm, roots, sp, ph) {
     }
     let nActive = 0; for (let si = 0; si < nLig; si++) if (isFinite(activation[si])) nActive++;
     if (nActive >= needed && !isFinite(breakthrough)) breakthrough = t;
+    if (capFrames) capFrames.push(Float32Array.from(cum));   // per-step snapshot for playback
   }
   let firstSite = -1, firstStep = Infinity;
   for (let si = 0; si < wm.n_sites; si++) if (isFinite(activation[si]) && activation[si] < firstStep) { firstStep = activation[si]; firstSite = si; }
@@ -705,24 +706,48 @@ function faceFieldToVertex(fv) {
   for (let i = 0; i < nV; i++) vv[i] = ws[i] > 0 ? vv[i] / ws[i] : 0;
   return vv;
 }
-let _innerGrid = null;
+let _projMap = null;   // outer/other face -> nearest inner face index (static geometry)
 function projectInnerToOuter(field) {
-  if (!_innerGrid) {
+  if (!_projMap) {
     const nIn = POD.innerIdx.length, C = new Float64Array(nIn * 3);
     for (let l = 0; l < nIn; l++) { const g = POD.innerIdx[l]; C[3 * l] = POD.cx[g]; C[3 * l + 1] = POD.cy[g]; C[3 * l + 2] = POD.cz[g]; }
-    _innerGrid = { C, nIn, grid: new Grid(C, nIn, 8) };
+    const grid = new Grid(C, nIn, 8);
+    _projMap = new Int32Array(POD.nF);
+    for (let f = 0; f < POD.nF; f++) { const q = grid.nearest(POD.cx[f], POD.cy[f], POD.cz[f]); _projMap[f] = POD.innerIdx[q.idx]; }
   }
   const out = new Float64Array(POD.nF);
-  for (let f = 0; f < POD.nF; f++) {
-    const q = _innerGrid.grid.nearest(POD.cx[f], POD.cy[f], POD.cz[f]);
-    out[f] = field[POD.innerIdx[q.idx]];
-  }
+  for (let f = 0; f < POD.nF; f++) out[f] = field[_projMap[f]];
   return out;
+}
+// vertex adjacency (from faces) for smoothing the stress field
+let _vadj = null;
+function vertexAdj() {
+  if (_vadj) return _vadj;
+  const nV = POD.nV, F = POD.F, sets = Array.from({ length: nV }, () => new Set());
+  for (let f = 0; f < POD.nF; f++) {
+    const a = F[3 * f], b = F[3 * f + 1], c = F[3 * f + 2];
+    sets[a].add(b); sets[a].add(c); sets[b].add(a); sets[b].add(c); sets[c].add(a); sets[c].add(b);
+  }
+  _vadj = sets.map(s => Array.from(s));
+  return _vadj;
+}
+function smoothVertexField(vv, iters, w) {
+  const adj = vertexAdj(), nV = vv.length; let cur = vv;
+  for (let it = 0; it < iters; it++) {
+    const nx = new Float64Array(nV);
+    for (let i = 0; i < nV; i++) {
+      const a = adj[i]; let s = 0; for (let t = 0; t < a.length; t++) s += cur[a[t]];
+      nx[i] = a.length ? (1 - w) * cur[i] + w * (s / a.length) : cur[i];
+    }
+    cur = nx;
+  }
+  return cur;
 }
 function vertexIntensity(field, projectOuter) {
   let f = field;
   if (projectOuter) f = projectInnerToOuter(field);
-  const vv = faceFieldToVertex(f);
+  let vv = faceFieldToVertex(f);
+  vv = smoothVertexField(vv, 2, 0.55);   // blend the heatmap so it radiates, not blobs
   const vmax = percentile(vv, 99);
   const out = new Array(vv.length);
   for (let i = 0; i < vv.length; i++) out[i] = Math.round(vv[i] * 100) / 100;
@@ -802,12 +827,182 @@ function rootTubeMesh(roots, sides = 6, scale = 1.35, rMin = 0.8, rMax = 7, iter
   }
   return acc.payload();
 }
+// ---------------------------------------------------------------------------
+//  Young Rhizophora seedling prop-root cage  (RENDERING ONLY — the sim still
+//  runs on the space-colonization node tree; this is a visual overlay).
+//  Matches real early-stage propagules (reference photos): a tight radiating
+//  cluster of 5-8 THIN, wiry, near-uniform-diameter roots that splay outward
+//  and down from a single point near the base of the stem, forming a narrow
+//  tripod/cage silhouette in the mud — NOT thick arched buttresses, and NOT a
+//  mature tree's branched rhizophore system. Matte reddish-brown → tan bark.
+//  These roots grow INSIDE the pod and only become visible once a seam cracks
+//  open; `p` in [0,1] is the post-breakthrough emergence/extension fraction.
+// ---------------------------------------------------------------------------
+const _RZ = {
+  base: [0.42, 0.25, 0.19],  // reddish-brown near the cluster / older wood
+  tip:  [0.60, 0.45, 0.32],  // lighter reddish-tan toward the growing tips
+};
+function _sstep(t) { t = clip(t, 0, 1); return t * t * (3 - 2 * t); }
+function _smoother(t) { t = clip(t, 0, 1); return t * t * t * (t * (t * 6 - 15) + 10); }
+function _lerp(a, b, t) { return a + (b - a) * t; }
+function _lerp3(a, b, t) { return [_lerp(a[0], b[0], t), _lerp(a[1], b[1], t), _lerp(a[2], b[2], t)]; }
+function _rgb(c) { return `rgb(${Math.round(clip(c[0], 0, 1) * 255)},${Math.round(clip(c[1], 0, 1) * 255)},${Math.round(clip(c[2], 0, 1) * 255)})`; }
+
+// One thin wiry root: samples of [x, y, z, tubeRadius, u]; u=0 at the cluster,
+// 1 at the tip. Near-straight radial descent with a gentle outward bow. Shape
+// is independent of growth p (only the drawn length changes) so we cache it.
+function _wiryRoot(o) {
+  const n = o.n, pts = [], a0 = o.azDeg * Math.PI / 180;
+  for (let i = 0; i < n; i++) {
+    const t = i / (n - 1);
+    const r = _lerp(o.rStart, o.rEnd, Math.pow(t, 0.92)) + o.bow * Math.sin(Math.PI * t);
+    const z = _lerp(o.z0, o.zEnd, t);
+    const wig = o.wiggle ? o.wiggle * Math.PI / 180 * Math.sin(1.8 * Math.PI * t + o.wphase) : 0;
+    const aa = a0 + (o.twist || 0) * Math.PI / 180 * t + wig;
+    const tubeR = Math.max(_lerp(o.tubeBase, o.tubeTip, t), 0.35);   // near-uniform, slight taper
+    pts.push([r * Math.cos(aa), r * Math.sin(aa), z, tubeR, t]);
+  }
+  return { pts, colA: o.colA, colB: o.colB, phase: o.phase, birthP: o.birthP, span: o.span };
+}
+
+let _rzCache = null;
+function rhizophoreStrands() {
+  if (_rzCache) return _rzCache;
+  const H = POD.features.height, footR = rOuterAt(0.05 * H), gz = groundZ();
+  const zTip = gz - 0.05 * H;                 // tips sink a little deeper into the substrate
+  const clusterZ = 0.14 * H;                  // one tight origin near the base of the stem
+  const rng = mulberry32(11), strands = [];
+  const n = 9;                                // a fuller young-propagule tripod
+  const baseReach = 0.62 * footR;             // wider, denser splay (still a tripod, not spider legs)
+  for (let j = 0; j < n; j++) {
+    const az = 360 * j / n + (rng() - 0.5) * 14;
+    const reach = baseReach * (0.85 + 0.35 * rng());
+    strands.push(_wiryRoot({
+      azDeg: az, n: 24, rStart: 2.0, rEnd: reach, z0: clusterZ, zEnd: zTip * (0.92 + 0.16 * rng()),
+      bow: footR * (0.03 + 0.045 * rng()), twist: (rng() - 0.5) * 8, wiggle: 2.5, wphase: rng() * 6.28,
+      tubeBase: 2.1, tubeTip: 0.95, colA: _RZ.base, colB: _RZ.tip, phase: rng() * 6.28,
+      birthP: 0.012 * j, span: 0.9,
+    }));
+  }
+  _rzCache = strands;
+  return strands;
+}
+
+function stageRootMesh(p) {
+  const strands = rhizophoreStrands();
+  const gz = groundZ();
+  const X = [], Y = [], Z = [], I = [], J = [], K = [], C = [];
+  const sides = 6, cs = [], sn = [];
+  for (let k = 0; k < sides; k++) { const A = 2 * Math.PI * k / sides; cs.push(Math.cos(A)); sn.push(Math.sin(A)); }
+  for (let sIdx = 0; sIdx < strands.length; sIdx++) {
+    const st = strands[sIdx];
+    const gf = clip((p - st.birthP) / st.span, 0, 1);
+    if (gf <= 0.02) continue;
+    const full = st.pts, nFull = full.length;
+    const fT = gf * (nFull - 1), last = Math.floor(fT), frac = fT - last;
+    const draw = [];
+    for (let i = 0; i <= last; i++) draw.push(full[i]);
+    if (frac > 1e-3 && last < nFull - 1) {
+      const a = full[last], b = full[last + 1];
+      draw.push([_lerp(a[0], b[0], frac), _lerp(a[1], b[1], frac), _lerp(a[2], b[2], frac),
+                 _lerp(a[3], b[3], frac), _lerp(a[4], b[4], frac)]);
+    }
+    if (draw.length < 2) continue;
+    const ringBase = [];
+    for (let i = 0; i < draw.length; i++) {
+      const P = draw[i], u = P[4];
+      let tx, ty, tz;
+      if (i < draw.length - 1) { tx = draw[i + 1][0] - P[0]; ty = draw[i + 1][1] - P[1]; tz = draw[i + 1][2] - P[2]; }
+      else { tx = P[0] - draw[i - 1][0]; ty = P[1] - draw[i - 1][1]; tz = P[2] - draw[i - 1][2]; }
+      const [n1x, n1y, n1z, n2x, n2y, n2z] = frame(tx, ty, tz);
+      const base = _lerp3(st.colA, st.colB, u);
+      let ao = 1;
+      const dg = Math.abs(P[2] - gz);
+      if (dg < 6) ao *= _lerp(0.85, 1, clip(dg / 6, 0, 1));   // subtle mud-contact darkening
+      ringBase.push(X.length);
+      for (let k = 0; k < sides; k++) {
+        X.push(P[0] + P[3] * (cs[k] * n1x + sn[k] * n2x));
+        Y.push(P[1] + P[3] * (cs[k] * n1y + sn[k] * n2y));
+        Z.push(P[2] + P[3] * (cs[k] * n1z + sn[k] * n2z));
+        const shade = ao * (1 + 0.035 * Math.cos(2 * Math.PI * k / sides + st.phase));  // faint woody ridging
+        C.push(_rgb([base[0] * shade, base[1] * shade, base[2] * shade]));
+      }
+    }
+    for (let i = 0; i < draw.length - 1; i++) {
+      const s0 = ringBase[i], s1 = ringBase[i + 1];
+      for (let k = 0; k < sides; k++) { const k2 = (k + 1) % sides; I.push(s0 + k, s0 + k); J.push(s0 + k2, s1 + k2); K.push(s1 + k2, s1 + k); }
+    }
+  }
+  if (!X.length) return null;
+  const rnd = v => Math.round(v * 10) / 10;
+  return { x: X.map(rnd), y: Y.map(rnd), z: Z.map(rnd), i: I, j: J, k: K, vertexcolor: C };
+}
+
+// ---------------------------------------------------------------------------
+//  substrate / tidal-mud ground plane the roots plant into. Soft-edged (fades
+//  into the backdrop rather than a hard ellipse silhouette), mottled mud texture
+//  with micro-relief, a faint wet sheen offset toward the key light, and a wide
+//  soft contact shadow (AO) under the pod so roots blend in rather than meeting
+//  a hard line. Baked into vertex colours; `reveal` grows the disc in.
+// ---------------------------------------------------------------------------
+function groundZ() { return -0.075 * POD.features.height; }
+function groundMesh(nR = 26, nT = 110, reveal = 1) {
+  reveal = clip(reveal, 0, 1);
+  const H = POD.features.height, zG = groundZ(), footR = rOuterAt(0.05 * H);
+  const Rmax = 2.2 * footR * (0.14 + 0.86 * reveal);   // radial reveal
+  const bg = [0.075, 0.095, 0.115];                    // viewpane backdrop for a soft fade
+  const mud = [0.33, 0.26, 0.19], mudDark = [0.18, 0.145, 0.105];
+  const lx = 0.826, ly = 0.563;                        // key-light xy direction (wet sheen)
+  const rShIn = 0.30 * footR, rShOut = 1.85 * footR;   // wide, soft contact shadow
+  const sx = lx * 0.5 * Rmax, sy = ly * 0.5 * Rmax;    // sheen reflection centre
+  const X = [], Y = [], Z = [], C = [], I = [], J = [], K = [];
+  const colAt = (x, y) => {
+    const d = Math.hypot(x, y), rn = clip(d / Rmax, 0, 1);
+    // mottled mud (multi-octave value noise)
+    const nz = 0.5 + 0.34 * Math.sin(x * 0.05 + 1.3) * Math.cos(y * 0.045 - 0.7)
+                   + 0.16 * Math.sin(x * 0.11 - y * 0.09 + 2.1);
+    let c = _lerp3(mudDark, mud, clip(0.35 + 0.7 * nz, 0, 1));
+    // wide soft contact shadow / ambient occlusion under the pod
+    const sh = _smoother((d - rShIn) / (rShOut - rShIn));   // 0 under pod -> 1 outside
+    const ao = 0.46 + 0.54 * sh;
+    c = [c[0] * ao, c[1] * ao, c[2] * ao];
+    // faint wet sheen: a broad soft reflection offset toward the light, cool tint
+    const sheen = Math.pow(clip(1 - Math.hypot(x - sx, y - sy) / (0.9 * Rmax), 0, 1), 2) * (1 - 0.6 * rn);
+    const wet = 0.14 * sheen;
+    c = [c[0] + wet * 0.9, c[1] + wet, c[2] + wet * 1.2];
+    // soft outer edge: fade into the backdrop so there is no hard silhouette line
+    const fade = _smoother((rn - 0.62) / 0.38);
+    return _lerp3(c, bg, fade);
+  };
+  X.push(0); Y.push(0); Z.push(zG); C.push(_rgb(colAt(0, 0)));
+  const starts = [0];
+  for (let ri = 1; ri <= nR; ri++) {
+    const rr = Rmax * Math.pow(ri / nR, 1.18); starts.push(X.length);
+    for (let t = 0; t < nT; t++) {
+      const a = 2 * Math.PI * t / nT, x = rr * Math.cos(a), y = rr * Math.sin(a);
+      const relief = 0.9 * Math.sin(a * 5 + ri * 1.7) + 0.5 * Math.sin(a * 13 - ri * 0.8) + 0.6 * Math.sin(ri * 2.1 + a * 2);
+      X.push(x); Y.push(y); Z.push(zG + relief); C.push(_rgb(colAt(x, y)));
+    }
+  }
+  const r1 = starts[1];
+  for (let t = 0; t < nT; t++) { const t2 = (t + 1) % nT; I.push(0); J.push(r1 + t); K.push(r1 + t2); }
+  for (let ri = 1; ri < nR; ri++) {
+    const s0 = starts[ri], s1 = starts[ri + 1];
+    for (let t = 0; t < nT; t++) { const t2 = (t + 1) % nT; I.push(s0 + t, s0 + t); J.push(s0 + t2, s1 + t2); K.push(s1 + t2, s1 + t); }
+  }
+  const rnd = v => Math.round(v * 10) / 10;
+  return { x: X.map(rnd), y: Y.map(rnd), z: Z.map(rnd), i: I, j: J, k: K, vertexcolor: C };
+}
+
 function seamAngles() {
   const s = POD.features.slots; return s.length ? s.map(x => x.theta_deg) : POD.features.split_line_deg.slice();
 }
-function seamTubeMesh(sides = 5, npt = 60, lift = 1.03) {
+// A thin, uniform molded parting line running the full length of each seam
+// (rim -> foot), sitting right at the surface so it reads as a deliberate
+// scored/molded product feature rather than a raised gold pipe.
+function seamTubeMesh(sides = 6, npt = 80, lift = 1.004) {
   const H = POD.features.height, angles = seamAngles();
-  const radius = Math.max(0.9, 0.02 * POD.features.outer_r_waist);
+  const radius = Math.max(0.5, 0.011 * POD.features.outer_r_waist);
   const acc = new TubeAccum(sides);
   const z = []; for (let i = 0; i < npt; i++) z.push(0.02 * H + (0.985 * H - 0.02 * H) * i / (npt - 1));
   for (const a of angles) {
@@ -817,31 +1012,59 @@ function seamTubeMesh(sides = 5, npt = 60, lift = 1.03) {
   }
   return acc.payload();
 }
+// Split the pod into 4 clean quarter-pieces by CLIPPING each triangle against
+// the two seam-meridian half-planes that bound its wedge. New vertices land
+// exactly on the seam line, so every piece has a straight, manufactured-looking
+// score edge (independent of the shell's non-manifold slot cuts) — no jagged
+// tear. Each piece is then drifted radially outward by `gapFrac` of the waist.
+function _clipPoly(poly, dv) {
+  const out = [], n = poly.length;
+  for (let i = 0; i < n; i++) {
+    const A = poly[i], B = poly[(i + 1) % n], dA = dv[i], dB = dv[(i + 1) % n];
+    const inA = dA >= 0, inB = dB >= 0;
+    if (inA) out.push(A);
+    if (inA !== inB) {
+      const t = dA / (dA - dB);
+      out.push({ x: A.x + (B.x - A.x) * t, y: A.y + (B.y - A.y) * t, z: A.z + (B.z - A.z) * t,
+                 o: -1, orig: (t < 0.5 ? A.orig : B.orig) });
+    }
+  }
+  return out;
+}
 function explodedSectors(gapFrac = 0.30) {
   let seams = seamAngles().map(a => ((a + 180) % 360 + 360) % 360 - 180).sort((a, b) => a - b);
   if (seams.length < 2) seams = [-135, -45, 45, 135];
-  const th = POD.thetaFace, nF = POD.nF, K = seams.length;
-  const sectorOf = a => {
-    for (let k = 0; k < K; k++) {
-      const lo = seams[k], hi = seams[(k + 1) % K];
-      if (k === K - 1) { if (a >= lo || a < hi) return k; }
-      else if (a >= lo && a < hi) return k;
-    }
-    return 0;
-  };
+  const K = seams.length, nF = POD.nF, V = POD.V, F = POD.F, D2R = Math.PI / 180;
   const gap = gapFrac * POD.features.outer_r_waist, sectors = [];
   for (let k = 0; k < K; k++) {
-    const lo = seams[k], hi = seams[(k + 1) % K] + (k === K - 1 ? 360 : 0);
-    const center = ((lo + hi) / 2 + 180) % 360 - 180, cdx = Math.cos(center * Math.PI / 180), cdy = Math.sin(center * Math.PI / 180);
-    const faces = []; for (let f = 0; f < nF; f++) if (sectorOf(th[f] * 180 / Math.PI) === k) faces.push(f);
-    if (!faces.length) continue;
-    const remap = new Map(), used = [];
-    for (const f of faces) for (let t = 0; t < 3; t++) { const v = POD.F[3 * f + t]; if (!remap.has(v)) { remap.set(v, used.length); used.push(v); } }
-    const x = [], y = [], z = [];
-    for (const v of used) { x.push(Math.round((POD.V[3 * v] + gap * cdx) * 10) / 10); y.push(Math.round((POD.V[3 * v + 1] + gap * cdy) * 10) / 10); z.push(Math.round(POD.V[3 * v + 2] * 10) / 10); }
-    const ii = [], jj = [], kk = [];
-    for (const f of faces) { ii.push(remap.get(POD.F[3 * f])); jj.push(remap.get(POD.F[3 * f + 1])); kk.push(remap.get(POD.F[3 * f + 2])); }
-    sectors.push({ x, y, z, i: ii, j: jj, k: kk, orig: used });
+    const gLo = seams[k], gHi = seams[(k + 1) % K] + (k === K - 1 ? 360 : 0);
+    const cc = (gLo + gHi) / 2 * D2R, cdx = Math.cos(cc), cdy = Math.sin(cc);
+    const loC = gLo * D2R, hiC = gHi * D2R;
+    const cosLo = Math.cos(loC), sinLo = Math.sin(loC), cosHi = Math.cos(hiC), sinHi = Math.sin(hiC);
+    // inside the wedge (width < 180°): dLo >= 0 (above lower seam) & dHi >= 0 (below upper seam)
+    const dLo = (x, y) => y * cosLo - x * sinLo;
+    const dHi = (x, y) => x * sinHi - y * cosHi;
+    const xs = [], ys = [], zs = [], orig = [], ii = [], jj = [], kk = [], remap = new Map();
+    const emit = (P) => {
+      if (P.o >= 0) {
+        let id = remap.get(P.o);
+        if (id === undefined) { id = xs.length; remap.set(P.o, id); xs.push(P.x + gap * cdx); ys.push(P.y + gap * cdy); zs.push(P.z); orig.push(P.orig); }
+        return id;
+      }
+      const id = xs.length; xs.push(P.x + gap * cdx); ys.push(P.y + gap * cdy); zs.push(P.z); orig.push(P.orig);
+      return id;
+    };
+    for (let f = 0; f < nF; f++) {
+      let poly = [];
+      for (let t = 0; t < 3; t++) { const v = F[3 * f + t]; poly.push({ x: V[3 * v], y: V[3 * v + 1], z: V[3 * v + 2], o: v, orig: v }); }
+      poly = _clipPoly(poly, poly.map(p => dLo(p.x, p.y))); if (poly.length < 3) continue;
+      poly = _clipPoly(poly, poly.map(p => dHi(p.x, p.y))); if (poly.length < 3) continue;
+      const idx = poly.map(emit);
+      for (let t = 1; t < idx.length - 1; t++) { ii.push(idx[0]); jj.push(idx[t]); kk.push(idx[t + 1]); }
+    }
+    if (!xs.length) continue;
+    const rnd = v => Math.round(v * 10) / 10;
+    sectors.push({ x: xs.map(rnd), y: ys.map(rnd), z: zs.map(rnd), i: ii, j: jj, k: kk, orig, cdx, cdy });
   }
   return sectors;
 }
@@ -1050,12 +1273,214 @@ function montecarlo(cfg, nRuns) {
   return { intensity, cmax, roots: roots_payload, stats };
 }
 
+// ---------------------------------------------------------------------------
+//  simulateFrames — the SAME simulation, but capturing a per-step vertex-stress
+//  snapshot so the UI can play the growth through time. Physics unchanged.
+// ---------------------------------------------------------------------------
+function simulateFrames(cfg) {
+  const pat = patternFromCfg(cfg), gp = growthFromCfg(cfg), sp = simFromCfg(cfg), ph = physFromCfg(cfg);
+  const wall = buildFields(pat), wm = buildWallModel(wall);
+  const roots = grow(gp, +(cfg.seed || 1));
+  const capFrames = [];
+  const res = runSimulation(wm, roots, sp, ph, capFrames);
+  const T = sp.n_time_steps, projectOuter = cfg.project_outer !== false;
+  const ff = new Float64Array(POD.nF);
+  const toVert = (cum) => {
+    ff.fill(0);
+    for (let l = 0; l < wm.nIn; l++) ff[wm.innerIdx[l]] = cum[l];
+    const field = projectOuter ? projectInnerToOuter(ff) : ff;
+    return smoothVertexField(faceFieldToVertex(field), 2, 0.55);
+  };
+  const nF2 = capFrames.length, finalVv = toVert(capFrames[nF2 - 1]);
+  const cmax = Math.max(percentile(finalVv, 99), 1e-9);
+  const frames = new Array(nF2);
+  for (let t = 0; t < nF2; t++) {
+    const vv = (t === nF2 - 1) ? finalVv : toVert(capFrames[t]);
+    const arr = new Float32Array(vv.length); for (let i = 0; i < vv.length; i++) arr[i] = vv[i];
+    frames[t] = arr;
+  }
+  const sites = wm.labels.map((lab, i) => ({ label: lab, is_ligament: !!wm.is_lig[i], activation_step: isFinite(res.activation[i]) ? res.activation[i] : null }));
+  const stats = {
+    n_nodes: roots.n,
+    first_crack_step: isFinite(res.firstStep) ? res.firstStep : null,
+    first_crack_site: res.firstSite >= 0 ? wm.labels[res.firstSite] : null,
+    breakthrough_step: isFinite(res.breakthrough) ? res.breakthrough : null,
+    n_time_steps: T, activation_order: res.order.map(s => wm.labels[s]),
+    sites, pattern: pat.name,
+    slots: pat.slots.map(s => ({ theta: s.theta_deg, z_lo: s.z_lo, z_hi: s.z_hi, width: s.width_deg })),
+    physical: physSummary(ph),
+    breakthrough_time: spTimeContext(ph.species, isFinite(res.breakthrough) ? res.breakthrough : null, T, ph.salinity_ppt),
+    first_crack_time: spTimeContext(ph.species, isFinite(res.firstStep) ? res.firstStep : null, T, ph.salinity_ppt),
+    window_time: spTimeContext(ph.species, T, T, ph.salinity_ppt),
+    material_card: materialCard(ph.material),
+  };
+  // per-step real-time labels + root growth fraction (roots mature ~breakthrough)
+  const brkStep = isFinite(res.breakthrough) ? res.breakthrough : T;
+  const timeline = [];
+  for (let t = 1; t <= T; t++) {
+    const tc = spTimeContext(ph.species, t, T, ph.salinity_ppt);
+    timeline.push({ step: t, months: tc.months, label: tc.label, root_p: clip(t / Math.max(brkStep, 1), 0, 1) });
+  }
+  return {
+    frames, cmax, n_time_steps: T,
+    breakthrough_step: isFinite(res.breakthrough) ? res.breakthrough : null,
+    activation: res.activation.map(a => isFinite(a) ? a : null),
+    site_labels: wm.labels, is_lig: Array.from(wm.is_lig),
+    timeline, stats, window_months: ph.species.window_months, species_name: ph.species.name,
+  };
+}
+
+// ---------------------------------------------------------------------------
+//  growing seedling shoot at the top opening: an olive-green stem that, once it
+//  has cleared the rim, carries a pair of simple flat first leaves (like a real
+//  young propagule) instead of staying a bare stick.
+// ---------------------------------------------------------------------------
+const _SHOOT_STEM = [0.42, 0.55, 0.28], _SHOOT_LEAF = [0.28, 0.52, 0.24];
+function shootMesh(gfrac) {
+  gfrac = clip(gfrac, 0, 1);
+  if (gfrac <= 0.01) return null;
+  const f = POD.features, H = f.height, top = f.top_center;
+  const zT = top[2], cx0 = top[0], cy0 = top[1], stemH = 0.34 * H * gfrac;
+  if (stemH < 1) return null;
+  const X = [], Y = [], Z = [], I = [], J = [], K = [], C = [];
+  const stemCol = _rgb(_SHOOT_STEM), leafCol = _rgb(_SHOOT_LEAF);
+  // stem: tapered tube up from the rim
+  const nSeg = 10, sides = 7, rBase = Math.max(2.2, 0.055 * f.inner_r_waist);
+  const cs = [], sn = [];
+  for (let k = 0; k < sides; k++) { const a = 2 * Math.PI * k / sides; cs.push(Math.cos(a)); sn.push(Math.sin(a)); }
+  const ring = [];
+  for (let s = 0; s <= nSeg; s++) {
+    const t = s / nSeg, z = zT + stemH * t, r = _lerp(rBase, rBase * 0.45, t);
+    ring.push(X.length);
+    for (let k = 0; k < sides; k++) { X.push(cx0 + r * cs[k]); Y.push(cy0 + r * sn[k]); Z.push(z); C.push(stemCol); }
+  }
+  for (let s = 0; s < nSeg; s++) {
+    const a0 = ring[s], a1 = ring[s + 1];
+    for (let k = 0; k < sides; k++) { const k2 = (k + 1) % sides; I.push(a0 + k, a0 + k); J.push(a0 + k2, a1 + k2); K.push(a1 + k2, a1 + k); }
+  }
+  // paired first leaves once the shoot has grown past the rim
+  const leafG = clip((gfrac - 0.40) / 0.60, 0, 1);
+  if (leafG > 0.05) {
+    const tip = [cx0, cy0, zT + stemH], leafLen = 0.14 * H * leafG, leafW = 0.42 * leafLen, nL = 8;
+    for (const azDeg of [18, 198]) {                      // one opposite pair
+      const az = azDeg * Math.PI / 180, ox = Math.cos(az), oy = Math.sin(az);
+      const dirx = ox * 0.72, diry = oy * 0.72, dirz = 0.69;   // midrib: up-and-out
+      const px = -oy, py = ox;                                  // width direction (horizontal)
+      const left = [], right = [];
+      for (let i = 0; i <= nL; i++) {
+        const t = i / nL, w = leafW * Math.pow(Math.sin(Math.PI * t), 0.7);
+        const cx = tip[0] + dirx * leafLen * t, cy = tip[1] + diry * leafLen * t, cz = tip[2] + dirz * leafLen * t;
+        left.push(X.length); X.push(cx + px * w); Y.push(cy + py * w); Z.push(cz); C.push(leafCol);
+        right.push(X.length); X.push(cx - px * w); Y.push(cy - py * w); Z.push(cz); C.push(leafCol);
+      }
+      for (let i = 0; i < nL; i++) {
+        const l0 = left[i], r0 = right[i], l1 = left[i + 1], r1 = right[i + 1];
+        I.push(l0, l0); J.push(r0, r1); K.push(r1, l1);
+      }
+    }
+  }
+  const rnd = v => Math.round(v * 10) / 10;
+  return { x: X.map(rnd), y: Y.map(rnd), z: Z.map(rnd), i: I, j: J, k: K, vertexcolor: C };
+}
+
+// ---------------------------------------------------------------------------
+//  material-specific crack analysis (plain-English report from Monte Carlo)
+// ---------------------------------------------------------------------------
+function _siteAngle(label) { const m = /(-?\d+)/.exec(label || ""); return m ? parseInt(m[1], 10) : null; }
+function _seamPosWords(deg) {
+  if (deg === null) return "";
+  const d = ((deg + 180) % 360 + 360) % 360 - 180;
+  const dir = Math.abs(d) < 25 ? "front (+X)" : Math.abs(d - 90) < 25 ? "left (+Y)" :
+    Math.abs(d + 90) < 25 ? "right (−Y)" : Math.abs(Math.abs(d) - 180) < 25 ? "back (−X)" : "";
+  return dir ? `${d}° (${dir})` : `${d}°`;
+}
+function crackReport(cfg, nRuns) {
+  const n = clip(Math.round(nRuns || 20), 4, 60);
+  const cur = MATERIALS[cfg.material] ? cfg.material : "clay";
+  const gp = growthFromCfg(cfg), sp = simFromCfg(cfg), pat = patternFromCfg(cfg);
+  const wall = buildFields(pat), wm = buildWallModel(wall), T = sp.n_time_steps;
+  // grow the n root systems ONCE (growth is material-independent) and reuse them
+  const jitterRng = mulberry32(12345), jNorm = makeNormal(jitterRng), rootSys = [];
+  for (let kk = 0; kk < n; kk++) {
+    const g = Object.assign({}, gp);
+    g.slot_bias = Math.max(0.2, gp.slot_bias * (1 + 0.5 * jNorm() * 0.3));
+    g.down_bias = clip(gp.down_bias * (1 + 0.5 * jNorm() * 0.3), 0.1, 1);
+    rootSys.push(grow(g, kk));
+  }
+  const mats = ["clay", "bioplastic", "concrete"], byMat = {};
+  const finite = a => a.filter(v => isFinite(v)), mean = a => a.length ? a.reduce((s, x) => s + x, 0) / a.length : Infinity;
+  for (const mk of mats) {
+    const ph = physFromCfg(Object.assign({}, cfg, { material: mk }));
+    const first = [], brk = [], firstSite = [];
+    for (let kk = 0; kk < n; kk++) {
+      const res = runSimulation(wm, rootSys[kk], sp, ph);
+      first.push(isFinite(res.firstStep) ? res.firstStep : Infinity);
+      brk.push(isFinite(res.breakthrough) ? res.breakthrough : Infinity);
+      firstSite.push(res.firstSite);
+    }
+    const fsc = {}; for (const si of firstSite) if (si >= 0) { const lab = wm.labels[si]; fsc[lab] = (fsc[lab] || 0) + 1; }
+    const fscSorted = Object.fromEntries(Object.entries(fsc).sort((a, b) => b[1] - a[1]));
+    const mFirst = mean(finite(first)), mBrk = mean(finite(brk));
+    byMat[mk] = {
+      first_site_counts: fscSorted, reliability: finite(brk).length / n,
+      mean_first_crack: isFinite(mFirst) ? mFirst : null, mean_breakthrough: isFinite(mBrk) ? mBrk : null,
+      first_crack_months: spTimeContext(ph.species, isFinite(mFirst) ? mFirst : null, T, ph.salinity_ppt).months,
+      breakthrough_months: spTimeContext(ph.species, isFinite(mBrk) ? mBrk : null, T, ph.salinity_ppt).months,
+      strength: MATERIALS[mk].fracture_strength_mpa,
+    };
+  }
+  const s = byMat[cur], ph = physFromCfg(Object.assign({}, cfg, { material: cur }));
+  const entries = Object.entries(s.first_site_counts);
+  const topSite = entries.length ? entries[0][0] : null, topCount = entries.length ? entries[0][1] : 0;
+  const consistency = Math.round(100 * topCount / n);
+  const angle = _siteAngle(topSite), posWords = _seamPosWords(angle);
+  const isLig = (topSite || "").startsWith("slot");
+  const fcMonths = s.first_crack_months, brkMonths = s.breakthrough_months;
+  const win = ph.species.window_months, outplant = ph.species.outplant_months;
+  const rel = Math.round(100 * s.reliability);
+  const strengthCur = MATERIALS[cur].fracture_strength_mpa, strengthBio = MATERIALS.bioplastic.fracture_strength_mpa;
+  const nm = v => v == null ? "—" : `month ${v.toFixed(1)}`;
+  const matName = MATERIALS[cur].name;
+  // ---- narrative ----
+  const where = topSite
+    ? `In ${matName} pods, cracking initiates at the ${isLig ? "upper-waist slot → foot ligament" : "base split-line"} seam at ${posWords}${consistency >= 60 ? ", consistently" : ", though the location varies"} — this seam is the first to fail in ${consistency}% of ${n} randomized runs.`
+    : `No consistent first-crack site emerged in ${n} runs (the wall rarely reaches threshold for ${matName}).`;
+  const why = `That seam overlaps the peak root-pressure band in the upper waist, where the thickening propagule presses hardest against the narrow inner bore. ${matName}'s low flexural strength (~${strengthCur} MPa, versus bioplastic's ~${strengthBio} MPa) means it reaches its failure threshold there before the other seams — so the weakest material fails earliest and most predictably at the highest-stress ligament.`;
+  const when = `Timing (${matName}): first crack at ~${nm(fcMonths)}, full 4-piece breakthrough at ~${nm(brkMonths)} of a ~${win}-month growth window (${rel}% of runs break within the window). By comparison — first crack: clay ~${nm(byMat.clay.first_crack_months)}, bioplastic ~${nm(byMat.bioplastic.first_crack_months)}, concrete ~${nm(byMat.concrete.first_crack_months)}.`;
+  const consistencyText = consistency >= 80
+    ? `This is a reliable, repeatable failure point: ${consistency}% of runs crack at the same seam.`
+    : consistency >= 50
+      ? `Moderately consistent: ${consistency}% of runs crack at this seam, the rest elsewhere.`
+      : `Inconsistent: only ${consistency}% of runs crack at this seam — the first-crack location is not reliable for this design/material.`;
+  const early = (brkMonths != null && outplant != null && brkMonths < 0.6 * outplant);
+  const consAdverb = consistency >= 80 ? "consistently " : consistency >= 55 ? "most often " : "";
+  const base = `In ${matName} pods, cracking ${consAdverb}initiates at the ${isLig ? "upper-waist slot ligaments" : "base split-lines"} at approximately ${nm(fcMonths)} of a ${win}-month cycle, with full 4-piece release by ~${nm(brkMonths)} (${consistency}% of ${n} runs crack first at the seam near ${posWords}).`;
+  const varyClause = consistency < 55 ? ` The first-crack seam varies between the 4 near-symmetric slot ligaments, so there is no single dominant release point.` : "";
+  const timingClause = early
+    ? ` That is well before the seedling's roots are self-supporting (~month ${outplant}) — the current seam design releases the pod too early for ${matName}, and may need reinforced or deeper seam scoring for this material.`
+    : ` This lands within the ~${outplant}-month establishment window, so the seam timing is broadly appropriate for ${matName}.${consistency < 55 ? ` Tuning the 4 seams so one releases first would give a more predictable, controlled split.` : ""}`;
+  const summary = topSite ? base + varyClause + timingClause
+    : `${matName} rarely cracks within the growth window under the current design — the seams may be too strong / too shallow for this material to release reliably.`;
+  return {
+    material: cur, material_name: matName, n_runs: n,
+    first_site: topSite, first_site_pos: posWords, consistency,
+    first_crack_months: fcMonths, breakthrough_months: brkMonths,
+    window_months: win, outplant_months: outplant, reliability: rel,
+    compare: mats.map(mk => ({ key: mk, name: MATERIALS[mk].name, strength: byMat[mk].strength,
+      first_crack_months: byMat[mk].first_crack_months, breakthrough_months: byMat[mk].breakthrough_months,
+      reliability: Math.round(100 * byMat[mk].reliability) })),
+    text: { where, why, when, consistency: consistencyText, summary },
+    first_site_counts: s.first_site_counts,
+  };
+}
+
 function features() {
   const f = POD.features;
   return {
     height: f.height, outer_r_waist: f.outer_r_waist, inner_r_waist: f.inner_r_waist,
     wall_thickness: f.wall_thickness_median, n_slots: f.slots.length, n_feet: f.feet.length,
     n_faces: POD.nF, n_verts: POD.nV,
+    foot_r: rOuterAt(0.05 * f.height), ground_z: groundZ(), top_z: f.top_center[2],
   };
 }
 
@@ -1073,4 +1498,6 @@ window.ENGINE = {
   species: () => ({ species: SPECIES, default: "rhizophora" }),
   provenance: buildRegistry,
   baseMesh, seams: seamTubeMesh, exploded: explodedSectors, propagule: propaguleMesh,
+  stageRoots: stageRootMesh, ground: groundMesh,
+  simulateFrames, shoot: shootMesh, crackReport,
 };

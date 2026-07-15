@@ -154,19 +154,55 @@ function cfg(extra) {
 }
 
 // ---- render state -----------------------------------------------------------
-const STRESS_SCALE = [[0.0,"#2f6f5e"],[0.35,"#e9c46a"],[0.7,"#e76f51"],[1.0,"#c1121f"]];
+// stress heat-scale: the low end is the CURRENT material's own colour, so the
+// pod still reads as clay / concrete / bioplastic at low stress (finish + hue
+// stay legible even mid-animation), ramping up to warning → critical.
+function stressScale() {
+  const c = materialLook().color;
+  return [[0.0, c], [0.16, c], [0.42, "#e9c46a"], [0.72, "#e76f51"], [1.0, "#c1121f"]];
+}
 // explicit colorbar sizing (Plotly's auto-sizing can throw "axis scaling" here)
 const CBAR = { len:0.6, thickness:14, x:0.98, xpad:0, ypad:0,
   tickfont:{ color:"#c9d4de", size:10 }, title:{ text:"stress", font:{ color:"#c9d4de", size:11 } } };
-const SEAM_COLOR = "#f2c14e", ROOT_COLOR = "#6b4525", PIECE_COLOR = "#c7b291";
+// subtle molded parting-line accent (reads as a deliberate product feature)
+const SEAM_COLOR = "#7c6f5d", ROOT_COLOR = "#6b4525", PIECE_COLOR = "#c7b291";
 const PROP_COLOR = "#7d8c4e";   // olive seedling / propagule body
-const ROOT_LIGHT = { ambient:0.5, diffuse:0.85, specular:0.15, roughness:0.75 };
+// per-material product finish: clean base colour + soft studio lighting.
+// clay/concrete matte (low specular, high roughness); bioplastic a touch glossier.
+const MATERIAL_LOOK = {
+  // clay: warm terracotta, fully matte (fired-earth look)
+  clay:       { color:"#b5673c", light:{ ambient:0.50, diffuse:0.86, specular:0.06, roughness:0.95, fresnel:0.03 } },
+  // concrete: cool grey, matte with a faint mineral sheen
+  concrete:   { color:"#9a9790", light:{ ambient:0.52, diffuse:0.82, specular:0.12, roughness:0.86, fresnel:0.06 } },
+  // bioplastic: waxy cream, distinctly GLOSSY (strong highlight, low roughness)
+  bioplastic: { color:"#e7dcbb", light:{ ambient:0.48, diffuse:0.74, specular:0.55, roughness:0.26, fresnel:0.28 } },
+};
+function currentMaterial() { const v = $("material") ? $("material").value : "clay"; return MATERIAL_LOOK[v] ? v : "clay"; }
+function materialLook() { return MATERIAL_LOOK[currentMaterial()]; }
+function stressOn() { const el = $("show_stress"); return el ? el.checked : true; }
+// matte, bark-like roots (very low specular, high roughness — no plastic sheen)
+const ROOT_LIGHT = { ambient:0.55, diffuse:0.92, specular:0.05, roughness:0.96, fresnel:0.02 };
 const MESH_LIGHT = { ambient:0.42, diffuse:0.9, specular:0.18, roughness:0.55, fresnel:0.15 };
-const LIGHT_POS  = { x:180, y:260, z:520 };
+// studio key light from upper-front-right; ambient acts as the fill, fresnel the rim
+const LIGHT_POS  = { x:220, y:150, z:480 };
 
 let BASE_MESH = null, BASE_LAYOUT = null, SEAM_TRACE = null, PROP_TRACE = null, EXPLODED = null;
 let LAST = { intensity: null, cmax: 1, roots: null };
 let viewMode = "intact";
+// growth elements (ground, roots, seedling) stay hidden until the sim starts —
+// the pod is shown alone in its clean intact state on load.
+let sceneRevealed = false;
+// invisible extent markers so the camera frames the FULL scene (pod + eventual
+// ground + roots) from the start — the view never jumps as elements appear.
+let BOUNDS_TRACE = null;
+function buildBounds() {
+  const f = ENGINE.features(), Rg = 2.2 * f.foot_r * 1.04;
+  const zLo = f.ground_z - 0.10 * f.height, zHi = f.top_z * 1.01;
+  const x = [], y = [], z = [];
+  for (const sx of [-Rg, Rg]) for (const sy of [-Rg, Rg]) for (const sz of [zLo, zHi]) { x.push(sx); y.push(sy); z.push(sz); }
+  return { type:"scatter3d", mode:"markers", x, y, z,
+    marker:{ size:0.1, opacity:0, color:"#000" }, hoverinfo:"skip", showlegend:false };
+}
 
 function baseLayout() {
   const ax = { visible:false, showbackground:false, showgrid:false, zeroline:false, showspikes:false };
@@ -174,7 +210,7 @@ function baseLayout() {
     paper_bgcolor:"rgba(0,0,0,0)", plot_bgcolor:"rgba(0,0,0,0)",
     font:{ color:"#c9d4de", size:12 }, margin:{ l:0, r:0, t:20, b:0 }, title:"",
     scene:{ xaxis:ax, yaxis:ax, zaxis:{...ax}, bgcolor:"rgba(0,0,0,0)",
-      aspectmode:"data", camera:{ eye:{ x:1.5, y:1.5, z:0.9 } }, uirevision:"keep" },
+      aspectmode:"data", camera:{ eye:{ x:1.65, y:1.65, z:0.72 }, center:{ x:0, y:0, z:-0.06 } }, uirevision:"keep" },
   };
 }
 function buildSeamTrace(g) {
@@ -185,10 +221,28 @@ function buildSeamTrace(g) {
 }
 function buildRootTrace(g) {
   if (!g) return null;
-  return { type:"mesh3d", x:g.x, y:g.y, z:g.z, i:g.i, j:g.j, k:g.k,
-    color:ROOT_COLOR, flatshading:false, hoverinfo:"skip", name:"roots",
+  const tr = { type:"mesh3d", x:g.x, y:g.y, z:g.z, i:g.i, j:g.j, k:g.k,
+    flatshading:false, hoverinfo:"skip", name:"roots",
     lighting:ROOT_LIGHT, lightposition:LIGHT_POS };
+  if (g.vertexcolor) tr.vertexcolor = g.vertexcolor; else tr.color = ROOT_COLOR;
+  return tr;
 }
+// the 3-stage root morphology is parametric (independent of the sim); scrub via
+// the "root growth stage" slider. Rebuild the trace when the stage changes.
+let ROOTS_TRACE = null;
+function rebuildRoots() {
+  const el = $("root_stage"), p = el ? (+el.value) / 100 : 1;
+  ROOTS_TRACE = buildRootTrace(ENGINE.stageRoots(p));
+}
+// mud substrate the roots plant into (matte, flat) — grounds the whole scene
+let GROUND_TRACE = null;
+function buildGroundTrace(g) {
+  if (!g) return null;
+  return { type:"mesh3d", x:g.x, y:g.y, z:g.z, i:g.i, j:g.j, k:g.k, vertexcolor:g.vertexcolor,
+    flatshading:false, hoverinfo:"skip", name:"ground",
+    lighting:{ ambient:0.66, diffuse:0.55, specular:0.16, roughness:0.78, fresnel:0.08 }, lightposition:LIGHT_POS };
+}
+function groundOn() { const el = $("show_ground"); return el ? el.checked : true; }
 function buildPropTrace(g) {
   if (!g) return null;
   return { type:"mesh3d", x:g.x, y:g.y, z:g.z, i:g.i, j:g.j, k:g.k,
@@ -199,35 +253,54 @@ function propOn() { const el = $("show_prop"); return el ? el.checked : true; }
 function render() {
   if (!BASE_MESH) return;
   const data = [];
+  if (BOUNDS_TRACE) data.push(BOUNDS_TRACE);   // fixes the camera frame
+  const look = materialLook(), showStress = stressOn() && !!LAST.intensity;
+  if (sceneRevealed && groundOn() && GROUND_TRACE) data.push(GROUND_TRACE);   // substrate behind everything
   if (viewMode === "exploded" && EXPLODED) {
+    let barSet = false;
     for (const s of EXPLODED) {
       const t = { type:"mesh3d", x:s.x, y:s.y, z:s.z, i:s.i, j:s.j, k:s.k,
-        flatshading:false, hoverinfo:"skip", name:"piece", lighting:MESH_LIGHT, lightposition:LIGHT_POS };
-      if (LAST.intensity) {
+        flatshading:false, hoverinfo:"skip", name:"piece", lighting:look.light, lightposition:LIGHT_POS };
+      if (showStress) {
         t.intensity = s.orig.map(o => LAST.intensity[o]);
-        t.colorscale = STRESS_SCALE; t.cmin = 0; t.cmax = LAST.cmax; t.showscale = (data.length === 0);
-        if (data.length === 0) t.colorbar = CBAR;
-      } else { t.color = PIECE_COLOR; }
+        t.colorscale = stressScale(); t.cmin = 0; t.cmax = LAST.cmax; t.showscale = !barSet;
+        if (!barSet) { t.colorbar = CBAR; barSet = true; }
+      } else { t.color = look.color; }
       data.push(t);
     }
-    if (propOn() && PROP_TRACE) data.push(PROP_TRACE);   // seedling revealed between the pieces
+    if (sceneRevealed && propOn() && PROP_TRACE) data.push(PROP_TRACE);   // seedling revealed between the pieces
+    // roots grow INSIDE the pod — only shown once it has broken apart
+    if (sceneRevealed && $("show_roots").checked && ROOTS_TRACE) data.push(ROOTS_TRACE);
   } else {
+    // clean material-coloured pod is the DEFAULT look; stress is a toggled overlay
     const m = Object.assign({}, BASE_MESH);
-    m.lighting = MESH_LIGHT; m.lightposition = LIGHT_POS; m.flatshading = false;
-    if (LAST.intensity) {
-      m.intensity = LAST.intensity; m.colorscale = STRESS_SCALE;
+    delete m.intensity; delete m.colorscale; delete m.cmin; delete m.cmax;
+    m.color = look.color; m.lighting = look.light; m.lightposition = LIGHT_POS;
+    m.flatshading = false; m.showscale = false;
+    if (showStress) {
+      delete m.color;
+      m.intensity = LAST.intensity; m.colorscale = stressScale();
       m.cmin = 0; m.cmax = LAST.cmax; m.showscale = true; m.colorbar = CBAR;
     }
     data.push(m);
-    if (propOn() && PROP_TRACE) data.push(PROP_TRACE);
-    if ($("show_seams").checked && SEAM_TRACE) data.push(SEAM_TRACE);
-    if ($("show_roots").checked && LAST.roots) data.push(LAST.roots);
+    if (sceneRevealed && propOn() && PROP_TRACE) data.push(PROP_TRACE);
+    // seam parting-lines are folded into the stress overlay (they annotate where
+    // the wall will split) — never a standalone hairline on the clean pod
+    if (showStress && $("show_seams").checked && SEAM_TRACE) data.push(SEAM_TRACE);
+    // while intact, roots stay hidden inside the pod — the outward push shows
+    // only as the internal stress heatmap, never as geometry around the outside
   }
-  Plotly.react(plotDiv, data, BASE_LAYOUT, { responsive:true, displaylogo:false });
+  // newPlot (not react): react throws "axis scaling" when it must ADD a colorbar
+  // to an existing 3D plot; newPlot rebuilds cleanly, uirevision keeps the camera.
+  Plotly.newPlot(plotDiv, data, BASE_LAYOUT, { responsive:true, displaylogo:false });
 }
 function updateStress(intensity, cmax, roots) {
   LAST.intensity = intensity; LAST.cmax = cmax;
-  if (roots) LAST.roots = buildRootTrace(roots);
+  sceneRevealed = true;   // a run reveals the ground + mature roots
+  // roots come from the parametric stage model, not the sim node tree; a full
+  // run means mature roots, so show the full stilt cage.
+  if ($("root_stage")) { $("root_stage").value = 100; const o = $("o_root_stage"); if (o) o.textContent = "100"; }
+  rebuildRoots();
   render();
 }
 function setView(v) {
@@ -280,6 +353,198 @@ async function runMC() {
 }
 $("runBtn").addEventListener("click", runSim);
 $("mcBtn").addEventListener("click", runMC);
+
+// ============================================================================
+//  GROWTH ANIMATION — play the simulation through time
+// ============================================================================
+const clamp = (v, lo, hi) => v < lo ? lo : (v > hi ? hi : v);
+// small, even outward drift per quarter-piece as it breaks through (not a blow-apart)
+const SHOOT_COLOR = "#6f9f3f", POP_FRAMES = 12, POP_GAP_FRAC = 0.14;
+let ANIM = null, animTimer = null, animPlaying = false, animIdx = 0, animSpeed = 1, animPhase = "intact", animDirty = true;
+
+function buildShootTrace(g) {
+  if (!g) return null;
+  const tr = { type:"mesh3d", x:g.x, y:g.y, z:g.z, i:g.i, j:g.j, k:g.k,
+    flatshading:false, hoverinfo:"skip", name:"shoot",
+    lighting:{ ambient:0.5, diffuse:0.85, specular:0.16, roughness:0.65 }, lightposition:LIGHT_POS };
+  if (g.vertexcolor) tr.vertexcolor = g.vertexcolor; else tr.color = SHOOT_COLOR;
+  return tr;
+}
+function setPlayBtn(playing) {
+  const b = $("playBtn"); if (b) b.innerHTML = playing ? "⏸ Pause growth" : "▶ Play growth";
+}
+async function playGrowth() {
+  if (animPlaying) { pauseAnim(); return; }
+  if (!ANIM || animDirty) {
+    busy(true, "simulating growth through time…");
+    try {
+      ANIM = await compute(() => {
+        const a = ENGINE.simulateFrames(cfg());
+        a.exploded = ENGINE.exploded(0);   // base (gap 0) positions + pop directions
+        a.T = a.n_time_steps;
+        return a;
+      });
+    } catch (e) { busy(false); showError("Growth animation", e); return; }
+    busy(false);
+    animDirty = false; animIdx = 0; animPhase = "intact"; ANIM._needNewPlot = true;
+    sceneRevealed = true;   // playing growth reveals the substrate + roots
+    LAST.intensity = null;
+    const bar = $("animBar"); if (bar) bar.classList.remove("hidden");
+    const sl = $("anim_timeline"); if (sl) { sl.max = ANIM.T; sl.value = 1; }
+  }
+  if (animIdx >= ANIM.T - 1) { animIdx = 0; ANIM._needNewPlot = true; }
+  startAnim();
+}
+function startAnim() { animPlaying = true; setPlayBtn(true); if (animTimer) clearInterval(animTimer); animTimer = setInterval(animTick, 110); }
+function pauseAnim() { animPlaying = false; setPlayBtn(false); if (animTimer) { clearInterval(animTimer); animTimer = null; } }
+function animTick() {
+  if (!ANIM) return;
+  animIdx += animSpeed;
+  if (animIdx >= ANIM.T - 1) { animIdx = ANIM.T - 1; renderAnimFrame(animIdx); pauseAnim(); finishAnim(); return; }
+  renderAnimFrame(animIdx);
+}
+// build a results-sidebar stats object reflecting the state AT a given anim step
+function buildAnimStats(idx) {
+  const A = ANIM, s = idx + 1, brk = A.breakthrough_step, tl = A.timeline;
+  const broken = (brk != null && s >= brk);
+  const sites = A.site_labels.map((lab, i) => ({
+    label: lab, is_ligament: !!A.is_lig[i],
+    activation_step: (A.activation[i] != null && A.activation[i] <= s) ? A.activation[i] : null,
+  }));
+  let fcStep = Infinity, fcSite = null;
+  for (const si of sites) if (si.activation_step != null && si.activation_step < fcStep) { fcStep = si.activation_step; fcSite = si.label; }
+  const firstCrack = isFinite(fcStep) ? fcStep : null;
+  const order = sites.filter(si => si.activation_step != null)
+    .sort((a, b) => a.activation_step - b.activation_step).map(si => si.label);
+  const tcAt = (step) => (step == null || !tl[step - 1]) ? { months: null, label: "—" } : { months: tl[step - 1].months, label: tl[step - 1].label };
+  return Object.assign({}, A.stats, {
+    n_time_steps: A.T,
+    breakthrough_step: broken ? brk : null,
+    breakthrough_time: broken ? A.stats.breakthrough_time : { months: null, label: "—" },
+    first_crack_step: firstCrack, first_crack_site: fcSite, first_crack_time: tcAt(firstCrack),
+    sites, activation_order: order,
+  });
+}
+// when "Play growth" finishes: sync the sidebar and auto-reveal the full 4-piece
+// split (Exploded view) so all four separations are obvious without rotating
+function finishAnim() {
+  if (!ANIM) return;
+  if (ANIM.frames && ANIM.frames.length) { LAST.intensity = Array.from(ANIM.frames[ANIM.T - 1]); LAST.cmax = ANIM.cmax; }
+  renderAnimSidebar(ANIM.T - 1);
+  if ($("root_stage")) { $("root_stage").value = 100; const o = $("o_root_stage"); if (o) o.textContent = "100"; }
+  rebuildRoots();
+  setView("exploded");
+}
+// sidebar synced to an anim step, with a gentle "in progress" verdict pre-crack
+function renderAnimSidebar(idx) {
+  const A = ANIM, st = buildAnimStats(idx);
+  renderSingle(st);
+  if (st.breakthrough_step == null && st.first_crack_step == null) {
+    const vd = $("verdict"); if (vd) {
+      vd.className = "verdict idle";
+      const lab = A.timeline[idx] ? A.timeline[idx].label : "";
+      vd.innerHTML = `Growth in progress — <b>${lab}</b>. Wall intact; root pressure building toward the seams.`;
+    }
+  }
+}
+function animScrub() {
+  if (!ANIM) return;
+  pauseAnim();
+  animIdx = clamp(Math.round(+$("anim_timeline").value) - 1, 0, ANIM.T - 1);
+  renderAnimFrame(animIdx);
+}
+function setSpeed(s) {
+  animSpeed = s;
+  document.querySelectorAll("#speedSeg .segbtn").forEach(b => b.classList.toggle("active", +b.dataset.speed === s));
+}
+function renderAnimFrame(idx) {
+  const A = ANIM, T = A.T, tl = A.timeline[idx], look = materialLook(), data = [], sc = stressScale();
+  if (BOUNDS_TRACE) data.push(BOUNDS_TRACE);
+  // ground does a subtle radial reveal over the first fifth of the timeline as
+  // the propagule "lands" and roots start — it isn't there at step 0.
+  if (groundOn()) {
+    const rv = clamp((idx / T) / 0.20, 0, 1), gReveal = rv * rv * (3 - 2 * rv);
+    if (gReveal > 0.03) {
+      const gt = gReveal >= 0.999 ? GROUND_TRACE : buildGroundTrace(ENGINE.ground(26, 110, gReveal));
+      if (gt) data.push(gt);
+    }
+  }
+  const brk = A.breakthrough_step, exploded = (brk != null && idx >= brk - 1), inten = A.frames[idx];
+  if (!exploded) {
+    const m = Object.assign({}, BASE_MESH);
+    delete m.color;
+    m.intensity = Array.from(inten); m.colorscale = sc; m.cmin = 0; m.cmax = A.cmax;
+    m.showscale = true; m.colorbar = CBAR; m.lighting = look.light; m.lightposition = LIGHT_POS; m.flatshading = false;
+    data.push(m);
+    // (no seam parting-lines during the sim — they read as a stray hairline)
+  } else {
+    const pop = clamp((idx - (brk - 1)) / POP_FRAMES, 0, 1);
+    const gap = pop * POP_GAP_FRAC * ENGINE.features().outer_r_waist;
+    let barSet = false;
+    for (const s of A.exploded) {
+      const x = s.x.map(v => v + gap * s.cdx), y = s.y.map(v => v + gap * s.cdy);
+      const t = { type:"mesh3d", x, y, z:s.z, i:s.i, j:s.j, k:s.k, flatshading:false, hoverinfo:"skip", name:"piece",
+        lighting:look.light, lightposition:LIGHT_POS };
+      t.intensity = s.orig.map(o => inten[o]); t.colorscale = sc; t.cmin = 0; t.cmax = A.cmax;
+      t.showscale = !barSet; if (!barSet) { t.colorbar = CBAR; barSet = true; }
+      data.push(t);
+    }
+  }
+  // roots stay hidden inside the pod until it breaks through; then thin tips
+  // emerge through the opening and extend down into the substrate over the rest
+  let emergeFrac = 0;
+  if (brk != null && idx >= brk - 1) emergeFrac = clamp((idx - (brk - 1)) / Math.max(T - (brk - 1), 1), 0, 1);
+  if (emergeFrac > 0.001 && $("show_roots").checked) {
+    const rt = buildRootTrace(ENGINE.stageRoots(emergeFrac)); if (rt) data.push(rt);
+  }
+  const sh = buildShootTrace(ENGINE.shoot(clamp(idx / (T - 1), 0, 1))); if (sh) data.push(sh);
+  const sl = $("anim_timeline"); if (sl) sl.value = idx + 1;
+  updateAnimReadout(idx);
+  renderAnimSidebar(idx);   // keep the results sidebar synced to the current step
+  const phase = exploded ? "exploded" : "intact";
+  if (A._needNewPlot || phase !== animPhase) { Plotly.newPlot(plotDiv, data, BASE_LAYOUT, { responsive:true, displaylogo:false }); A._needNewPlot = false; }
+  else Plotly.react(plotDiv, data, BASE_LAYOUT, { responsive:true, displaylogo:false });
+  animPhase = phase;
+}
+function updateAnimReadout(idx) {
+  const A = ANIM, tl = A.timeline[idx], brk = A.breakthrough_step, el = $("anim_readout");
+  if (!el) return;
+  let ligCracked = 0, nLig = 0;
+  for (let si = 0; si < A.activation.length; si++) if (A.is_lig[si]) { nLig++; if (A.activation[si] != null && A.activation[si] <= idx + 1) ligCracked++; }
+  let status;
+  if (brk != null && idx + 1 >= brk) status = `<span class="astatus broke">● pod released — 4 pieces</span>`;
+  else if (ligCracked > 0) status = `<span class="astatus crack">● ${ligCracked}/${nLig} seams cracked</span>`;
+  else status = `<span class="astatus ok">● intact, pressure building</span>`;
+  const win = A.window_months, elapsed = tl.months != null ? tl.months.toFixed(1) : "–";
+  el.innerHTML = `<span class="abig">${tl.label}</span>` +
+    `<span class="amuted"> · ${elapsed} / ${win} mo · step ${idx + 1}/${A.T} · ${A.species_name}</span>` +
+    ` &nbsp; ${status}`;
+}
+
+// ============================================================================
+//  MATERIAL CRACK-ANALYSIS REPORT
+// ============================================================================
+function openCrackReport() {
+  busy(true, "running material crack analysis…");
+  compute(() => ENGINE.crackReport(cfg(), Math.max(16, Math.min(40, +$("n_runs").value))))
+    .then(r => { busy(false); renderCrackReport(r); $("crackPanel").classList.remove("hidden"); })
+    .catch(e => { busy(false); showError("Crack analysis", e); });
+}
+function renderCrackReport(r) {
+  const t = r.text, cur = r.material;
+  const cmp = r.compare.map(c => `<tr class="${c.key === cur ? "curmat" : ""}"><td>${c.name}</td><td>${c.strength} MPa</td>` +
+    `<td>${c.first_crack_months != null ? c.first_crack_months.toFixed(1) : "—"}</td>` +
+    `<td>${c.breakthrough_months != null ? c.breakthrough_months.toFixed(1) : "—"}</td><td>${c.reliability}%</td></tr>`).join("");
+  $("crackBody").innerHTML =
+    `<div class="crackhead">Crack analysis — <b>${r.material_name}</b> · ${r.n_runs} randomized runs</div>` +
+    `<div class="cracksum">${t.summary}</div>` +
+    `<h4>Where it cracks first</h4><p>${t.where}</p>` +
+    `<h4>Why there</h4><p>${t.why}</p>` +
+    `<h4>When</h4><p>${t.when}</p>` +
+    `<h4>Consistency</h4><p>${t.consistency}</p>` +
+    `<h4>Material comparison</h4><table class="cmptbl"><thead><tr><th>Material</th><th>Strength</th><th>First crack</th><th>Breakthrough</th><th>Reliability</th></tr></thead><tbody>${cmp}</tbody></table>` +
+    `<p class="crackfoot">First crack / breakthrough in real elapsed months of the ${r.window_months}-month growth window. Roots self-supporting ≈ month ${r.outplant_months}. Reduced-order surrogate — relative comparison, not FEA.</p>`;
+}
 
 // ---- render single-run results ---------------------------------------------
 function card(k, v, u) {
@@ -439,11 +704,24 @@ async function init() {
       `waist R≈${f.outer_r_waist.toFixed(0)} · wall≈${f.wall_thickness.toFixed(0)} · runs in-browser`;
     document.querySelectorAll("#viewSeg .segbtn").forEach(b =>
       b.addEventListener("click", () => setView(b.dataset.view)));
-    ["show_seams","show_roots","show_prop"].forEach(id => { const el = $(id); if (el) el.addEventListener("change", render); });
+    ["show_seams","show_roots","show_prop","show_stress","show_ground"].forEach(id => { const el = $(id); if (el) el.addEventListener("change", render); });
+    $("material").addEventListener("change", render);   // repaint pod in the new material finish
+    if ($("root_stage")) $("root_stage").addEventListener("input", () => { rebuildRoots(); render(); });
+    // growth-animation + report wiring
+    if ($("playBtn")) $("playBtn").addEventListener("click", playGrowth);
+    if ($("anim_timeline")) $("anim_timeline").addEventListener("input", animScrub);
+    document.querySelectorAll("#speedSeg .segbtn").forEach(b => b.addEventListener("click", () => setSpeed(+b.dataset.speed)));
+    if ($("crackBtn")) $("crackBtn").addEventListener("click", openCrackReport);
+    if ($("crackClose")) $("crackClose").addEventListener("click", () => $("crackPanel").classList.add("hidden"));
+    // any change to the design/species/material controls invalidates a cached animation
+    if ($("controls")) $("controls").addEventListener("input", () => { animDirty = true; });
     BASE_MESH = ENGINE.baseMesh();
     BASE_LAYOUT = baseLayout();
+    BOUNDS_TRACE = buildBounds();   // stable camera frame (pod + eventual ground/roots)
     SEAM_TRACE = buildSeamTrace(ENGINE.seams());
     PROP_TRACE = buildPropTrace(ENGINE.propagule());
+    GROUND_TRACE = buildGroundTrace(ENGINE.ground());
+    rebuildRoots();     // prepared, but hidden until a run reveals the scene
     render();
     $("boot").classList.add("hidden");
   } catch (e) {

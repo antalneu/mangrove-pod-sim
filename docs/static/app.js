@@ -431,9 +431,15 @@ function finishAnim() {
   if (!ANIM) return;
   if (ANIM.frames && ANIM.frames.length) { LAST.intensity = Array.from(ANIM.frames[ANIM.T - 1]); LAST.cmax = ANIM.cmax; }
   renderAnimSidebar(ANIM.T - 1);
+  // only auto-reveal the 4-piece split if the pod ACTUALLY broke through; if it
+  // never released, keep the final intact frame (don't imply a break that never happened)
+  if (ANIM.breakthrough_step == null) return;
   if ($("root_stage")) { $("root_stage").value = 100; const o = $("o_root_stage"); if (o) o.textContent = "100"; }
   rebuildRoots();
-  setView("exploded");
+  viewMode = "exploded";
+  document.querySelectorAll("#viewSeg .segbtn").forEach(b => b.classList.toggle("active", b.dataset.view === "exploded"));
+  if (!EXPLODED) EXPLODED = ENGINE.exploded();
+  render();
 }
 // sidebar synced to an anim step, with a gentle "in progress" verdict pre-crack
 function renderAnimSidebar(idx) {

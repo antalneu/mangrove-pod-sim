@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Mangrove Pod — Root-Growth Break Design Tool</title>
 <script src="https://cdn.plot.ly/plotly-2.35.2.min.js" charset="utf-8"></script>
-<link rel="stylesheet" href="static/style.css?v=19">
+<link rel="stylesheet" href="static/style.css?v=20">
 </head>
 <body>
 <div id="boot"><div class="leaf">🌱</div><div id="bootmsg">loading the pod &amp; booting the in-browser engine…</div></div>
@@ -159,7 +159,7 @@
         <label class="chk"><input type="checkbox" id="show_ground" checked> show ground / substrate</label>
         <label class="chk"><input type="checkbox" id="show_seams"> mark the 4 seams (with stress overlay)</label>
         <label class="chk"><input type="checkbox" id="show_prop"> show seedling (fills the pod)</label>
-        <label class="chk"><input type="checkbox" id="project_outer"> stress on outer surface</label>
+        <label class="chk"><input type="checkbox" id="project_outer" checked> stress on outer (visible) surface</label>
       </div>
       <label>Root growth stage <output id="o_root_stage">100</output>%
         <input type="range" id="root_stage" min="0" max="100" step="1" value="100"></label>
@@ -231,8 +231,8 @@
   </div>
 </div>
 
-<script src="data/pod.js?v=19"></script>
-<script src="static/engine.js?v=19"></script>
-<script src="static/app.js?v=19"></script>
+<script src="data/pod.js?v=20"></script>
+<script src="static/engine.js?v=20"></script>
+<script src="static/app.js?v=20"></script>
 </body>
 </html>

@@ -1253,7 +1253,7 @@ function montecarlo(cfg, nRuns) {
   const oc = {};
   for (const o of orders) if (o.length) { const key = o.slice(0, 3).map(s => wm.labels[s]).join(" → "); oc[key] = (oc[key] || 0) + 1; }
   const topOrders = Object.entries(oc).sort((a, b) => b[1] - a[1]).slice(0, 5);
-  const { intensity, cmax } = vertexIntensity(cumAccum, false);
+  const { intensity, cmax } = vertexIntensity(cumAccum, !!cfg.project_outer);
   const rep = grow(gp, 7), roots_payload = rootTubeMesh(rep);
   const stats = {
     pattern: pat.name, n_runs: n, reliability,

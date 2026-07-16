@@ -1041,46 +1041,6 @@ function seamTubeMesh(sides = 6, npt = 80, lift = 1.004) {
   return acc.payload();
 }
 
-// Clean scored SEAM GROOVES over the 4 waist slots: a uniform-width concave dark
-// channel per slot that reads as a manufactured score line and visually cleans
-// up the jagged raw perforations. Recess depth scales with the Seam-score slider
-// (depthFrac 0..1). RENDERING ONLY — the physics still uses the real slots.
-function seamGrooveMesh(depthFrac) {
-  depthFrac = clip(depthFrac == null ? 0 : depthFrac, 0, 1);
-  const H = POD.features.height, slots = POD.features.slots, angles = seamAngles();
-  const hwDeg = 10, nZ = 28, nS = 6, D2R = Math.PI / 180;   // uniform ±10° half-width
-  // the whole channel stays PROUD of the surface (≥ rO) so it always covers the
-  // open slot + jagged rim — no inward dip that would re-expose the hole. A hair
-  // of concavity plus a dark-centre→light-edge colour gradient does the "carved"
-  // read; higher score → darker/deeper-looking channel.
-  const concav = 0.003 + depthFrac * 0.003;
-  const centerDark = 0.40 - 0.18 * depthFrac, dark = [0.28, 0.22, 0.16];
-  const X = [], Y = [], Z = [], I = [], J = [], K = [], C = [];
-  for (let ai = 0; ai < angles.length; ai++) {
-    const thc = angles[ai], slot = slots[ai] || { z_lo: 0.44 * H, z_hi: 0.66 * H };
-    const taper = 0.02 * H, zA = slot.z_lo - taper, zB = slot.z_hi + taper, ring = [];
-    for (let iz = 0; iz <= nZ; iz++) {
-      const z = _lerp(zA, zB, iz / nZ), rO = rOuterAt(z);
-      const win = _smoother(Math.min((z - zA) / taper, (zB - z) / taper, 1));   // rounded ends
-      ring.push([]);
-      for (let is = 0; is <= 2 * nS; is++) {
-        const s = is / nS - 1, prof = 1 - s * s;            // concave cross-section
-        const rr = rO * (1.007 - concav * prof * win);      // always proud → covers the hole
-        const th = (thc + s * hwDeg) * D2R;
-        ring[iz].push(X.length);
-        X.push(rr * Math.cos(th)); Y.push(rr * Math.sin(th)); Z.push(z);
-        const v = centerDark + (1 - centerDark) * Math.pow(Math.abs(s), 0.8);   // dark centre → light edges
-        C.push(_rgb([dark[0] * v, dark[1] * v, dark[2] * v]));
-      }
-    }
-    for (let iz = 0; iz < nZ; iz++) for (let is = 0; is < 2 * nS; is++) {
-      const a = ring[iz][is], b = ring[iz][is + 1], c = ring[iz + 1][is + 1], d = ring[iz + 1][is];
-      I.push(a, a); J.push(b, c); K.push(c, d);
-    }
-  }
-  const rnd = v => Math.round(v * 10) / 10;
-  return { x: X.map(rnd), y: Y.map(rnd), z: Z.map(rnd), i: I, j: J, k: K, vertexcolor: C };
-}
 // Split the pod into 4 clean quarter-pieces by CLIPPING each triangle against
 // the two seam-meridian half-planes that bound its wedge. New vertices land
 // exactly on the seam line, so every piece has a straight, manufactured-looking
@@ -1588,7 +1548,7 @@ window.ENGINE = {
   materials: () => ({ materials: Object.fromEntries(Object.entries(MATERIALS).map(([k, m]) => [k, materialCard(m)])), default: "bioplastic" }),
   species: () => ({ species: SPECIES, default: "rhizophora" }),
   provenance: buildRegistry,
-  baseMesh, seams: seamTubeMesh, seamGroove: seamGrooveMesh, exploded: explodedSectors, propagule: propaguleMesh,
+  baseMesh, seams: seamTubeMesh, exploded: explodedSectors, propagule: propaguleMesh,
   stageRoots: stageRootMesh, ground: groundMesh, rootLandings,
   simulateFrames, shoot: shootMesh, crackReport,
 };

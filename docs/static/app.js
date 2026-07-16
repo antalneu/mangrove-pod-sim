@@ -255,20 +255,6 @@ function buildSeamTrace(g) {
     color:SEAM_COLOR, flatshading:false, hoverinfo:"skip", name:"seams",
     lighting:{ ambient:0.55, diffuse:0.75, specular:0.5, roughness:0.4 }, lightposition:LIGHT_POS };
 }
-// clean scored seam grooves over the 4 slots — matte, recessed-looking channels;
-// depth follows the Seam-score slider. Rebuilt when that slider changes.
-let GROOVE_TRACE = null;
-function buildGrooveTrace(g) {
-  if (!g) return null;
-  return { type:"mesh3d", x:g.x, y:g.y, z:g.z, i:g.i, j:g.j, k:g.k, vertexcolor:g.vertexcolor,
-    flatshading:false, hoverinfo:"skip", name:"grooves",
-    lighting:{ ambient:0.34, diffuse:0.72, specular:0.03, roughness:1.0 }, lightposition:LIGHT_POS };
-}
-function rebuildGroove() {
-  const el = $("seam_score"), d = el ? (+el.value) / 0.9 : 0;   // slider 0..0.9 → 0..1
-  GROOVE_TRACE = buildGrooveTrace(ENGINE.seamGroove(d));
-}
-function seamsOn() { const el = $("show_seams"); return el ? el.checked : true; }
 function buildRootTrace(g) {
   if (!g) return null;
   const tr = { type:"mesh3d", x:g.x, y:g.y, z:g.z, i:g.i, j:g.j, k:g.k,
@@ -335,8 +321,8 @@ function render() {
     }
     data.push(m);
     if (sceneRevealed && propOn() && PROP_TRACE) data.push(PROP_TRACE);
-    // clean scored seam grooves over the 4 slots (a deliberate product feature)
-    if (seamsOn() && GROOVE_TRACE) data.push(GROOVE_TRACE);
+    // (seam markings intentionally not drawn on the intact pod — the break-lines
+    //  are shown by the actual pieces in the Exploded view)
     // while intact, roots stay hidden inside the pod — the outward push shows
     // only as the internal stress heatmap, never as geometry around the outside
   }
@@ -532,9 +518,6 @@ function renderAnimFrame(idx) {
     m.intensity = Array.from(inten); m.colorscale = sc; m.cmin = 0; m.cmax = A.cmax;
     m.showscale = true; m.colorbar = CBAR; m.lighting = look.light; m.lightposition = LIGHT_POS; m.flatshading = false;
     data.push(m);
-    // clean scored grooves show on the intact pod during growth (localized waist
-    // channels, not the full-height parting-lines that were removed before)
-    if (seamsOn() && GROOVE_TRACE) data.push(GROOVE_TRACE);
   } else {
     const pop = clamp((idx - (brk - 1)) / POP_FRAMES, 0, 1);
     const gap = pop * POP_GAP_FRAC * ENGINE.features().outer_r_waist;
@@ -762,7 +745,7 @@ async function init() {
       `waist R≈${f.outer_r_waist.toFixed(0)} · wall≈${f.wall_thickness.toFixed(0)} · runs in-browser`;
     document.querySelectorAll("#viewSeg .segbtn").forEach(b =>
       b.addEventListener("click", () => setView(b.dataset.view)));
-    ["show_seams","show_roots","show_prop","show_stress","show_ground"].forEach(id => { const el = $(id); if (el) el.addEventListener("change", render); });
+    ["show_roots","show_prop","show_stress","show_ground"].forEach(id => { const el = $(id); if (el) el.addEventListener("change", render); });
     $("material").addEventListener("change", render);   // repaint pod in the new material finish
     if ($("root_stage")) $("root_stage").addEventListener("input", () => { rebuildRoots(); render(); });
     // growth-animation + report wiring
@@ -780,8 +763,6 @@ async function init() {
     PROP_TRACE = buildPropTrace(ENGINE.propagule());
     LANDINGS = ENGINE.rootLandings();   // root-contact points for the mud mounds/AO + cast shadow
     GROUND_TRACE = buildGroundTrace(ENGINE.ground(28, 120, 1, groundOpts()));
-    rebuildGroove();    // clean scored seam grooves (depth from the seam-score slider)
-    if ($("seam_score")) $("seam_score").addEventListener("input", () => { rebuildGroove(); render(); });
     rebuildRoots();     // prepared, but hidden until a run reveals the scene
     render();
     $("boot").classList.add("hidden");

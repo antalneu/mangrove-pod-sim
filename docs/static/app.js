@@ -286,23 +286,45 @@ function buildPropTrace(g) {
     lighting:{ ambient:0.5, diffuse:0.8, specular:0.12, roughness:0.8 }, lightposition:LIGHT_POS };
 }
 function propOn() { const el = $("show_prop"); return el ? el.checked : true; }
+// Exploded view driven by the authored 4-piece asset (data/pieces.js). Each
+// piece is pushed outward by `gap` (world units) along its own explode dir.
+// VISUAL-ONLY: per-piece material colour, no stress mapping (different topology).
+const PIECE_GAP_FRAC = 0.6;   // widen for clarity in the Exploded display
+function pieceColor(idx) {
+  const base = hexToRgb(materialLook().color), f = 1 + (idx - 1.5) * 0.05;   // ±7.5% across the 4
+  return `rgb(${Math.round(clamp(base[0] * f, 0, 1) * 255)},${Math.round(clamp(base[1] * f, 0, 1) * 255)},${Math.round(clamp(base[2] * f, 0, 1) * 255)})`;
+}
+function pieceTraces(gap, look) {
+  const P = ENGINE.assetPieces(); if (!P) return null;
+  return P.map((p, idx) => ({
+    type:"mesh3d", x: p.x.map(v => v + gap * p.dx), y: p.y.map(v => v + gap * p.dy), z: p.z,
+    i: p.i, j: p.j, k: p.k, flatshading:false, hoverinfo:"skip", name:"piece",
+    color: pieceColor(idx), lighting: look.light, lightposition: LIGHT_POS,
+  }));
+}
 function render() {
   if (!BASE_MESH) return;
   const data = [];
   if (BOUNDS_TRACE) data.push(BOUNDS_TRACE);   // fixes the camera frame
   const look = materialLook(), showStress = stressOn() && !!LAST.intensity;
   if (sceneRevealed && groundOn() && GROUND_TRACE) data.push(GROUND_TRACE);   // substrate behind everything
-  if (viewMode === "exploded" && EXPLODED) {
-    let barSet = false;
-    for (const s of EXPLODED) {
-      const t = { type:"mesh3d", x:s.x, y:s.y, z:s.z, i:s.i, j:s.j, k:s.k,
-        flatshading:false, hoverinfo:"skip", name:"piece", lighting:look.light, lightposition:LIGHT_POS };
-      if (showStress) {
-        t.intensity = s.orig.map(o => LAST.intensity[o]);
-        t.colorscale = stressScale(); t.cmin = 0; t.cmax = LAST.cmax; t.showscale = !barSet;
-        if (!barSet) { t.colorbar = CBAR; barSet = true; }
-      } else { t.color = look.color; }
-      data.push(t);
+  const AP = ENGINE.assetPieces();
+  if (viewMode === "exploded" && (AP || EXPLODED)) {
+    if (AP) {
+      // authored 4-piece asset, widened, per-piece material colour (visual-only)
+      for (const t of pieceTraces(PIECE_GAP_FRAC * ENGINE.features().outer_r_waist, look)) data.push(t);
+    } else {
+      let barSet = false;
+      for (const s of EXPLODED) {   // fallback: procedural angular split (with stress)
+        const t = { type:"mesh3d", x:s.x, y:s.y, z:s.z, i:s.i, j:s.j, k:s.k,
+          flatshading:false, hoverinfo:"skip", name:"piece", lighting:look.light, lightposition:LIGHT_POS };
+        if (showStress) {
+          t.intensity = s.orig.map(o => LAST.intensity[o]);
+          t.colorscale = stressScale(); t.cmin = 0; t.cmax = LAST.cmax; t.showscale = !barSet;
+          if (!barSet) { t.colorbar = CBAR; barSet = true; }
+        } else { t.color = look.color; }
+        data.push(t);
+      }
     }
     if (sceneRevealed && propOn() && PROP_TRACE) data.push(PROP_TRACE);   // seedling revealed between the pieces
     // roots grow INSIDE the pod — only shown once it has broken apart
@@ -342,9 +364,9 @@ function updateStress(intensity, cmax, roots) {
 function setView(v) {
   viewMode = v;
   document.querySelectorAll("#viewSeg .segbtn").forEach(b => b.classList.toggle("active", b.dataset.view === v));
-  if (v === "exploded") {
+  if (v === "exploded" && !ENGINE.assetPieces() && !EXPLODED) {
     busy(true, "building exploded view…");
-    compute(() => { if (!EXPLODED) EXPLODED = ENGINE.exploded(); })
+    compute(() => { EXPLODED = ENGINE.exploded(); })
       .then(() => { busy(false); render(); })
       .catch(e => { busy(false); showError("Exploded view", e); });
   } else render();
@@ -474,7 +496,7 @@ function finishAnim() {
   rebuildRoots();
   viewMode = "exploded";
   document.querySelectorAll("#viewSeg .segbtn").forEach(b => b.classList.toggle("active", b.dataset.view === "exploded"));
-  if (!EXPLODED) EXPLODED = ENGINE.exploded();
+  if (!ENGINE.assetPieces() && !EXPLODED) EXPLODED = ENGINE.exploded();
   render();
 }
 // sidebar synced to an anim step, with a gentle "in progress" verdict pre-crack
@@ -519,16 +541,21 @@ function renderAnimFrame(idx) {
     m.showscale = true; m.colorbar = CBAR; m.lighting = look.light; m.lightposition = LIGHT_POS; m.flatshading = false;
     data.push(m);
   } else {
+    // breakthrough: the pod releases into the authored 4 pieces, popping outward
     const pop = clamp((idx - (brk - 1)) / POP_FRAMES, 0, 1);
-    const gap = pop * POP_GAP_FRAC * ENGINE.features().outer_r_waist;
-    let barSet = false;
-    for (const s of A.exploded) {
-      const x = s.x.map(v => v + gap * s.cdx), y = s.y.map(v => v + gap * s.cdy);
-      const t = { type:"mesh3d", x, y, z:s.z, i:s.i, j:s.j, k:s.k, flatshading:false, hoverinfo:"skip", name:"piece",
-        lighting:look.light, lightposition:LIGHT_POS };
-      t.intensity = s.orig.map(o => inten[o]); t.colorscale = sc; t.cmin = 0; t.cmax = A.cmax;
-      t.showscale = !barSet; if (!barSet) { t.colorbar = CBAR; barSet = true; }
-      data.push(t);
+    const gap = pop * PIECE_GAP_FRAC * ENGINE.features().outer_r_waist;
+    const P = pieceTraces(gap, look);
+    if (P) { for (const t of P) data.push(t); }
+    else {   // fallback: procedural sectors (with stress)
+      const g2 = pop * POP_GAP_FRAC * ENGINE.features().outer_r_waist; let barSet = false;
+      for (const s of A.exploded) {
+        const x = s.x.map(v => v + g2 * s.cdx), y = s.y.map(v => v + g2 * s.cdy);
+        const t = { type:"mesh3d", x, y, z:s.z, i:s.i, j:s.j, k:s.k, flatshading:false, hoverinfo:"skip", name:"piece",
+          lighting:look.light, lightposition:LIGHT_POS };
+        t.intensity = s.orig.map(o => inten[o]); t.colorscale = sc; t.cmin = 0; t.cmax = A.cmax;
+        t.showscale = !barSet; if (!barSet) { t.colorbar = CBAR; barSet = true; }
+        data.push(t);
+      }
     }
   }
   // roots stay hidden inside the pod until it breaks through; then thin tips

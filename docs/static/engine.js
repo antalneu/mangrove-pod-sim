@@ -1535,11 +1535,35 @@ function features() {
   };
 }
 
+// ---------------------------------------------------------------------------
+//  authored 4-piece asset (explode_4pieces_3d.3dm → data/pieces.js). Drives the
+//  Exploded view instead of the procedural angular split. Already aligned to the
+//  pod frame (feet z=0). Each piece carries an outward explode dir (dx,dy).
+//  VISUAL-ONLY — different topology from the sim mesh, so no live stress mapping.
+// ---------------------------------------------------------------------------
+let POD_PIECES = null;
+function buildPieces(raw) {
+  if (!raw || !raw.pieces) return null;
+  POD_PIECES = raw.pieces.map(p => {
+    const V = p.V, F = p.F, nV = V.length / 3, nF = F.length / 3;
+    const x = new Array(nV), y = new Array(nV), z = new Array(nV);
+    for (let i = 0; i < nV; i++) { x[i] = V[3 * i]; y[i] = V[3 * i + 1]; z[i] = V[3 * i + 2]; }
+    const ii = new Array(nF), jj = new Array(nF), kk = new Array(nF);
+    for (let f = 0; f < nF; f++) { ii[f] = F[3 * f]; jj[f] = F[3 * f + 1]; kk[f] = F[3 * f + 2]; }
+    return { x, y, z, i: ii, j: jj, k: kk, dx: p.dx, dy: p.dy };
+  });
+  return POD_PIECES;
+}
+// returns the 4 authored pieces (base geometry + outward dir); the app offsets
+// each piece by gap*dir for the explode. null if the asset didn't load.
+function assetPieces() { return POD_PIECES; }
+
 async function loadPod() {
   // geometry is provided by data/pod.js as window.POD_RAW (loaded via <script>,
   // which avoids the large-body fetch() reset in the in-app preview proxy).
   if (!window.POD_RAW) throw new Error("pod geometry (data/pod.js) not loaded");
   buildPod(window.POD_RAW);
+  if (window.PIECES_RAW) buildPieces(window.PIECES_RAW);   // optional 4-piece asset
   return features();
 }
 
@@ -1548,7 +1572,7 @@ window.ENGINE = {
   materials: () => ({ materials: Object.fromEntries(Object.entries(MATERIALS).map(([k, m]) => [k, materialCard(m)])), default: "bioplastic" }),
   species: () => ({ species: SPECIES, default: "rhizophora" }),
   provenance: buildRegistry,
-  baseMesh, seams: seamTubeMesh, exploded: explodedSectors, propagule: propaguleMesh,
+  baseMesh, seams: seamTubeMesh, exploded: explodedSectors, assetPieces, propagule: propaguleMesh,
   stageRoots: stageRootMesh, ground: groundMesh, rootLandings,
   simulateFrames, shoot: shootMesh, crackReport,
 };

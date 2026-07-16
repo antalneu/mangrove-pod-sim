@@ -169,22 +169,29 @@ const SEAM_COLOR = "#7c6f5d", ROOT_COLOR = "#6b4525", PIECE_COLOR = "#c7b291";
 const PROP_COLOR = "#7d8c4e";   // olive seedling / propagule body
 // per-material product finish: clean base colour + soft studio lighting.
 // clay/concrete matte (low specular, high roughness); bioplastic a touch glossier.
+// per-material product finish + a rim (fresnel) on the silhouette. Surface
+// imperfection is added as per-vertex colour noise (see podBaseColors) —
+// amplitude per material, so clay/concrete read coarser than smooth bioplastic.
 const MATERIAL_LOOK = {
   // clay: warm terracotta, fully matte (fired-earth look)
-  clay:       { color:"#b5673c", light:{ ambient:0.50, diffuse:0.86, specular:0.06, roughness:0.95, fresnel:0.03 } },
+  clay:       { color:"#b5673c", light:{ ambient:0.48, diffuse:0.88, specular:0.06, roughness:0.95, fresnel:0.12 } },
   // concrete: cool grey, matte with a faint mineral sheen
-  concrete:   { color:"#9a9790", light:{ ambient:0.52, diffuse:0.82, specular:0.12, roughness:0.86, fresnel:0.06 } },
+  concrete:   { color:"#9a9790", light:{ ambient:0.50, diffuse:0.84, specular:0.12, roughness:0.86, fresnel:0.16 } },
   // bioplastic: waxy cream, distinctly GLOSSY (strong highlight, low roughness)
-  bioplastic: { color:"#e7dcbb", light:{ ambient:0.48, diffuse:0.74, specular:0.55, roughness:0.26, fresnel:0.28 } },
+  bioplastic: { color:"#e7dcbb", light:{ ambient:0.46, diffuse:0.76, specular:0.55, roughness:0.26, fresnel:0.30 } },
 };
+const MAT_IMPERFECTION = { bioplastic:0.045, clay:0.11, concrete:0.13 };   // vertex-noise amplitude
 function currentMaterial() { const v = $("material") ? $("material").value : "clay"; return MATERIAL_LOOK[v] ? v : "clay"; }
 function materialLook() { return MATERIAL_LOOK[currentMaterial()]; }
 function stressOn() { const el = $("show_stress"); return el ? el.checked : true; }
 // matte, bark-like roots (very low specular, high roughness — no plastic sheen)
-const ROOT_LIGHT = { ambient:0.55, diffuse:0.92, specular:0.05, roughness:0.96, fresnel:0.02 };
+const ROOT_LIGHT = { ambient:0.5, diffuse:0.95, specular:0.06, roughness:0.95, fresnel:0.03 };
 const MESH_LIGHT = { ambient:0.42, diffuse:0.9, specular:0.18, roughness:0.55, fresnel:0.15 };
-// studio key light from upper-front-right; ambient acts as the fill, fresnel the rim
-const LIGHT_POS  = { x:220, y:150, z:480 };
+// one dominant directional "sun" (key) from a defined angle; ambient is the sky
+// fill, fresnel the rim on the silhouette. Cast shadows / AO are baked into the
+// ground and root meshes (Plotly WebGL has one light and no real shadow pass).
+const SUN = { x:0.832, y:0.555 };                 // sun xy direction (ground shadow uses this)
+const LIGHT_POS = { x:300, y:200, z:340 };
 
 let BASE_MESH = null, BASE_LAYOUT = null, SEAM_TRACE = null, PROP_TRACE = null, EXPLODED = null;
 let LAST = { intensity: null, cmax: 1, roots: null };
@@ -203,6 +210,35 @@ function buildBounds() {
   return { type:"scatter3d", mode:"markers", x, y, z,
     marker:{ size:0.1, opacity:0, color:"#000" }, hoverinfo:"skip", showlegend:false };
 }
+// sun direction + root-contact points passed to the ground so it can bake the
+// pod's cast shadow and the mounds/AO where each root presses into the mud
+let LANDINGS = [];
+function groundOpts() { return { sunx: SUN.x, suny: SUN.y, landings: LANDINGS }; }
+
+// per-vertex surface imperfection on the base (no-stress) pod so it doesn't read
+// as uniformly clean CG — amplitude per material (coarse clay/concrete, smooth
+// bioplastic). Static noise field from vertex position, cached per material.
+let _podNoise = null;
+function podNoiseField() {
+  if (_podNoise) return _podNoise;
+  const x = BASE_MESH.x, y = BASE_MESH.y, z = BASE_MESH.z, n = x.length, f = new Float32Array(n);
+  for (let i = 0; i < n; i++)
+    f[i] = Math.sin(x[i] * 0.15 + 2.1) * Math.cos(y[i] * 0.13 - 1.3) * 0.6
+         + Math.sin(z[i] * 0.09 + 0.5) * 0.4 + Math.sin((x[i] + z[i]) * 0.3) * 0.25;
+  _podNoise = f; return f;
+}
+function hexToRgb(h) { h = h.replace("#", ""); return [parseInt(h.slice(0, 2), 16) / 255, parseInt(h.slice(2, 4), 16) / 255, parseInt(h.slice(4, 6), 16) / 255]; }
+const _podColorCache = {};
+function podBaseColors(matKey) {
+  if (_podColorCache[matKey]) return _podColorCache[matKey];
+  const base = hexToRgb(MATERIAL_LOOK[matKey].color), amp = MAT_IMPERFECTION[matKey] || 0.06;
+  const nf = podNoiseField(), n = nf.length, out = new Array(n);
+  for (let i = 0; i < n; i++) {
+    const s = 1 + amp * nf[i];
+    out[i] = `rgb(${Math.round(clamp(base[0] * s, 0, 1) * 255)},${Math.round(clamp(base[1] * s, 0, 1) * 255)},${Math.round(clamp(base[2] * s, 0, 1) * 255)})`;
+  }
+  _podColorCache[matKey] = out; return out;
+}
 
 function baseLayout() {
   const ax = { visible:false, showbackground:false, showgrid:false, zeroline:false, showspikes:false };
@@ -219,6 +255,20 @@ function buildSeamTrace(g) {
     color:SEAM_COLOR, flatshading:false, hoverinfo:"skip", name:"seams",
     lighting:{ ambient:0.55, diffuse:0.75, specular:0.5, roughness:0.4 }, lightposition:LIGHT_POS };
 }
+// clean scored seam grooves over the 4 slots — matte, recessed-looking channels;
+// depth follows the Seam-score slider. Rebuilt when that slider changes.
+let GROOVE_TRACE = null;
+function buildGrooveTrace(g) {
+  if (!g) return null;
+  return { type:"mesh3d", x:g.x, y:g.y, z:g.z, i:g.i, j:g.j, k:g.k, vertexcolor:g.vertexcolor,
+    flatshading:false, hoverinfo:"skip", name:"grooves",
+    lighting:{ ambient:0.34, diffuse:0.72, specular:0.03, roughness:1.0 }, lightposition:LIGHT_POS };
+}
+function rebuildGroove() {
+  const el = $("seam_score"), d = el ? (+el.value) / 0.9 : 0;   // slider 0..0.9 → 0..1
+  GROOVE_TRACE = buildGrooveTrace(ENGINE.seamGroove(d));
+}
+function seamsOn() { const el = $("show_seams"); return el ? el.checked : true; }
 function buildRootTrace(g) {
   if (!g) return null;
   const tr = { type:"mesh3d", x:g.x, y:g.y, z:g.z, i:g.i, j:g.j, k:g.k,
@@ -240,7 +290,7 @@ function buildGroundTrace(g) {
   if (!g) return null;
   return { type:"mesh3d", x:g.x, y:g.y, z:g.z, i:g.i, j:g.j, k:g.k, vertexcolor:g.vertexcolor,
     flatshading:false, hoverinfo:"skip", name:"ground",
-    lighting:{ ambient:0.66, diffuse:0.55, specular:0.16, roughness:0.78, fresnel:0.08 }, lightposition:LIGHT_POS };
+    lighting:{ ambient:0.64, diffuse:0.56, specular:0.22, roughness:0.72, fresnel:0.10 }, lightposition:LIGHT_POS };
 }
 function groundOn() { const el = $("show_ground"); return el ? el.checked : true; }
 function buildPropTrace(g) {
@@ -274,19 +324,19 @@ function render() {
   } else {
     // clean material-coloured pod is the DEFAULT look; stress is a toggled overlay
     const m = Object.assign({}, BASE_MESH);
-    delete m.intensity; delete m.colorscale; delete m.cmin; delete m.cmax;
-    m.color = look.color; m.lighting = look.light; m.lightposition = LIGHT_POS;
+    delete m.intensity; delete m.colorscale; delete m.cmin; delete m.cmax; delete m.color; delete m.vertexcolor;
+    m.lighting = look.light; m.lightposition = LIGHT_POS;
     m.flatshading = false; m.showscale = false;
     if (showStress) {
-      delete m.color;
       m.intensity = LAST.intensity; m.colorscale = stressScale();
       m.cmin = 0; m.cmax = LAST.cmax; m.showscale = true; m.colorbar = CBAR;
+    } else {
+      m.vertexcolor = podBaseColors(currentMaterial());   // material-appropriate surface imperfection
     }
     data.push(m);
     if (sceneRevealed && propOn() && PROP_TRACE) data.push(PROP_TRACE);
-    // seam parting-lines are folded into the stress overlay (they annotate where
-    // the wall will split) — never a standalone hairline on the clean pod
-    if (showStress && $("show_seams").checked && SEAM_TRACE) data.push(SEAM_TRACE);
+    // clean scored seam grooves over the 4 slots (a deliberate product feature)
+    if (seamsOn() && GROOVE_TRACE) data.push(GROOVE_TRACE);
     // while intact, roots stay hidden inside the pod — the outward push shows
     // only as the internal stress heatmap, never as geometry around the outside
   }
@@ -366,7 +416,7 @@ function buildShootTrace(g) {
   if (!g) return null;
   const tr = { type:"mesh3d", x:g.x, y:g.y, z:g.z, i:g.i, j:g.j, k:g.k,
     flatshading:false, hoverinfo:"skip", name:"shoot",
-    lighting:{ ambient:0.5, diffuse:0.85, specular:0.16, roughness:0.65 }, lightposition:LIGHT_POS };
+    lighting:{ ambient:0.46, diffuse:0.82, specular:0.34, roughness:0.42, fresnel:0.12 }, lightposition:LIGHT_POS };
   if (g.vertexcolor) tr.vertexcolor = g.vertexcolor; else tr.color = SHOOT_COLOR;
   return tr;
 }
@@ -471,7 +521,7 @@ function renderAnimFrame(idx) {
   if (groundOn()) {
     const rv = clamp((idx / T) / 0.20, 0, 1), gReveal = rv * rv * (3 - 2 * rv);
     if (gReveal > 0.03) {
-      const gt = gReveal >= 0.999 ? GROUND_TRACE : buildGroundTrace(ENGINE.ground(26, 110, gReveal));
+      const gt = gReveal >= 0.999 ? GROUND_TRACE : buildGroundTrace(ENGINE.ground(28, 120, gReveal, groundOpts()));
       if (gt) data.push(gt);
     }
   }
@@ -482,7 +532,9 @@ function renderAnimFrame(idx) {
     m.intensity = Array.from(inten); m.colorscale = sc; m.cmin = 0; m.cmax = A.cmax;
     m.showscale = true; m.colorbar = CBAR; m.lighting = look.light; m.lightposition = LIGHT_POS; m.flatshading = false;
     data.push(m);
-    // (no seam parting-lines during the sim — they read as a stray hairline)
+    // clean scored grooves show on the intact pod during growth (localized waist
+    // channels, not the full-height parting-lines that were removed before)
+    if (seamsOn() && GROOVE_TRACE) data.push(GROOVE_TRACE);
   } else {
     const pop = clamp((idx - (brk - 1)) / POP_FRAMES, 0, 1);
     const gap = pop * POP_GAP_FRAC * ENGINE.features().outer_r_waist;
@@ -726,7 +778,10 @@ async function init() {
     BOUNDS_TRACE = buildBounds();   // stable camera frame (pod + eventual ground/roots)
     SEAM_TRACE = buildSeamTrace(ENGINE.seams());
     PROP_TRACE = buildPropTrace(ENGINE.propagule());
-    GROUND_TRACE = buildGroundTrace(ENGINE.ground());
+    LANDINGS = ENGINE.rootLandings();   // root-contact points for the mud mounds/AO + cast shadow
+    GROUND_TRACE = buildGroundTrace(ENGINE.ground(28, 120, 1, groundOpts()));
+    rebuildGroove();    // clean scored seam grooves (depth from the seam-score slider)
+    if ($("seam_score")) $("seam_score").addEventListener("input", () => { rebuildGroove(); render(); });
     rebuildRoots();     // prepared, but hidden until a run reveals the scene
     render();
     $("boot").classList.add("hidden");

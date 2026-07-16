@@ -939,49 +939,77 @@ function stageRootMesh(p) {
 }
 
 // ---------------------------------------------------------------------------
-//  substrate / tidal-mud ground plane the roots plant into. Soft-edged (fades
-//  into the backdrop rather than a hard ellipse silhouette), mottled mud texture
-//  with micro-relief, a faint wet sheen offset toward the key light, and a wide
-//  soft contact shadow (AO) under the pod so roots blend in rather than meeting
-//  a hard line. Baked into vertex colours; `reveal` grows the disc in.
+//  substrate / tidal-mud ground plane. An organic (irregular, non-circular) mud
+//  patch — mottled texture + micro-relief, patchy wet/dry tidal sheen, a
+//  DIRECTIONAL cast shadow of the pod (offset opposite the sun), and small
+//  mounds + ambient occlusion where each root presses into the mud so roots
+//  blend in rather than meeting a hard plane. Baked into vertex colours + z;
+//  `reveal` grows it in, `opts` = { sunx, suny, landings:[[x,y]…] }.
 // ---------------------------------------------------------------------------
-function groundZ() { return -0.075 * POD.features.height; }
-function groundMesh(nR = 26, nT = 110, reveal = 1) {
+// mud surface sits just ABOVE the foot tips (which bottom out at z=0) so the 4
+// feet visibly press into / are partly embedded in the mud, not floating over it
+function groundZ() { return 0.03 * POD.features.height; }
+function rootLandings() { return rhizophoreStrands().map(st => { const p = st.pts[st.pts.length - 1]; return [p[0], p[1]]; }); }
+function groundMesh(nR = 28, nT = 120, reveal = 1, opts) {
+  opts = opts || {};
   reveal = clip(reveal, 0, 1);
   const H = POD.features.height, zG = groundZ(), footR = rOuterAt(0.05 * H);
-  const Rmax = 2.2 * footR * (0.14 + 0.86 * reveal);   // radial reveal
-  const bg = [0.075, 0.095, 0.115];                    // viewpane backdrop for a soft fade
-  const mud = [0.33, 0.26, 0.19], mudDark = [0.18, 0.145, 0.105];
-  const lx = 0.826, ly = 0.563;                        // key-light xy direction (wet sheen)
-  const rShIn = 0.30 * footR, rShOut = 1.85 * footR;   // wide, soft contact shadow
-  const sx = lx * 0.5 * Rmax, sy = ly * 0.5 * Rmax;    // sheen reflection centre
+  const Rmax = 2.2 * footR * (0.14 + 0.86 * reveal);
+  const sux = opts.sunx != null ? opts.sunx : 0.834, suy = opts.suny != null ? opts.suny : 0.551;
+  const landings = opts.landings || [];
+  const edgeDark = [0.055, 0.06, 0.07];                 // mud receding into shadow (not a glow ring)
+  const mud = [0.34, 0.27, 0.20], mudDark = [0.17, 0.14, 0.10], wetTint = [0.14, 0.17, 0.19];
+  const rShIn = 0.28 * footR, rShOut = 1.5 * footR;     // tight contact AO right under the pod
+  const shcx = -sux * 0.5 * footR, shcy = -suy * 0.5 * footR;   // cast-shadow centre (opposite sun)
+  const sgx = sux * 0.55 * Rmax, sgy = suy * 0.55 * Rmax;       // wet-sheen reflection centre (toward sun)
   const X = [], Y = [], Z = [], C = [], I = [], J = [], K = [];
+  const sig = Math.max(9, 0.09 * footR);                // root-contact footprint radius
+  // irregular organic boundary radius factor per angle (kills the "perfect disc")
+  const bnd = (a) => 0.70 + 0.30 * (0.5 + 0.5 * (Math.sin(3 * a + 0.6) * 0.6 + Math.sin(5 * a - 1.3) * 0.4)) + 0.05 * Math.sin(11 * a + 2.0);
+  const zAt = (x, y) => {
+    let z = zG + 0.9 * Math.sin(x * 0.06 + 1.1) + 0.5 * Math.sin(y * 0.075 - 0.4) + 0.5 * Math.sin((x + y) * 0.04);
+    for (const L of landings) {                         // raised collar + central dip = pressed-in root
+      const dd = (x - L[0]) * (x - L[0]) + (y - L[1]) * (y - L[1]);
+      z += 2.6 * Math.exp(-dd / (2 * sig * sig)) - 2.2 * Math.exp(-dd / (2 * (sig * 0.42) * (sig * 0.42)));
+    }
+    return z;
+  };
   const colAt = (x, y) => {
     const d = Math.hypot(x, y), rn = clip(d / Rmax, 0, 1);
-    // mottled mud (multi-octave value noise)
-    const nz = 0.5 + 0.34 * Math.sin(x * 0.05 + 1.3) * Math.cos(y * 0.045 - 0.7)
-                   + 0.16 * Math.sin(x * 0.11 - y * 0.09 + 2.1);
+    const nz = 0.5 + 0.32 * Math.sin(x * 0.05 + 1.3) * Math.cos(y * 0.045 - 0.7) + 0.18 * Math.sin(x * 0.11 - y * 0.09 + 2.1);
     let c = _lerp3(mudDark, mud, clip(0.35 + 0.7 * nz, 0, 1));
-    // wide soft contact shadow / ambient occlusion under the pod
-    const sh = _smoother((d - rShIn) / (rShOut - rShIn));   // 0 under pod -> 1 outside
-    const ao = 0.46 + 0.54 * sh;
-    c = [c[0] * ao, c[1] * ao, c[2] * ao];
-    // faint wet sheen: a broad soft reflection offset toward the light, cool tint
-    const sheen = Math.pow(clip(1 - Math.hypot(x - sx, y - sy) / (0.9 * Rmax), 0, 1), 2) * (1 - 0.6 * rn);
-    const wet = 0.14 * sheen;
-    c = [c[0] + wet * 0.9, c[1] + wet, c[2] + wet * 1.2];
-    // soft outer edge: fade into the backdrop so there is no hard silhouette line
-    const fade = _smoother((rn - 0.62) / 0.38);
-    return _lerp3(c, bg, fade);
+    // patchy wet/dry tidal zones (low-frequency): wet = darker + cooler
+    const wetf = clip(0.5 + 0.5 * (Math.sin(x * 0.018 + 0.5) * Math.cos(y * 0.02 - 1.0) + 0.4 * Math.sin((x - y) * 0.012)), 0, 1);
+    c = _lerp3(c, wetTint, 0.28 * wetf);
+    c = [c[0] * (1 - 0.14 * wetf), c[1] * (1 - 0.12 * wetf), c[2] * (1 - 0.10 * wetf)];
+    // tight contact AO right under the pod
+    const ao = 0.55 + 0.45 * _smoother((d - rShIn) / (rShOut - rShIn));
+    // directional cast shadow of the pod (elliptical, stretched away from the sun)
+    const dx = x - shcx, dy = y - shcy, along = dx * sux + dy * suy, across = -dx * suy + dy * sux;
+    const e = Math.hypot(along / (1.7 * footR), across / (0.85 * footR));
+    const cast = 0.5 + 0.5 * _smoother(clip(e, 0, 1));
+    c = [c[0] * ao * cast, c[1] * ao * cast, c[2] * ao * cast];
+    // faint wet sheen toward the sun, brightest on wet patches
+    const sheen = Math.pow(clip(1 - Math.hypot(x - sgx, y - sgy) / (0.95 * Rmax), 0, 1), 2) * (1 - 0.55 * rn) * (0.5 + 0.5 * wetf);
+    const wet = 0.16 * sheen;
+    c = [c[0] + wet * 0.85, c[1] + wet, c[2] + wet * 1.25];
+    // root-contact AO: darken the mud where each root presses in
+    for (const L of landings) {
+      const dr = Math.hypot(x - L[0], y - L[1]);
+      if (dr < sig * 1.4) { const k = 0.55 + 0.45 * _smoother(dr / (sig * 1.4)); c = [c[0] * k, c[1] * k, c[2] * k]; }
+    }
+    // defined but irregular outer edge: mud recedes into shadow (no vignette ring)
+    const fade = _smoother((rn - 0.84) / 0.16);
+    return _lerp3(c, edgeDark, fade);
   };
-  X.push(0); Y.push(0); Z.push(zG); C.push(_rgb(colAt(0, 0)));
+  X.push(0); Y.push(0); Z.push(zAt(0, 0)); C.push(_rgb(colAt(0, 0)));
   const starts = [0];
   for (let ri = 1; ri <= nR; ri++) {
-    const rr = Rmax * Math.pow(ri / nR, 1.18); starts.push(X.length);
+    starts.push(X.length);
     for (let t = 0; t < nT; t++) {
-      const a = 2 * Math.PI * t / nT, x = rr * Math.cos(a), y = rr * Math.sin(a);
-      const relief = 0.9 * Math.sin(a * 5 + ri * 1.7) + 0.5 * Math.sin(a * 13 - ri * 0.8) + 0.6 * Math.sin(ri * 2.1 + a * 2);
-      X.push(x); Y.push(y); Z.push(zG + relief); C.push(_rgb(colAt(x, y)));
+      const a = 2 * Math.PI * t / nT, rr = Rmax * bnd(a) * Math.pow(ri / nR, 1.15);
+      const x = rr * Math.cos(a), y = rr * Math.sin(a);
+      X.push(x); Y.push(y); Z.push(zAt(x, y)); C.push(_rgb(colAt(x, y)));
     }
   }
   const r1 = starts[1];
@@ -1011,6 +1039,47 @@ function seamTubeMesh(sides = 6, npt = 80, lift = 1.004) {
     acc.addPolyline(pts, radii);
   }
   return acc.payload();
+}
+
+// Clean scored SEAM GROOVES over the 4 waist slots: a uniform-width concave dark
+// channel per slot that reads as a manufactured score line and visually cleans
+// up the jagged raw perforations. Recess depth scales with the Seam-score slider
+// (depthFrac 0..1). RENDERING ONLY — the physics still uses the real slots.
+function seamGrooveMesh(depthFrac) {
+  depthFrac = clip(depthFrac == null ? 0 : depthFrac, 0, 1);
+  const H = POD.features.height, slots = POD.features.slots, angles = seamAngles();
+  const hwDeg = 10, nZ = 28, nS = 6, D2R = Math.PI / 180;   // uniform ±10° half-width
+  // the whole channel stays PROUD of the surface (≥ rO) so it always covers the
+  // open slot + jagged rim — no inward dip that would re-expose the hole. A hair
+  // of concavity plus a dark-centre→light-edge colour gradient does the "carved"
+  // read; higher score → darker/deeper-looking channel.
+  const concav = 0.003 + depthFrac * 0.003;
+  const centerDark = 0.40 - 0.18 * depthFrac, dark = [0.28, 0.22, 0.16];
+  const X = [], Y = [], Z = [], I = [], J = [], K = [], C = [];
+  for (let ai = 0; ai < angles.length; ai++) {
+    const thc = angles[ai], slot = slots[ai] || { z_lo: 0.44 * H, z_hi: 0.66 * H };
+    const taper = 0.02 * H, zA = slot.z_lo - taper, zB = slot.z_hi + taper, ring = [];
+    for (let iz = 0; iz <= nZ; iz++) {
+      const z = _lerp(zA, zB, iz / nZ), rO = rOuterAt(z);
+      const win = _smoother(Math.min((z - zA) / taper, (zB - z) / taper, 1));   // rounded ends
+      ring.push([]);
+      for (let is = 0; is <= 2 * nS; is++) {
+        const s = is / nS - 1, prof = 1 - s * s;            // concave cross-section
+        const rr = rO * (1.007 - concav * prof * win);      // always proud → covers the hole
+        const th = (thc + s * hwDeg) * D2R;
+        ring[iz].push(X.length);
+        X.push(rr * Math.cos(th)); Y.push(rr * Math.sin(th)); Z.push(z);
+        const v = centerDark + (1 - centerDark) * Math.pow(Math.abs(s), 0.8);   // dark centre → light edges
+        C.push(_rgb([dark[0] * v, dark[1] * v, dark[2] * v]));
+      }
+    }
+    for (let iz = 0; iz < nZ; iz++) for (let is = 0; is < 2 * nS; is++) {
+      const a = ring[iz][is], b = ring[iz][is + 1], c = ring[iz + 1][is + 1], d = ring[iz + 1][is];
+      I.push(a, a); J.push(b, c); K.push(c, d);
+    }
+  }
+  const rnd = v => Math.round(v * 10) / 10;
+  return { x: X.map(rnd), y: Y.map(rnd), z: Z.map(rnd), i: I, j: J, k: K, vertexcolor: C };
 }
 // Split the pod into 4 clean quarter-pieces by CLIPPING each triangle against
 // the two seam-meridian half-planes that bound its wedge. New vertices land
@@ -1331,11 +1400,15 @@ function simulateFrames(cfg) {
 }
 
 // ---------------------------------------------------------------------------
-//  growing seedling shoot at the top opening: an olive-green stem that, once it
-//  has cleared the rim, carries a pair of simple flat first leaves (like a real
-//  young propagule) instead of staying a bare stick.
+//  growing seedling shoot at the top opening: an olive stem that, once it clears
+//  the rim, carries a symmetric OPPOSITE PAIR of first leaves — each on a short
+//  visible petiole from a single junction, an elongated pointed cotyledon blade
+//  that is cupped + midribbed + given a little thickness so it shades as a real
+//  double-sided leaf (not a flat cutout). Glossy dark green with a lighter midrib.
 // ---------------------------------------------------------------------------
-const _SHOOT_STEM = [0.42, 0.55, 0.28], _SHOOT_LEAF = [0.28, 0.52, 0.24];
+const _SHOOT_STEM = [0.42, 0.55, 0.28], _SHOOT_LEAF = [0.15, 0.39, 0.18], _SHOOT_MIDRIB = [0.44, 0.61, 0.31];
+function _cross(a, b) { return [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]]; }
+function _nrm(a) { const l = Math.hypot(a[0], a[1], a[2]) || 1; return [a[0] / l, a[1] / l, a[2] / l]; }
 function shootMesh(gfrac) {
   gfrac = clip(gfrac, 0, 1);
   if (gfrac <= 0.01) return null;
@@ -1343,40 +1416,58 @@ function shootMesh(gfrac) {
   const zT = top[2], cx0 = top[0], cy0 = top[1], stemH = 0.34 * H * gfrac;
   if (stemH < 1) return null;
   const X = [], Y = [], Z = [], I = [], J = [], K = [], C = [];
-  const stemCol = _rgb(_SHOOT_STEM), leafCol = _rgb(_SHOOT_LEAF);
-  // stem: tapered tube up from the rim
-  const nSeg = 10, sides = 7, rBase = Math.max(2.2, 0.055 * f.inner_r_waist);
-  const cs = [], sn = [];
-  for (let k = 0; k < sides; k++) { const a = 2 * Math.PI * k / sides; cs.push(Math.cos(a)); sn.push(Math.sin(a)); }
-  const ring = [];
-  for (let s = 0; s <= nSeg; s++) {
-    const t = s / nSeg, z = zT + stemH * t, r = _lerp(rBase, rBase * 0.45, t);
-    ring.push(X.length);
-    for (let k = 0; k < sides; k++) { X.push(cx0 + r * cs[k]); Y.push(cy0 + r * sn[k]); Z.push(z); C.push(stemCol); }
-  }
-  for (let s = 0; s < nSeg; s++) {
-    const a0 = ring[s], a1 = ring[s + 1];
-    for (let k = 0; k < sides; k++) { const k2 = (k + 1) % sides; I.push(a0 + k, a0 + k); J.push(a0 + k2, a1 + k2); K.push(a1 + k2, a1 + k); }
-  }
-  // paired first leaves once the shoot has grown past the rim
-  const leafG = clip((gfrac - 0.40) / 0.60, 0, 1);
+  const stemCol = _rgb(_SHOOT_STEM), leafCol = _rgb(_SHOOT_LEAF), midCol = _rgb(_SHOOT_MIDRIB);
+  // small tapered-tube helper (stem + petioles) appended to the shared arrays
+  const pushTube = (a, b, ra, rb, col, sides) => {
+    const tx = b[0]-a[0], ty = b[1]-a[1], tz = b[2]-a[2], L = Math.hypot(tx,ty,tz); if (L < 1e-6) return;
+    const [n1x,n1y,n1z,n2x,n2y,n2z] = frame(tx,ty,tz), c0 = [], c1 = [];
+    for (let k=0;k<sides;k++){ const g=2*Math.PI*k/sides, cc=Math.cos(g), ss=Math.sin(g);
+      c0.push(X.length); X.push(a[0]+ra*(cc*n1x+ss*n2x)); Y.push(a[1]+ra*(cc*n1y+ss*n2y)); Z.push(a[2]+ra*(cc*n1z+ss*n2z)); C.push(col); }
+    for (let k=0;k<sides;k++){ const g=2*Math.PI*k/sides, cc=Math.cos(g), ss=Math.sin(g);
+      c1.push(X.length); X.push(b[0]+rb*(cc*n1x+ss*n2x)); Y.push(b[1]+rb*(cc*n1y+ss*n2y)); Z.push(b[2]+rb*(cc*n1z+ss*n2z)); C.push(col); }
+    for (let k=0;k<sides;k++){ const k2=(k+1)%sides; I.push(c0[k],c0[k]); J.push(c0[k2],c1[k2]); K.push(c1[k2],c1[k]); }
+  };
+  // --- stem (tapered tube up from the rim) ---
+  const rBase = Math.max(2.2, 0.055 * f.inner_r_waist), nSeg = 10;
+  let prev = [cx0, cy0, zT];
+  for (let s=1;s<=nSeg;s++){ const t=s/nSeg, p=[cx0,cy0,zT+stemH*t]; pushTube(prev,p,_lerp(rBase,rBase*0.5,(s-1)/nSeg),_lerp(rBase,rBase*0.5,t),stemCol,7); prev=p; }
+  // --- paired leaf node: junction -> petiole -> cupped, thick, midribbed blade ---
+  const leafG = clip((gfrac - 0.38) / 0.62, 0, 1);
   if (leafG > 0.05) {
-    const tip = [cx0, cy0, zT + stemH], leafLen = 0.14 * H * leafG, leafW = 0.42 * leafLen, nL = 8;
-    for (const azDeg of [18, 198]) {                      // one opposite pair
-      const az = azDeg * Math.PI / 180, ox = Math.cos(az), oy = Math.sin(az);
-      const dirx = ox * 0.72, diry = oy * 0.72, dirz = 0.69;   // midrib: up-and-out
-      const px = -oy, py = ox;                                  // width direction (horizontal)
-      const left = [], right = [];
-      for (let i = 0; i <= nL; i++) {
-        const t = i / nL, w = leafW * Math.pow(Math.sin(Math.PI * t), 0.7);
-        const cx = tip[0] + dirx * leafLen * t, cy = tip[1] + diry * leafLen * t, cz = tip[2] + dirz * leafLen * t;
-        left.push(X.length); X.push(cx + px * w); Y.push(cy + py * w); Z.push(cz); C.push(leafCol);
-        right.push(X.length); X.push(cx - px * w); Y.push(cy - py * w); Z.push(cz); C.push(leafCol);
+    const tip = [cx0, cy0, zT + stemH];
+    const petLen = 0.03*H*leafG, blLen = 0.14*H*leafG, blW = 0.24*blLen;
+    const thk = Math.max(0.4, 0.02*blLen), cup = 0.35, ridge = 0.6, phi = 22*Math.PI/180, tilt = 0.55;
+    for (const az of [phi, phi + Math.PI]) {                 // symmetric opposite pair (V)
+      const pdir = _nrm([Math.cos(az)*tilt, Math.sin(az)*tilt, Math.sqrt(Math.max(1-tilt*tilt,0.05))]);
+      const pend = [tip[0]+pdir[0]*petLen, tip[1]+pdir[1]*petLen, tip[2]+pdir[2]*petLen];
+      pushTube(tip, pend, 0.9, 0.7, stemCol, 6);              // short visible petiole
+      const F = _nrm([Math.cos(az)*0.78, Math.sin(az)*0.78, 0.62]);   // blade forward (up-and-out)
+      let S = _nrm(_cross(F, [0,0,1])); if (!isFinite(S[0]) || (S[0]===0&&S[1]===0&&S[2]===0)) S = [1,0,0];
+      const N = _nrm(_cross(S, F));                            // blade normal (up)
+      const nT = 7, nS = 3, cols = 2*nS+1, topR = [], botR = [];
+      for (let i=0;i<=nT;i++){
+        const t = i/nT;
+        const w = blW * Math.pow(t,0.45) * Math.pow(1-t,0.8) * 2.25;   // lanceolate, pointed tip
+        const arch = 0.12*blLen*Math.sin(Math.PI*t);          // gentle upward arch
+        const cx = pend[0]+F[0]*blLen*t+N[0]*arch, cy = pend[1]+F[1]*blLen*t+N[1]*arch, cz = pend[2]+F[2]*blLen*t+N[2]*arch;
+        topR.push([]); botR.push([]);
+        for (let j=-nS;j<=nS;j++){
+          const sf = j/nS, off = w*sf;
+          const lift = cup*w*sf*sf + ridge*(1-Math.abs(sf));  // cup up at edges + raised midrib
+          const mx = cx+S[0]*off+N[0]*lift, my = cy+S[1]*off+N[1]*lift, mz = cz+S[2]*off+N[2]*lift;
+          const col = j===0 ? midCol : leafCol;
+          topR[i].push(X.length); X.push(mx+N[0]*thk); Y.push(my+N[1]*thk); Z.push(mz+N[2]*thk); C.push(col);
+          botR[i].push(X.length); X.push(mx-N[0]*thk); Y.push(my-N[1]*thk); Z.push(mz-N[2]*thk); C.push(col);
+        }
       }
-      for (let i = 0; i < nL; i++) {
-        const l0 = left[i], r0 = right[i], l1 = left[i + 1], r1 = right[i + 1];
-        I.push(l0, l0); J.push(r0, r1); K.push(r1, l1);
+      for (let i=0;i<nT;i++) for (let j=0;j<cols-1;j++){
+        let a=topR[i][j],b=topR[i][j+1],c=topR[i+1][j+1],d=topR[i+1][j];
+        I.push(a,a); J.push(b,c); K.push(c,d);                // top face
+        a=botR[i][j];b=botR[i][j+1];c=botR[i+1][j+1];d=botR[i+1][j];
+        I.push(a,a); J.push(c,b); K.push(d,c);                // bottom face (reversed winding)
       }
+      const seam = (jj) => { for(let i=0;i<nT;i++){ const t0=topR[i][jj],t1=topR[i+1][jj],b0=botR[i][jj],b1=botR[i+1][jj]; I.push(t0,t0); J.push(b0,b1); K.push(b1,t1); } };
+      seam(0); seam(cols-1);                                  // close the two long edges → proper thin blade
     }
   }
   const rnd = v => Math.round(v * 10) / 10;
@@ -1497,7 +1588,7 @@ window.ENGINE = {
   materials: () => ({ materials: Object.fromEntries(Object.entries(MATERIALS).map(([k, m]) => [k, materialCard(m)])), default: "bioplastic" }),
   species: () => ({ species: SPECIES, default: "rhizophora" }),
   provenance: buildRegistry,
-  baseMesh, seams: seamTubeMesh, exploded: explodedSectors, propagule: propaguleMesh,
-  stageRoots: stageRootMesh, ground: groundMesh,
+  baseMesh, seams: seamTubeMesh, seamGroove: seamGrooveMesh, exploded: explodedSectors, propagule: propaguleMesh,
+  stageRoots: stageRootMesh, ground: groundMesh, rootLandings,
   simulateFrames, shoot: shootMesh, crackReport,
 };

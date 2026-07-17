@@ -847,65 +847,160 @@ function rootTubeMesh(roots, sides = 6, scale = 1.35, rMin = 0.8, rMax = 7, iter
   return acc.payload();
 }
 // ---------------------------------------------------------------------------
-//  Young Rhizophora seedling prop-root cage  (RENDERING ONLY — the sim still
-//  runs on the space-colonization node tree; this is a visual overlay).
-//  Matches real early-stage propagules (reference photos): a tight radiating
-//  cluster of 5-8 THIN, wiry, near-uniform-diameter roots that splay outward
-//  and down from a single point near the base of the stem, forming a narrow
-//  tripod/cage silhouette in the mud — NOT thick arched buttresses, and NOT a
-//  mature tree's branched rhizophore system. Matte reddish-brown → tan bark.
-//  These roots grow INSIDE the pod and only become visible once a seam cracks
-//  open; `p` in [0,1] is the post-breakthrough emergence/extension fraction.
+//  Rhizophora prop-root architecture  (RENDERING ONLY — the physics still runs
+//  on the space-colonization node tree; this is a spline-based visual overlay).
+//  Redesigned to match real Rhizophora prop roots: they leave the lower trunk at
+//  SEVERAL heights (overlapping generations), arch OUTWARD then curve down under
+//  gravity in a hanging bezier arch, enter the sediment, and branch underground
+//  into secondary/tertiary roots. Each is tapered (thick at the trunk → thin at
+//  the tip), swayed and sized differently, so the system reads as a broad radial
+//  support cage rather than a spike cluster. `p` in [0,1] drives incremental
+//  growth: tips extend, then thicken, then higher/newer generations emerge.
+//  Fully deterministic from _rzParams.seed.
 // ---------------------------------------------------------------------------
 const _RZ = {
-  base: [0.42, 0.25, 0.19],  // reddish-brown near the cluster / older wood
-  tip:  [0.60, 0.45, 0.32],  // lighter reddish-tan toward the growing tips
+  woodDark: [0.34, 0.20, 0.15],   // reddish-brown older wood near the trunk
+  woodTan:  [0.55, 0.40, 0.29],   // lighter tan toward the arch / ground
+  ugDark:   [0.28, 0.18, 0.14],   // underground root — darker, desaturated
+  ugDeep:   [0.22, 0.15, 0.12],   // deepest underground tips
 };
+// tunable architecture (read/patch via ENGINE.rootParams). Lengths are × pod
+// height H or × foot radius footR so the whole cage scales with the model.
+let _rzParams = {
+  seed: 20,
+  nodeHeights: [0.15, 0.21, 0.28],   // young stage: only a few low prop roots, not a mature cage
+  rootsPerNode: [1, 2],              // inclusive range: 1–2 prop roots per node
+  trunkRLow: 6.6, trunkRHigh: 4.0,   // trunk radius at the low vs high nodes (attach point)
+  reachMin: 0.72, reachMax: 1.30,    // ground landing radius (× footR)
+  rootRBase: 2.4, rootROlder: 1.9,   // base tube radius + extra for older/lower roots
+  taperMid: 0.70, taperTip: 0.34,    // thickness at mid / tip (× base) — 100%→70%→34%
+  gravity: 0.62,        // how steeply the arch plunges into the ground (0..1)
+  archLift: 0.24,       // upward lean as it leaves the trunk (the arch height)
+  curvature: 0.11,      // lateral S-curve sway amplitude (× reach)
+  branchProb: 0.55,     // chance an underground branch actually forms (sparse at this stage)
+  branchMax: 2,         // up to this many secondary roots per prop root
+  genSpread: 0.5,       // how much later higher generations emerge in p
+  growSpan: 0.5,        // per-root growth window length in p
+  archSamp: 20, ugSamp: 6,
+  ugDepth: 0.055,       // underground descent depth (× H)
+  ugSpread: 0.14,       // underground lateral run (× reach)
+};
+function rootParams(overrides) {
+  if (overrides) { _rzParams = Object.assign({}, _rzParams, overrides); _rzCache = null; }
+  return _rzParams;
+}
 function _sstep(t) { t = clip(t, 0, 1); return t * t * (3 - 2 * t); }
 function _smoother(t) { t = clip(t, 0, 1); return t * t * t * (t * (t * 6 - 15) + 10); }
 function _lerp(a, b, t) { return a + (b - a) * t; }
 function _lerp3(a, b, t) { return [_lerp(a[0], b[0], t), _lerp(a[1], b[1], t), _lerp(a[2], b[2], t)]; }
 function _rgb(c) { return `rgb(${Math.round(clip(c[0], 0, 1) * 255)},${Math.round(clip(c[1], 0, 1) * 255)},${Math.round(clip(c[2], 0, 1) * 255)})`; }
 
-// One thin wiry root: samples of [x, y, z, tubeRadius, u]; u=0 at the cluster,
-// 1 at the tip. Near-straight radial descent with a gentle outward bow. Shape
-// is independent of growth p (only the drawn length changes) so we cache it.
-function _wiryRoot(o) {
-  const n = o.n, pts = [], a0 = o.azDeg * Math.PI / 180;
-  for (let i = 0; i < n; i++) {
-    const t = i / (n - 1);
-    const r = _lerp(o.rStart, o.rEnd, Math.pow(t, 0.92)) + o.bow * Math.sin(Math.PI * t);
-    const z = _lerp(o.z0, o.zEnd, t);
-    const wig = o.wiggle ? o.wiggle * Math.PI / 180 * Math.sin(1.8 * Math.PI * t + o.wphase) : 0;
-    const aa = a0 + (o.twist || 0) * Math.PI / 180 * t + wig;
-    const tubeR = Math.max(_lerp(o.tubeBase, o.tubeTip, t), 0.35);   // near-uniform, slight taper
-    pts.push([r * Math.cos(aa), r * Math.sin(aa), z, tubeR, t]);
+// cubic Bezier interpolation of three control points → one point
+function _bez3(P, Q, R, S, t) {
+  const m = 1 - t, a = m * m * m, b = 3 * m * m * t, c = 3 * m * t * t, d = t * t * t;
+  return [a * P[0] + b * Q[0] + c * R[0] + d * S[0],
+          a * P[1] + b * Q[1] + c * R[1] + d * S[1],
+          a * P[2] + b * Q[2] + c * R[2] + d * S[2]];
+}
+// smooth taper 100% (trunk) → mid → tip along the normalised arc length t
+function _taper(t) {
+  const P = _rzParams;
+  return t < 0.5 ? _lerp(1, P.taperMid, _smoother(t / 0.5))
+                 : _lerp(P.taperMid, P.taperTip, _smoother((t - 0.5) / 0.5));
+}
+// one aerial prop-root arch: leaves the trunk surface, bows outward + slightly
+// up, then plunges to the ground under "gravity". Samples = [x,y,z,radius,u];
+// returns { pts, land:[x,y], landDir:[x,y,z] } for the underground continuation.
+function _propArch(o) {
+  const P = _rzParams, O = [Math.cos(o.az), Math.sin(o.az), 0];
+  const perp = [-Math.sin(o.az), Math.cos(o.az), 0];
+  const S = [o.cx + O[0] * o.rTrunk, o.cy + O[1] * o.rTrunk, o.hz];
+  const laz = o.az + o.landJit, Lo = [Math.cos(laz), Math.sin(laz), 0];
+  const land = [o.cx + Lo[0] * o.reach, o.cy + Lo[1] * o.reach, o.gz];
+  const leave = _nrm([O[0] * 0.94, O[1] * 0.94, P.archLift]);           // out + slight up
+  const C1 = [S[0] + leave[0] * o.reach * 0.55, S[1] + leave[1] * o.reach * 0.55, S[2] + leave[2] * o.reach * 0.55];
+  const C2 = [land[0] + Lo[0] * o.reach * 0.04, land[1] + Lo[1] * o.reach * 0.04, land[2] + o.hz * P.gravity];
+  const pts = [], N = P.archSamp;
+  for (let i = 0; i <= N; i++) {
+    const t = i / N, b = _bez3(S, C1, C2, land, t), env = Math.sin(Math.PI * t);
+    const sway = o.sway * env * Math.sin(2.3 * Math.PI * t + o.phase);   // lateral S-curve, 0 at ends
+    pts.push([b[0] + perp[0] * sway, b[1] + perp[1] * sway, b[2], o.baseR * _taper(t), t]);
   }
-  return { pts, colA: o.colA, colB: o.colB, phase: o.phase, birthP: o.birthP, span: o.span };
+  const a = pts[pts.length - 2], c = pts[pts.length - 1];
+  return { pts, land: [land[0], land[1]], landDir: _nrm([c[0] - a[0], c[1] - a[1], 0]) };
+}
+// underground continuation / branch: runs outward + descends, thinning, with a
+// gentle sway. Samples = [x,y,z,radius,u].
+function _underground(start, dir, r0, o) {
+  const P = _rzParams, N = o.samp, pts = [], depth = P.ugDepth * o.H;
+  const d = _nrm([dir[0], dir[1], 0]), perp = [-d[1], d[0], 0];
+  for (let i = 0; i <= N; i++) {
+    const t = i / N, out = o.spread * t, down = depth * _smoother(t);
+    const sway = o.spread * 0.35 * Math.sin(2.1 * Math.PI * t + o.phase);
+    pts.push([start[0] + d[0] * out + perp[0] * sway,
+              start[1] + d[1] * out + perp[1] * sway,
+              start[2] - down, _lerp(r0, r0 * 0.4, t), t]);
+  }
+  return pts;
 }
 
 let _rzCache = null;
-function rhizophoreStrands() {
+// Build the whole prop-root forest ONCE (deterministic; cached). Every entry is
+// a strand {pts,colA,colB,phase,birthP,span} that the mesher reveals + tubes by
+// the growth parameter p. Structure: for each trunk node (low→high = old→new
+// generation) emit 2–4 arching prop roots at spread azimuths; each lands, then
+// continues underground and spawns irregular secondary/tertiary branches.
+function _rzForest() {
   if (_rzCache) return _rzCache;
-  const H = POD.features.height, footR = rOuterAt(0.05 * H), gz = groundZ();
-  const zTip = gz - 0.05 * H;                 // tips sink a little deeper into the substrate
-  const clusterZ = 0.14 * H;                  // one tight origin near the base of the stem
-  const rng = mulberry32(11), strands = [];
-  const n = 9;                                // a fuller young-propagule tripod
-  const baseReach = 0.62 * footR;             // wider, denser splay (still a tripod, not spider legs)
-  for (let j = 0; j < n; j++) {
-    const az = 360 * j / n + (rng() - 0.5) * 14;
-    const reach = baseReach * (0.85 + 0.35 * rng());
-    strands.push(_wiryRoot({
-      azDeg: az, n: 24, rStart: 2.0, rEnd: reach, z0: clusterZ, zEnd: zTip * (0.92 + 0.16 * rng()),
-      bow: footR * (0.03 + 0.045 * rng()), twist: (rng() - 0.5) * 8, wiggle: 2.5, wphase: rng() * 6.28,
-      tubeBase: 2.1, tubeTip: 0.95, colA: _RZ.base, colB: _RZ.tip, phase: rng() * 6.28,
-      birthP: 0.012 * j, span: 0.9,
-    }));
+  const P = _rzParams, H = POD.features.height, footR = rOuterAt(0.05 * H), gz = groundZ();
+  const rng = mulberry32(P.seed), strands = [], landings = [];
+  const cx = 0, cy = 0;                           // trunk axis at the pod base
+  const nH = P.nodeHeights, nNodes = nH.length;
+  let azC = rng() * Math.PI * 2;                  // running azimuth so roots spread, not stack
+  for (let ni = 0; ni < nNodes; ni++) {
+    const hz = nH[ni] * H, gen = nNodes > 1 ? ni / (nNodes - 1) : 0, older = 1 - gen;
+    const rTrunk = _lerp(P.trunkRLow, P.trunkRHigh, gen);
+    const nRoots = P.rootsPerNode[0] + Math.floor(rng() * (P.rootsPerNode[1] - P.rootsPerNode[0] + 1));
+    for (let r = 0; r < nRoots; r++) {
+      azC += (Math.PI * 2 / (nRoots + 1)) * (0.7 + 0.7 * rng());        // irregular angular spacing
+      const az = azC + (rng() - 0.5) * 0.4;
+      const reach = footR * _lerp(P.reachMin, P.reachMax, rng()) * (1 + older * 0.22);
+      const baseR = (P.rootRBase + older * P.rootROlder) * (0.82 + 0.36 * rng());
+      const birthP = clip(gen * P.genSpread + (rng() - 0.5) * 0.06, 0, 0.85);   // newer nodes emerge later
+      const span = P.growSpan * (0.85 + 0.3 * rng()), phase = rng() * 6.28;
+      const sway = reach * P.curvature * (0.7 + 0.6 * rng()), landJit = (rng() - 0.5) * 0.45;
+      const arch = _propArch({ cx, cy, hz, az, rTrunk, reach, baseR, gz, sway, phase, landJit });
+      strands.push({ pts: arch.pts, colA: _RZ.woodDark, colB: _RZ.woodTan, phase, birthP, span: span * 0.6 });
+      landings.push(arch.land);
+      // underground main root — appears once the arch has reached the ground
+      const ugMain = _underground([arch.land[0], arch.land[1], gz], arch.landDir, baseR * P.taperTip,
+        { H, spread: P.ugSpread * reach, samp: P.ugSamp, phase });
+      strands.push({ pts: ugMain, colA: _RZ.woodTan, colB: _RZ.ugDeep, phase, birthP: birthP + span * 0.5, span: span * 0.5 });
+      // secondary (and occasional tertiary) underground branches — irregular
+      const nSec = 1 + Math.floor(rng() * P.branchMax);
+      for (let s = 0; s < nSec; s++) {
+        if (rng() > P.branchProb) continue;
+        const an = ugMain[1 + Math.floor(rng() * (ugMain.length - 1))];
+        const bdir = [Math.cos(az + (rng() - 0.5) * 2.2), Math.sin(az + (rng() - 0.5) * 2.2), 0];
+        const sec = _underground([an[0], an[1], an[2]], bdir, an[3] * 0.9,
+          { H, spread: P.ugSpread * reach * 0.7, samp: P.ugSamp, phase: phase + s });
+        strands.push({ pts: sec, colA: _RZ.ugDark, colB: _RZ.ugDeep, phase: phase + s,
+          birthP: clip(birthP + span * 0.72, 0, 0.95), span: span * 0.42 });
+        if (rng() < P.branchProb * 0.45) {
+          const a2 = sec[1 + Math.floor(rng() * (sec.length - 1))];
+          const tdir = [Math.cos(az + (rng() - 0.5) * 3), Math.sin(az + (rng() - 0.5) * 3), 0];
+          const ter = _underground([a2[0], a2[1], a2[2]], tdir, a2[3] * 0.85,
+            { H, spread: P.ugSpread * reach * 0.45, samp: 4, phase: phase + s + 1 });
+          strands.push({ pts: ter, colA: _RZ.ugDark, colB: _RZ.ugDeep, phase: phase + s + 1,
+            birthP: clip(birthP + span * 0.85, 0, 0.98), span: span * 0.35 });
+        }
+      }
+    }
   }
-  _rzCache = strands;
-  return strands;
+  _rzCache = { strands, landings };
+  return _rzCache;
 }
+function rhizophoreStrands() { return _rzForest().strands; }
 
 function stageRootMesh(p) {
   const strands = rhizophoreStrands();
@@ -917,6 +1012,9 @@ function stageRootMesh(p) {
     const st = strands[sIdx];
     const gf = clip((p - st.birthP) / st.span, 0, 1);
     if (gf <= 0.02) continue;
+    // growth order: the tip extends first (gf reveals length), then the root
+    // thickens afterwards (thicken lags the length by ~35%).
+    const thicken = 0.5 + 0.5 * clip((p - st.birthP) / (st.span * 1.35), 0, 1);
     const full = st.pts, nFull = full.length;
     const fT = gf * (nFull - 1), last = Math.floor(fT), frac = fT - last;
     const draw = [];
@@ -939,10 +1037,11 @@ function stageRootMesh(p) {
       const dg = Math.abs(P[2] - gz);
       if (dg < 6) ao *= _lerp(0.85, 1, clip(dg / 6, 0, 1));   // subtle mud-contact darkening
       ringBase.push(X.length);
+      const rr = P[3] * thicken;
       for (let k = 0; k < sides; k++) {
-        X.push(P[0] + P[3] * (cs[k] * n1x + sn[k] * n2x));
-        Y.push(P[1] + P[3] * (cs[k] * n1y + sn[k] * n2y));
-        Z.push(P[2] + P[3] * (cs[k] * n1z + sn[k] * n2z));
+        X.push(P[0] + rr * (cs[k] * n1x + sn[k] * n2x));
+        Y.push(P[1] + rr * (cs[k] * n1y + sn[k] * n2y));
+        Z.push(P[2] + rr * (cs[k] * n1z + sn[k] * n2z));
         const shade = ao * (1 + 0.035 * Math.cos(2 * Math.PI * k / sides + st.phase));  // faint woody ridging
         C.push(_rgb([base[0] * shade, base[1] * shade, base[2] * shade]));
       }
@@ -968,65 +1067,143 @@ function stageRootMesh(p) {
 // mud surface sits just ABOVE the foot tips (which bottom out at z=0) so the 4
 // feet visibly press into / are partly embedded in the mud, not floating over it
 function groundZ() { return 0.03 * POD.features.height; }
-function rootLandings() { return rhizophoreStrands().map(st => { const p = st.pts[st.pts.length - 1]; return [p[0], p[1]]; }); }
-function groundMesh(nR = 28, nT = 120, reveal = 1, opts) {
+function rootLandings() { return _rzForest().landings; }
+// --- deterministic value-noise FBM (procedural mudflat terrain + texture) -----
+function _vhash(ix, iy) { let h = (ix | 0) * 374761393 + (iy | 0) * 668265263; h = (h ^ (h >> 13)) * 1274126177; h ^= h >> 16; return ((h >>> 0) % 100003) / 100003; }
+function _vnoise(x, y) {
+  const ix = Math.floor(x), iy = Math.floor(y), fx = x - ix, fy = y - iy;
+  const ux = fx * fx * (3 - 2 * fx), uy = fy * fy * (3 - 2 * fy);
+  const a = _vhash(ix, iy), b = _vhash(ix + 1, iy), c = _vhash(ix, iy + 1), d = _vhash(ix + 1, iy + 1);
+  return _lerp(_lerp(a, b, ux), _lerp(c, d, ux), uy);
+}
+function _fbm(x, y, oct) { let f = 0, amp = 0.5, freq = 1, sum = 0; const O = oct || 4; for (let o = 0; o < O; o++) { f += amp * _vnoise(x * freq, y * freq); sum += amp; amp *= 0.5; freq *= 2.03; } return f / sum; }
+const _WATER_DROP = 4.5;                         // water sits this far below mean mud → puddles in troughs
+function _waterZ() { return groundZ() - _WATER_DROP; }
+// procedural mudflat surface height at (x,y): broad FBM elevation + finer ridges
+// + shallow drainage channels + small sediment clumps + pressed-in root prints.
+function _mudZ(x, y, landings) {
+  const zG = groundZ(), footR = rOuterAt(0.05 * POD.features.height), sig = Math.max(9, 0.09 * footR);
+  let z = zG + 6.0 * (_fbm(x * 0.012 + 3.1, y * 0.012 + 7.7, 5) - 0.5) * 2
+             + 2.4 * (_fbm(x * 0.05 + 11, y * 0.05 + 2, 3) - 0.5) * 2;
+  const ch = Math.abs(_fbm(x * 0.02 + 20, y * 0.02 + 40, 3) - 0.5);      // shallow drainage channels
+  z -= 3.0 * clip(1 - ch / 0.06, 0, 1);
+  const cl = _fbm(x * 0.13 + 50, y * 0.13 + 9, 2);                       // small sediment clumps
+  if (cl > 0.70) z += 3.0 * (cl - 0.70) / 0.30;
+  if (landings) for (const L of landings) {                             // root indentation: raised rim + deeper dip
+    const dd = (x - L[0]) * (x - L[0]) + (y - L[1]) * (y - L[1]);
+    z += 1.8 * Math.exp(-dd / (2 * sig * sig)) - 3.0 * Math.exp(-dd / (2 * (sig * 0.5) * (sig * 0.5)));
+  }
+  return z;
+}
+// Procedural mangrove MUDFLAT. Uneven FBM terrain (ridges, channels, puddles,
+// sediment clumps), wet/dry albedo blended by distance-to-water (height above
+// the water level), drying-crack network on the exposed mud, per-root wet rings
+// + ripple + AO, pod contact-AO + directional cast shadow, and a shoreline that
+// dissolves into the surrounding water. Everything is baked into vertex Z +
+// vertexcolor (Plotly Mesh3d has no textures/normal/roughness maps).
+function groundMesh(nR = 44, nT = 170, reveal = 1, opts) {
   opts = opts || {};
   reveal = clip(reveal, 0, 1);
-  const H = POD.features.height, zG = groundZ(), footR = rOuterAt(0.05 * H);
+  const H = POD.features.height, zG = groundZ(), footR = rOuterAt(0.05 * H), waterZ = _waterZ();
   const Rmax = 2.2 * footR * (0.14 + 0.86 * reveal);
   const sux = opts.sunx != null ? opts.sunx : 0.834, suy = opts.suny != null ? opts.suny : 0.551;
   const landings = opts.landings || [];
-  const edgeDark = [0.055, 0.06, 0.07];                 // mud receding into shadow (not a glow ring)
-  const mud = [0.34, 0.27, 0.20], mudDark = [0.17, 0.14, 0.10], wetTint = [0.14, 0.17, 0.19];
-  const rShIn = 0.28 * footR, rShOut = 1.5 * footR;     // tight contact AO right under the pod
-  const shcx = -sux * 0.5 * footR, shcy = -suy * 0.5 * footR;   // cast-shadow centre (opposite sun)
-  const sgx = sux * 0.55 * Rmax, sgy = suy * 0.55 * Rmax;       // wet-sheen reflection centre (toward sun)
+  const sig = Math.max(9, 0.09 * footR);
+  const edgeDark = [0.05, 0.06, 0.07];
+  const dryLo = [0.20, 0.15, 0.11], dryHi = [0.44, 0.33, 0.23];   // dry mud dark→light (exposed, lighter)
+  const wetMud = [0.13, 0.13, 0.12], waterCol = [0.06, 0.095, 0.105];
+  const rShIn = 0.28 * footR, rShOut = 1.5 * footR;
+  const shcx = -sux * 0.5 * footR, shcy = -suy * 0.5 * footR;
+  const sgx = sux * 0.55 * Rmax, sgy = suy * 0.55 * Rmax;
   const X = [], Y = [], Z = [], C = [], I = [], J = [], K = [];
-  const sig = Math.max(9, 0.09 * footR);                // root-contact footprint radius
-  // irregular organic boundary radius factor per angle (kills the "perfect disc")
   const bnd = (a) => 0.70 + 0.30 * (0.5 + 0.5 * (Math.sin(3 * a + 0.6) * 0.6 + Math.sin(5 * a - 1.3) * 0.4)) + 0.05 * Math.sin(11 * a + 2.0);
-  const zAt = (x, y) => {
-    let z = zG + 0.9 * Math.sin(x * 0.06 + 1.1) + 0.5 * Math.sin(y * 0.075 - 0.4) + 0.5 * Math.sin((x + y) * 0.04);
-    for (const L of landings) {                         // raised collar + central dip = pressed-in root
-      const dd = (x - L[0]) * (x - L[0]) + (y - L[1]) * (y - L[1]);
-      z += 2.6 * Math.exp(-dd / (2 * sig * sig)) - 2.2 * Math.exp(-dd / (2 * (sig * 0.42) * (sig * 0.42)));
-    }
-    return z;
-  };
-  const colAt = (x, y) => {
+  const colAt = (x, y, z) => {
     const d = Math.hypot(x, y), rn = clip(d / Rmax, 0, 1);
-    const nz = 0.5 + 0.32 * Math.sin(x * 0.05 + 1.3) * Math.cos(y * 0.045 - 0.7) + 0.18 * Math.sin(x * 0.11 - y * 0.09 + 2.1);
-    let c = _lerp3(mudDark, mud, clip(0.35 + 0.7 * nz, 0, 1));
-    // patchy wet/dry tidal zones (low-frequency): wet = darker + cooler
-    const wetf = clip(0.5 + 0.5 * (Math.sin(x * 0.018 + 0.5) * Math.cos(y * 0.02 - 1.0) + 0.4 * Math.sin((x - y) * 0.012)), 0, 1);
-    c = _lerp3(c, wetTint, 0.28 * wetf);
-    c = [c[0] * (1 - 0.14 * wetf), c[1] * (1 - 0.12 * wetf), c[2] * (1 - 0.10 * wetf)];
-    // tight contact AO right under the pod
+    const grain = _fbm(x * 0.09 + 1, y * 0.09 + 4, 3);                  // fine mud grain (albedo)
+    let c = _lerp3(dryLo, dryHi, clip(0.25 + 0.75 * grain, 0, 1));
+    // wet/dry blend by distance-to-water (height above the water level)
+    const w = clip((waterZ + 7 - z) / 7, 0, 1);
+    c = _lerp3(c, wetMud, 0.85 * w);
+    const pool = clip((waterZ - z) / 2.2, 0, 1);                        // standing water in the troughs
+    c = _lerp3(c, waterCol, 0.92 * pool);
+    // drying cracks: iso-contour of an FBM, only on dry exposed mud
+    const cf = Math.abs(_fbm(x * 0.06 + 31, y * 0.06 + 63, 3) - 0.5);
+    const crack = clip(1 - cf / 0.02, 0, 1) * (1 - w) * (1 - pool);
+    c = [c[0] * (1 - 0.55 * crack), c[1] * (1 - 0.55 * crack), c[2] * (1 - 0.5 * crack)];
+    // tight contact AO under the pod + directional cast shadow (opposite the sun)
     const ao = 0.55 + 0.45 * _smoother((d - rShIn) / (rShOut - rShIn));
-    // directional cast shadow of the pod (elliptical, stretched away from the sun)
     const dx = x - shcx, dy = y - shcy, along = dx * sux + dy * suy, across = -dx * suy + dy * sux;
-    const e = Math.hypot(along / (1.7 * footR), across / (0.85 * footR));
-    const cast = 0.5 + 0.5 * _smoother(clip(e, 0, 1));
+    const cast = 0.5 + 0.5 * _smoother(clip(Math.hypot(along / (1.7 * footR), across / (0.85 * footR)), 0, 1));
     c = [c[0] * ao * cast, c[1] * ao * cast, c[2] * ao * cast];
-    // faint wet sheen toward the sun, brightest on wet patches
-    const sheen = Math.pow(clip(1 - Math.hypot(x - sgx, y - sgy) / (0.95 * Rmax), 0, 1), 2) * (1 - 0.55 * rn) * (0.5 + 0.5 * wetf);
-    const wet = 0.16 * sheen;
-    c = [c[0] + wet * 0.85, c[1] + wet, c[2] + wet * 1.25];
-    // root-contact AO: darken the mud where each root presses in
+    // wet sheen / soft reflection toward the sun (strong on wet + pooled mud)
+    const sheen = Math.pow(clip(1 - Math.hypot(x - sgx, y - sgy) / (0.95 * Rmax), 0, 1), 2) * (0.35 + 0.65 * w) * (0.6 + 0.4 * pool);
+    const s2 = 0.14 * sheen;
+    c = [c[0] + s2 * 0.7, c[1] + s2, c[2] + s2 * 1.3];
+    // per-root wet ring: darker wet mud + AO + a faint concentric ripple
     for (const L of landings) {
       const dr = Math.hypot(x - L[0], y - L[1]);
-      if (dr < sig * 1.4) { const k = 0.55 + 0.45 * _smoother(dr / (sig * 1.4)); c = [c[0] * k, c[1] * k, c[2] * k]; }
+      if (dr < sig * 2.4) {
+        const wr = clip(1 - dr / (sig * 2.4), 0, 1);
+        c = _lerp3(c, wetMud, 0.5 * wr * wr);
+        const ao2 = 0.6 + 0.4 * _smoother(dr / (sig * 1.3));
+        const rip = 0.03 * Math.cos(dr * 0.45 - 2.0) * wr;
+        c = [c[0] * ao2 + rip * 0.7, c[1] * ao2 + rip, c[2] * ao2 + rip * 1.2];
+      }
     }
-    // defined but irregular outer edge: mud recedes into shadow (no vignette ring)
-    const fade = _smoother((rn - 0.84) / 0.16);
-    return _lerp3(c, edgeDark, fade);
+    // shoreline: mud blends into the surrounding water, then dissolves to background
+    c = _lerp3(c, waterCol, _smoother((rn - 0.80) / 0.18));
+    c = _lerp3(c, edgeDark, _smoother((rn - 0.93) / 0.07));
+    return c;
   };
-  X.push(0); Y.push(0); Z.push(zAt(0, 0)); C.push(_rgb(colAt(0, 0)));
+  { const z0 = _mudZ(0, 0, landings); X.push(0); Y.push(0); Z.push(z0); C.push(_rgb(colAt(0, 0, z0))); }
   const starts = [0];
   for (let ri = 1; ri <= nR; ri++) {
     starts.push(X.length);
     for (let t = 0; t < nT; t++) {
       const a = 2 * Math.PI * t / nT, rr = Rmax * bnd(a) * Math.pow(ri / nR, 1.15);
+      const x = rr * Math.cos(a), y = rr * Math.sin(a), z = _mudZ(x, y, landings);
+      X.push(x); Y.push(y); Z.push(z); C.push(_rgb(colAt(x, y, z)));
+    }
+  }
+  const r1 = starts[1];
+  for (let t = 0; t < nT; t++) { const t2 = (t + 1) % nT; I.push(0); J.push(r1 + t); K.push(r1 + t2); }
+  for (let ri = 1; ri < nR; ri++) {
+    const s0 = starts[ri], s1 = starts[ri + 1];
+    for (let t = 0; t < nT; t++) { const t2 = (t + 1) % nT; I.push(s0 + t, s0 + t); J.push(s0 + t2, s1 + t2); K.push(s1 + t2, s1 + t); }
+  }
+  const rnd = v => Math.round(v * 10) / 10;
+  return { x: X.map(rnd), y: Y.map(rnd), z: Z.map(rnd), i: I, j: J, k: K, vertexcolor: C };
+}
+// Surrounding shallow tidal water + the surface that fills the mud troughs. A
+// large, gently-rippled disc at the water level that extends BEYOND the mud, so
+// the shoreline dissolves into open water instead of ending on a hard edge.
+// Baked sun-glint streaks read as soft reflections (Plotly has no real
+// reflection/refraction); rendered with high specular for a wet sheen.
+function waterMesh(nR = 26, nT = 120, reveal = 1, opts) {
+  opts = opts || {};
+  reveal = clip(reveal, 0, 1);
+  const footR = rOuterAt(0.05 * POD.features.height), wZ = _waterZ();
+  const Rw = 2.95 * footR * (0.2 + 0.8 * reveal);
+  const sux = opts.sunx != null ? opts.sunx : 0.834, suy = opts.suny != null ? opts.suny : 0.551;
+  const deep = [0.05, 0.085, 0.10], shallow = [0.09, 0.13, 0.14], bg = [0.05, 0.06, 0.07];
+  const sgx = sux * 0.4 * Rw, sgy = suy * 0.4 * Rw;
+  const X = [], Y = [], Z = [], C = [], I = [], J = [], K = [];
+  const colAt = (x, y) => {
+    const d = Math.hypot(x, y), rn = clip(d / Rw, 0, 1);
+    let c = _lerp3(shallow, deep, _smoother(rn));
+    const g = Math.pow(clip(1 - Math.hypot(x - sgx, y - sgy) / (0.8 * Rw), 0, 1), 2);   // sun-glint highlight
+    const band = 0.5 + 0.5 * Math.sin((x * sux + y * suy) * 0.05);                       // broken into streaks
+    const gl = 0.22 * g * (0.4 + 0.6 * band);
+    c = [c[0] + gl * 0.8, c[1] + gl, c[2] + gl * 1.2];
+    return _lerp3(c, bg, _smoother((rn - 0.82) / 0.18));               // dissolve at the far rim
+  };
+  const zAt = (x, y) => wZ + 0.6 * (_fbm(x * 0.03 + 80, y * 0.03 + 30, 3) - 0.5) * 2;   // tiny ripple
+  { X.push(0); Y.push(0); Z.push(zAt(0, 0)); C.push(_rgb(colAt(0, 0))); }
+  const starts = [0];
+  for (let ri = 1; ri <= nR; ri++) {
+    starts.push(X.length);
+    for (let t = 0; t < nT; t++) {
+      const a = 2 * Math.PI * t / nT, rr = Rw * Math.pow(ri / nR, 1.1);
       const x = rr * Math.cos(a), y = rr * Math.sin(a);
       X.push(x); Y.push(y); Z.push(zAt(x, y)); C.push(_rgb(colAt(x, y)));
     }
@@ -1039,6 +1216,44 @@ function groundMesh(nR = 28, nT = 120, reveal = 1, opts) {
   }
   const rnd = v => Math.round(v * 10) / 10;
   return { x: X.map(rnd), y: Y.map(rnd), z: Z.map(rnd), i: I, j: J, k: K, vertexcolor: C };
+}
+// Sparse scattered organic debris on the mudflat — shell + pebble bumps, fallen
+// mangrove leaves, tiny sticks, algae patches. One welded mesh, deterministic
+// placement, resting on the mud surface, kept clear of the pod base.
+function debrisMesh(opts) {
+  opts = opts || {};
+  const footR = rOuterAt(0.05 * POD.features.height), Rmax = 2.2 * footR;
+  const landings = opts.landings || [];
+  const rng = mulberry32(opts.seed || 77);
+  const M = { x: [], y: [], z: [], c: [], i: [], j: [], k: [] };
+  const quad = (cx, cy, cz, l, w, ang, tilt, col) => {
+    const ca = Math.cos(ang), sa = Math.sin(ang), b = M.x.length;
+    for (const [u, v] of [[-l, -w], [l, -w], [l, w], [-l, w]]) {
+      M.x.push(cx + u * ca - v * sa); M.y.push(cy + u * sa + v * ca); M.z.push(cz + tilt * u); M.c.push(col);
+    }
+    M.i.push(b, b); M.j.push(b + 1, b + 2); M.k.push(b + 2, b + 3);
+  };
+  const dome = (cx, cy, cz, r, h, col, colTop) => {
+    const b = M.x.length;
+    for (let k = 0; k < 5; k++) { const a = k * 2 * Math.PI / 5 + 0.3; M.x.push(cx + r * Math.cos(a)); M.y.push(cy + r * Math.sin(a)); M.z.push(cz); M.c.push(col); }
+    M.x.push(cx); M.y.push(cy); M.z.push(cz + h); M.c.push(colTop); const ap = b + 5;
+    for (let k = 0; k < 5; k++) { const k2 = (k + 1) % 5; M.i.push(b + k); M.j.push(b + k2); M.k.push(ap); }
+  };
+  const N = opts.count || 54;
+  for (let n = 0; n < N; n++) {
+    const a = rng() * 2 * Math.PI, rr = (0.42 + 0.5 * Math.sqrt(rng())) * Rmax;   // sqrt → even area density
+    const x = rr * Math.cos(a), y = rr * Math.sin(a);
+    if (Math.hypot(x, y) < 0.62 * footR) continue;                                // keep clear of the pod base
+    const z = _mudZ(x, y, landings) + 0.4, rot = rng() * Math.PI * 2, sz = 3 + rng() * 4, kind = rng();
+    if (kind < 0.30) { const g = 0.42 + 0.18 * rng(); dome(x, y, z, sz * 0.6, sz * 0.35, [g * 0.85, g * 0.82, g * 0.78], [g, g, g * 0.95]); }        // pebble
+    else if (kind < 0.44) { const g = 0.70 + 0.15 * rng(); dome(x, y, z, sz * 0.55, sz * 0.3, [g * 0.8, g * 0.78, g * 0.7], [g, g * 0.97, g * 0.9]); } // shell
+    else if (kind < 0.72) { const col = rng() < 0.5 ? [0.34, 0.26, 0.14] : [0.30, 0.33, 0.17]; quad(x, y, z, sz * 1.4, sz * 0.6, rot, 0.03 * sz, col); } // fallen leaf
+    else if (kind < 0.88) { quad(x, y, z, sz * 1.9, sz * 0.16, rot, 0.02 * sz, [0.26, 0.19, 0.12]); }                                                    // stick
+    else { quad(x, y, z - 0.2, sz * 1.1, sz * 0.8, rot, 0.0, [0.10, 0.20, 0.12]); }                                                                      // algae / seaweed
+  }
+  if (!M.x.length) return null;
+  const rnd = v => Math.round(v * 10) / 10;
+  return { x: M.x.map(rnd), y: M.y.map(rnd), z: M.z.map(rnd), i: M.i, j: M.j, k: M.k, vertexcolor: M.c.map(_rgb) };
 }
 
 // A soft CONTACT SHADOW disc for the Story page — the way a product page floats
@@ -1439,35 +1654,61 @@ function shootMesh(gfrac) {
   if (stemH < 1) return null;
   const X = [], Y = [], Z = [], I = [], J = [], K = [], C = [];
   const stemCol = _rgb(_SHOOT_STEM), leafCol = _rgb(_SHOOT_LEAF), midCol = _rgb(_SHOOT_MIDRIB);
-  const rBase = Math.max(2.2, 0.055 * f.inner_r_waist);
+  const crownColArr = [0.34, 0.26, 0.18], crownCol = _rgb(crownColArr);   // woody root-crown → blends into the roots
 
-  // ----- stem spine: anchored inside the bore, rising through the opening with a
-  //       gentle S-lean and a plump→slim taper; built as a closed tube so the
-  //       leaves weld onto its apex as part of the same mesh -----
-  const descend = 0.17 * H, zBase = zT - descend, apexZ = zT + stemH, span = apexZ - zBase;
-  const leanAz = 0.7, leanMag = 0.05 * H * gfrac;             // gentle curve, only above the rim
-  const sides = 8, nSeg = 18;
-  const spineAt = (t) => {
-    const zc = zBase + span * t, a = clip((zc - zT) / Math.max(stemH, 1), 0, 1);
-    const lat = leanMag * (a * a * (3 - 2 * a));               // smoothstep lean above the rim
-    return [cx0 + Math.cos(leanAz) * lat, cy0 + Math.sin(leanAz) * lat, zc];
+  // ----- hypocotyl + stem as ONE continuous tapered tube -----
+  //  Starts DOWN at the root-cluster origin (z ≈ 0.14·H), runs up through the bore
+  //  as a plump seedling body, exits the rim, then narrows to the growing tip. A
+  //  crown cap closes the bottom (where the roots emerge) and the leaves weld onto
+  //  the apex. Because the tube reaches all the way down to the roots, the seedling
+  //  reads as one axis and cannot float in the exploded view — the earlier "stem
+  //  starts at the rim" gap (z277→z47, ~69% of the height) is gone. The radius and
+  //  colour transition brown/thick at the crown → green/slim at the tip so there is
+  //  no thickness discontinuity where the stem meets the root crown either.
+  const rCrown = 0.50 * f.inner_r_waist;     // thick woody base (fits the bore: rInner ≥ ~13)
+  const rShoulder = 0.34 * f.inner_r_waist;  // body radius where it exits the rim
+  const rTip = 0.07 * f.inner_r_waist;       // slim growing tip
+  const zRoot = 0.14 * H;                     // hypocotyl base = the root-cluster origin
+  const apexZ = zT + stemH, span = apexZ - zRoot;
+  const leanAz = 0.7, leanMag = 0.05 * H * gfrac;   // gentle S-lean, only above the rim
+  const centerAt = (zc) => {
+    if (zc <= zT) {                          // below the rim: drift from the bore axis up to the rim centre
+      const u = _smoother(clip((zc - zRoot) / Math.max(zT - zRoot, 1), 0, 1));
+      return [_lerp(0, cx0, u), _lerp(0, cy0, u)];
+    }
+    const a = clip((zc - zT) / Math.max(stemH, 1), 0, 1), lat = leanMag * (a * a * (3 - 2 * a));
+    return [cx0 + Math.cos(leanAz) * lat, cy0 + Math.sin(leanAz) * lat];
   };
-  const stemR = (zc) => { const a = clip((zc - zT) / Math.max(stemH, 1), 0, 1); return _lerp(rBase * 1.25, rBase * 0.34, a); };
+  const spineAt = (t) => { const zc = zRoot + span * t, c = centerAt(zc); return [c[0], c[1], zc]; };
+  const stemR = (zc) => {
+    if (zc <= zT) { const u = clip((zc - zRoot) / Math.max(zT - zRoot, 1), 0, 1); return _lerp(rCrown, rShoulder, _smoother(u)); }
+    const a = clip((zc - zT) / Math.max(stemH, 1), 0, 1); return _lerp(rShoulder, rTip, a);
+  };
+  const stemColAt = (zc) => {
+    if (zc >= zT) return stemCol;
+    const u = _smoother(clip((zc - zRoot) / Math.max(zT - zRoot, 1), 0, 1));
+    return _rgb(_lerp3(crownColArr, _SHOOT_STEM, u));
+  };
+  const sides = 8, nSeg = 30;
   const ringStart = [];
   for (let s = 0; s <= nSeg; s++) {
     const t = s / nSeg, p = spineAt(t);
     const pn = spineAt(Math.min(t + 1e-3, 1)), pp = spineAt(Math.max(t - 1e-3, 0));
-    const fr = frame(pn[0] - pp[0], pn[1] - pp[1], pn[2] - pp[2]), r = stemR(p[2]);
+    const fr = frame(pn[0] - pp[0], pn[1] - pp[1], pn[2] - pp[2]), r = stemR(p[2]), col = stemColAt(p[2]);
     ringStart.push(X.length);
     for (let k = 0; k < sides; k++) {
       const g = 2 * Math.PI * k / sides, cc = Math.cos(g), ss = Math.sin(g);
-      X.push(p[0] + r * (cc * fr[0] + ss * fr[3])); Y.push(p[1] + r * (cc * fr[1] + ss * fr[4])); Z.push(p[2] + r * (cc * fr[2] + ss * fr[5])); C.push(stemCol);
+      X.push(p[0] + r * (cc * fr[0] + ss * fr[3])); Y.push(p[1] + r * (cc * fr[1] + ss * fr[4])); Z.push(p[2] + r * (cc * fr[2] + ss * fr[5])); C.push(col);
     }
   }
   for (let s = 0; s < nSeg; s++) {
     const a = ringStart[s], b = ringStart[s + 1];
     for (let k = 0; k < sides; k++) { const k2 = (k + 1) % sides; I.push(a + k, a + k); J.push(a + k2, b + k2); K.push(b + k2, b + k); }
   }
+  // crown cap at the bottom so the rod reads solid where the roots sprout
+  const crown = spineAt(0), crownIdx = X.length;
+  X.push(crown[0]); Y.push(crown[1]); Z.push(crown[2] - 0.4 * rCrown); C.push(crownCol);
+  { const a = ringStart[0]; for (let k = 0; k < sides; k++) { const k2 = (k + 1) % sides; I.push(a + k2); J.push(a + k); K.push(crownIdx); } }
   const apex = spineAt(1), apexIdx = X.length;
   X.push(apex[0]); Y.push(apex[1]); Z.push(apex[2]); C.push(stemCol);
   { const a = ringStart[nSeg]; for (let k = 0; k < sides; k++) { const k2 = (k + 1) % sides; I.push(a + k); J.push(a + k2); K.push(apexIdx); } }
@@ -1670,12 +1911,32 @@ function buildPieces(raw) {
 // each piece by gap*dir for the explode. null if the asset didn't load.
 function assetPieces() { return POD_PIECES; }
 
+// High-resolution VISUAL pod mesh (data/podviz.js) used to RENDER the intact pod
+// so its curved surfaces read smooth. It is a denser, welded mesh authored in the
+// modeller; the SIMULATION still runs on the sim mesh in POD (pod.js), untouched.
+// `map[v]` = the nearest sim-mesh vertex for visual vertex v, so the app can show
+// the per-sim-vertex stress field on this mesh (nearest-vertex, like the pieces).
+let POD_VIZ = null;
+function buildPodViz(raw) {
+  if (!raw || !raw.V || !raw.F) return null;
+  const nV = raw.n_verts, nF = raw.n_faces, V = raw.V, F = raw.F;
+  const x = new Array(nV), y = new Array(nV), z = new Array(nV);
+  for (let v = 0; v < nV; v++) { x[v] = V[3 * v]; y[v] = V[3 * v + 1]; z[v] = V[3 * v + 2]; }
+  const i = new Array(nF), j = new Array(nF), k = new Array(nF);
+  for (let f = 0; f < nF; f++) { i[f] = F[3 * f]; j[f] = F[3 * f + 1]; k[f] = F[3 * f + 2]; }
+  POD_VIZ = { type: "mesh3d", x, y, z, i, j, k, map: raw.map, name: "pod wall", hoverinfo: "skip" };
+  return POD_VIZ;
+}
+// the high-res visual pod geometry + nearest-sim-vertex map, or null if not loaded.
+function vizPod() { return POD_VIZ; }
+
 async function loadPod() {
   // geometry is provided by data/pod.js as window.POD_RAW (loaded via <script>,
   // which avoids the large-body fetch() reset in the in-app preview proxy).
   if (!window.POD_RAW) throw new Error("pod geometry (data/pod.js) not loaded");
   buildPod(window.POD_RAW);
   if (window.PIECES_RAW) buildPieces(window.PIECES_RAW);   // optional 4-piece asset
+  if (window.PODVIZ_RAW) buildPodViz(window.PODVIZ_RAW);   // optional high-res visual pod
   return features();
 }
 
@@ -1684,7 +1945,7 @@ window.ENGINE = {
   materials: () => ({ materials: Object.fromEntries(Object.entries(MATERIALS).map(([k, m]) => [k, materialCard(m)])), default: "pha" }),
   species: () => ({ species: SPECIES, default: "rhizophora" }),
   provenance: buildRegistry,
-  baseMesh, seams: seamTubeMesh, exploded: explodedSectors, assetPieces, propagule: propaguleMesh,
-  stageRoots: stageRootMesh, ground: groundMesh, rootLandings, contactShadow,
+  baseMesh, vizPod, seams: seamTubeMesh, exploded: explodedSectors, assetPieces, propagule: propaguleMesh,
+  stageRoots: stageRootMesh, ground: groundMesh, water: waterMesh, debris: debrisMesh, rootLandings, rootParams, contactShadow,
   simulateFrames, shoot: shootMesh, crackReport,
 };

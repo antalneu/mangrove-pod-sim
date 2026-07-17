@@ -162,8 +162,8 @@ function stressScale() {
   return [[0.0, c], [0.16, c], [0.42, "#e9c46a"], [0.72, "#e76f51"], [1.0, "#c1121f"]];
 }
 // explicit colorbar sizing (Plotly's auto-sizing can throw "axis scaling" here)
-const CBAR = { len:0.6, thickness:14, x:0.98, xpad:0, ypad:0,
-  tickfont:{ color:"#5c5347", size:10 }, title:{ text:"stress", font:{ color:"#5c5347", size:11 } } };
+const CBAR = { len:0.6, thickness:14, x:0.98, xpad:0, ypad:0, outlinecolor:"rgba(255,255,255,0.12)",
+  tickfont:{ color:"#bdb7ab", size:10 }, title:{ text:"stress", font:{ color:"#bdb7ab", size:11 } } };
 // subtle molded parting-line accent (reads as a deliberate product feature)
 const SEAM_COLOR = "#7c6f5d", ROOT_COLOR = "#6b4525", PIECE_COLOR = "#c7b291";
 const PROP_COLOR = "#7d8c4e";   // olive seedling / propagule body
@@ -193,7 +193,19 @@ const MESH_LIGHT = { ambient:0.42, diffuse:0.9, specular:0.18, roughness:0.55, f
 const SUN = { x:0.832, y:0.555 };                 // sun xy direction (ground shadow uses this)
 const LIGHT_POS = { x:300, y:200, z:340 };
 
-let BASE_MESH = null, BASE_LAYOUT = null, SEAM_TRACE = null, PROP_TRACE = null, EXPLODED = null;
+let BASE_MESH = null, VIZ_MESH = null, BASE_LAYOUT = null, SEAM_TRACE = null, PROP_TRACE = null, EXPLODED = null;
+
+// The intact pod renders from the high-res VISUAL mesh when present (smoother
+// curves); the SIM still runs on BASE_MESH's geometry. Stress is a per-sim-vertex
+// field, so it's gathered onto the visual mesh via its nearest-sim-vertex map.
+function podGeom() { return VIZ_MESH || BASE_MESH; }
+function podIntensity(simIntensity) {
+  const m = VIZ_MESH && VIZ_MESH.map;
+  if (!m || !simIntensity) return simIntensity;
+  const out = new Array(m.length);
+  for (let v = 0; v < m.length; v++) out[v] = simIntensity[m[v]];
+  return out;
+}
 let LAST = { intensity: null, cmax: 1, roots: null };
 let viewMode = "intact";
 // growth elements (ground, roots, seedling) stay hidden until the sim starts —
@@ -219,7 +231,7 @@ function baseLayout() {
   const ax = { visible:false, showbackground:false, showgrid:false, zeroline:false, showspikes:false };
   return {
     paper_bgcolor:"rgba(0,0,0,0)", plot_bgcolor:"rgba(0,0,0,0)",
-    font:{ color:"#5c5347", size:12 }, margin:{ l:0, r:0, t:20, b:0 }, title:"",
+    font:{ color:"#bdb7ab", size:12 }, margin:{ l:0, r:0, t:20, b:0 }, title:"",
     scene:{ xaxis:ax, yaxis:ax, zaxis:{...ax}, bgcolor:"rgba(0,0,0,0)",
       aspectmode:"data", camera:{ eye:{ x:1.65, y:1.65, z:0.72 }, center:{ x:0, y:0, z:-0.06 } }, uirevision:"keep" },
   };
@@ -245,13 +257,40 @@ function rebuildRoots() {
   const el = $("root_stage"), p = el ? (+el.value) / 100 : 1;
   ROOTS_TRACE = buildRootTrace(ENGINE.stageRoots(p));
 }
-// mud substrate the roots plant into (matte, flat) — grounds the whole scene
-let GROUND_TRACE = null;
+// mud substrate the roots plant into (matte mudflat) — grounds the whole scene
+let GROUND_TRACE = null, WATER_TRACE = null, DEBRIS_TRACE = null;
 function buildGroundTrace(g) {
   if (!g) return null;
   return { type:"mesh3d", x:g.x, y:g.y, z:g.z, i:g.i, j:g.j, k:g.k, vertexcolor:g.vertexcolor,
     flatshading:false, hoverinfo:"skip", name:"ground",
     lighting:{ ambient:0.64, diffuse:0.56, specular:0.22, roughness:0.72, fresnel:0.10 }, lightposition:LIGHT_POS };
+}
+// surrounding shallow tidal water + puddle surface — glossy (high specular) so the
+// baked sun-glint reads as a soft wet reflection
+function buildWaterTrace(g) {
+  if (!g) return null;
+  return { type:"mesh3d", x:g.x, y:g.y, z:g.z, i:g.i, j:g.j, k:g.k, vertexcolor:g.vertexcolor,
+    flatshading:false, hoverinfo:"skip", name:"water",
+    lighting:{ ambient:0.34, diffuse:0.5, specular:0.95, roughness:0.14, fresnel:0.6 }, lightposition:LIGHT_POS };
+}
+// scattered organic debris (shells, pebbles, leaves, sticks, algae) — matte
+function buildDebrisTrace(g) {
+  if (!g) return null;
+  return { type:"mesh3d", x:g.x, y:g.y, z:g.z, i:g.i, j:g.j, k:g.k, vertexcolor:g.vertexcolor,
+    flatshading:false, hoverinfo:"skip", name:"debris",
+    lighting:{ ambient:0.6, diffuse:0.6, specular:0.18, roughness:0.8 }, lightposition:LIGHT_POS };
+}
+// push the whole substrate (water → mud → debris) in back-to-front order
+function pushSubstrate(data, reveal) {
+  if (reveal == null || reveal >= 0.999) {
+    if (WATER_TRACE) data.push(WATER_TRACE);
+    if (GROUND_TRACE) data.push(GROUND_TRACE);
+    if (DEBRIS_TRACE) data.push(DEBRIS_TRACE);
+  } else {
+    const wt = buildWaterTrace(ENGINE.water(22, 100, reveal, groundOpts())); if (wt) data.push(wt);
+    const gt = buildGroundTrace(ENGINE.ground(28, 120, reveal, groundOpts())); if (gt) data.push(gt);
+    if (reveal > 0.85 && DEBRIS_TRACE) data.push(DEBRIS_TRACE);   // debris settles in once the flat is mostly formed
+  }
 }
 function groundOn() { const el = $("show_ground"); return el ? el.checked : true; }
 function buildPropTrace(g) {
@@ -281,7 +320,7 @@ function render() {
   const data = [];
   if (BOUNDS_TRACE) data.push(BOUNDS_TRACE);   // fixes the camera frame
   const look = materialLook(), showStress = stressOn() && !!LAST.intensity;
-  if (sceneRevealed && groundOn() && GROUND_TRACE) data.push(GROUND_TRACE);   // substrate behind everything
+  if (sceneRevealed && groundOn()) pushSubstrate(data);   // water + mudflat + debris, behind everything
   const AP = ENGINE.assetPieces();
   if (viewMode === "exploded" && (AP || EXPLODED)) {
     if (AP) {
@@ -305,12 +344,12 @@ function render() {
     if (sceneRevealed && $("show_roots").checked && ROOTS_TRACE) data.push(ROOTS_TRACE);
   } else {
     // clean material-coloured pod is the DEFAULT look; stress is a toggled overlay
-    const m = Object.assign({}, BASE_MESH);
-    delete m.intensity; delete m.colorscale; delete m.cmin; delete m.cmax; delete m.color; delete m.vertexcolor;
+    const m = Object.assign({}, podGeom());
+    delete m.intensity; delete m.colorscale; delete m.cmin; delete m.cmax; delete m.color; delete m.vertexcolor; delete m.map;
     m.lighting = look.light; m.lightposition = LIGHT_POS;
     m.flatshading = false; m.showscale = false;
     if (showStress) {
-      m.intensity = LAST.intensity; m.colorscale = stressScale();
+      m.intensity = podIntensity(LAST.intensity); m.colorscale = stressScale();
       m.cmin = 0; m.cmax = LAST.cmax; m.showscale = true; m.colorbar = CBAR;
     } else {
       m.color = look.color;   // clean flat material colour — smooth-shaded, no vertex noise
@@ -502,16 +541,13 @@ function renderAnimFrame(idx) {
   // the propagule "lands" and roots start — it isn't there at step 0.
   if (groundOn()) {
     const rv = clamp((idx / T) / 0.20, 0, 1), gReveal = rv * rv * (3 - 2 * rv);
-    if (gReveal > 0.03) {
-      const gt = gReveal >= 0.999 ? GROUND_TRACE : buildGroundTrace(ENGINE.ground(28, 120, gReveal, groundOpts()));
-      if (gt) data.push(gt);
-    }
+    if (gReveal > 0.03) pushSubstrate(data, gReveal);
   }
   const brk = A.breakthrough_step, exploded = (brk != null && idx >= brk - 1), inten = A.frames[idx];
   if (!exploded) {
-    const m = Object.assign({}, BASE_MESH);
-    delete m.color;
-    m.intensity = Array.from(inten); m.colorscale = sc; m.cmin = 0; m.cmax = A.cmax;
+    const m = Object.assign({}, podGeom());
+    delete m.color; delete m.map; delete m.colorscale; delete m.cmin; delete m.cmax;
+    m.intensity = podIntensity(Array.from(inten)); m.colorscale = sc; m.cmin = 0; m.cmax = A.cmax;
     m.showscale = true; m.colorbar = CBAR; m.lighting = look.light; m.lightposition = LIGHT_POS; m.flatshading = false;
     data.push(m);
   } else {
@@ -633,7 +669,7 @@ function renderSingle(s) {
 
   const labels = s.sites.map(x => x.label);
   const steps = s.sites.map(x => x.activation_step == null ? N : x.activation_step);
-  const colors = s.sites.map(x => x.activation_step == null ? "#cdc3b2" : (x.is_ligament ? "#c1121f" : "#5a7fa8"));
+  const colors = s.sites.map(x => x.activation_step == null ? "#5f5a51" : (x.is_ligament ? "#dd6350" : "#6d90bf"));
   Plotly.react($("siteChart"), [{
     type:"bar", orientation:"h", x:steps, y:labels, marker:{ color:colors },
     text: s.sites.map(x => x.activation_step == null ? "—" : "t"+x.activation_step),
@@ -664,7 +700,7 @@ function renderMC(s) {
 
   const labels = Object.keys(s.site_activation_rate);
   const rates = labels.map(l => s.site_activation_rate[l]*100);
-  const colors = labels.map(l => l.startsWith("slot") ? "#c1121f" : "#5a7fa8");
+  const colors = labels.map(l => l.startsWith("slot") ? "#dd6350" : "#6d90bf");
   Plotly.react($("siteChart"), [{
     type:"bar", orientation:"h", x:rates, y:labels, marker:{color:colors},
     text: labels.map(l => { const t=s.mean_site_activation_step[l]; return t!=null? "t"+t.toFixed(0):""; }),
@@ -680,8 +716,8 @@ function renderMC(s) {
 }
 function themeBar(xtitle, xrange) {
   return { paper_bgcolor:"rgba(0,0,0,0)", plot_bgcolor:"rgba(0,0,0,0)",
-    font:{color:"#5c5347", size:11}, margin:{l:96,r:14,t:6,b:34}, height:210,
-    xaxis:{title:{text:xtitle,font:{size:11}}, gridcolor:"#d7cdba", range:xrange, zeroline:false},
+    font:{color:"#bdb7ab", size:11}, margin:{l:96,r:14,t:6,b:34}, height:210,
+    xaxis:{title:{text:xtitle,font:{size:11}}, gridcolor:"rgba(255,255,255,0.09)", range:xrange, zeroline:false},
     yaxis:{automargin:true}, bargap:0.28 };
 }
 
@@ -757,12 +793,15 @@ async function init() {
     // any change to the design/species/material controls invalidates a cached animation
     if ($("controls")) $("controls").addEventListener("input", () => { animDirty = true; });
     BASE_MESH = ENGINE.baseMesh();
+    VIZ_MESH = ENGINE.vizPod();     // high-res visual pod (render-only); null if not loaded
     BASE_LAYOUT = baseLayout();
     BOUNDS_TRACE = buildBounds();   // stable camera frame (pod + eventual ground/roots)
     SEAM_TRACE = buildSeamTrace(ENGINE.seams());
     PROP_TRACE = buildPropTrace(ENGINE.propagule());
     LANDINGS = ENGINE.rootLandings();   // root-contact points for the mud mounds/AO + cast shadow
-    GROUND_TRACE = buildGroundTrace(ENGINE.ground(28, 120, 1, groundOpts()));
+    GROUND_TRACE = buildGroundTrace(ENGINE.ground(44, 170, 1, groundOpts()));
+    WATER_TRACE = buildWaterTrace(ENGINE.water(26, 120, 1, groundOpts()));
+    DEBRIS_TRACE = buildDebrisTrace(ENGINE.debris(groundOpts()));
     rebuildRoots();     // prepared, but hidden until a run reveals the scene
     render();
     $("boot").classList.add("hidden");

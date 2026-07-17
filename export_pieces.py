@@ -17,26 +17,33 @@ import rhino3dm as r3
 SRC = "explode_4pieces_3d.3dm"
 OUT = "docs/data/pieces.js"
 
-f = r3.File3dm.Read(SRC)
-raw_pieces = []
-for o in f.Objects:
-    brep = o.Geometry
+def extract_VF(geom):
+    """Triangles from either a dense Mesh (new high-quality assets) or a NURBS
+    Brep's per-face render mesh (old assets). Quads are split into two tris."""
     V, F = [], []
-    for fi in range(len(brep.Faces)):
-        m = brep.Faces[fi].GetMesh(r3.MeshType.Render)
+    if isinstance(geom, r3.Mesh):
+        meshes = [geom]
+    elif isinstance(geom, r3.Brep):
+        meshes = [face.GetMesh(r3.MeshType.Render) for face in geom.Faces]
+    else:
+        meshes = []
+    for m in meshes:
         if m is None:
             continue
         base = len(V)
         for vi in range(len(m.Vertices)):
             p = m.Vertices[vi]
             V.append([p.X, p.Y, p.Z])
-        for qi in range(len(m.Faces)):
+        for qi in range(m.Faces.Count):
             fc = m.Faces[qi]
             a, b, c, d = fc[0], fc[1], fc[2], fc[3]
             F.append([base + a, base + b, base + c])
             if d != c:
                 F.append([base + a, base + c, base + d])
-    raw_pieces.append((V, F))
+    return V, F
+
+f = r3.File3dm.Read(SRC)
+raw_pieces = [extract_VF(o.Geometry) for o in f.Objects]
 
 # ---- global alignment (feet -> z=0, axis -> x=y=0) ----
 allV = [v for (V, _) in raw_pieces for v in V]

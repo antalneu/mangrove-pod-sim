@@ -1,7 +1,7 @@
 "use strict";
 window.addEventListener("error", (e) => {
   try { document.getElementById("bootmsg").innerHTML =
-    "⚠ " + (e.message || "") + "<br><small>" + (e.filename || "").split("/").pop() + ":" + (e.lineno || "") + "</small>"; } catch (_) {}
+    (e.message || "") + "<br><small>" + (e.filename || "").split("/").pop() + ":" + (e.lineno || "") + "</small>"; } catch (_) {}
 });
 const $ = (id) => document.getElementById(id);
 const plotDiv = $("plot");
@@ -148,7 +148,7 @@ function cfg(extra) {
     n_time_steps: +$("n_time_steps").value,
     pull_assist: +$("pull_assist").value,
     show_roots: $("show_roots").checked,
-    project_outer: $("project_outer").checked,
+    project_outer: true,   // stress always projected to the visible (outer) surface
   };
   return Object.assign(c, extra || {});
 }
@@ -163,25 +163,25 @@ function stressScale() {
 }
 // explicit colorbar sizing (Plotly's auto-sizing can throw "axis scaling" here)
 const CBAR = { len:0.6, thickness:14, x:0.98, xpad:0, ypad:0,
-  tickfont:{ color:"#c9d4de", size:10 }, title:{ text:"stress", font:{ color:"#c9d4de", size:11 } } };
+  tickfont:{ color:"#5c5347", size:10 }, title:{ text:"stress", font:{ color:"#5c5347", size:11 } } };
 // subtle molded parting-line accent (reads as a deliberate product feature)
 const SEAM_COLOR = "#7c6f5d", ROOT_COLOR = "#6b4525", PIECE_COLOR = "#c7b291";
 const PROP_COLOR = "#7d8c4e";   // olive seedling / propagule body
-// per-material product finish: clean base colour + soft studio lighting.
-// clay/concrete matte (low specular, high roughness); bioplastic a touch glossier.
-// per-material product finish + a rim (fresnel) on the silhouette. Surface
-// imperfection is added as per-vertex colour noise (see podBaseColors) —
-// amplitude per material, so clay/concrete read coarser than smooth bioplastic.
+// per-material product finish: a clean flat base colour + soft studio lighting.
+// The pod renders SMOOTH (flatshading:false → interpolated normals); the base
+// pod is a flat material colour (no per-vertex noise — that read as faceting).
+// The four visibly-distinct material colours are core to the tool and stay put.
 const MATERIAL_LOOK = {
+  // PHA / PHBV: waxy off-white bioplastic, gently glossy
+  pha:        { color:"#e7dcbb", light:{ ambient:0.48, diffuse:0.80, specular:0.4, roughness:0.34, fresnel:0.22 } },
+  // PLA: cooler, harder, slightly whiter plastic — a touch more matte
+  pla:        { color:"#ece6d6", light:{ ambient:0.48, diffuse:0.82, specular:0.34, roughness:0.4, fresnel:0.2 } },
   // clay: warm terracotta, fully matte (fired-earth look)
-  clay:       { color:"#b5673c", light:{ ambient:0.48, diffuse:0.88, specular:0.06, roughness:0.95, fresnel:0.12 } },
+  clay:       { color:"#b5673c", light:{ ambient:0.5, diffuse:0.88, specular:0.08, roughness:0.9, fresnel:0.12 } },
   // concrete: cool grey, matte with a faint mineral sheen
-  concrete:   { color:"#9a9790", light:{ ambient:0.50, diffuse:0.84, specular:0.12, roughness:0.86, fresnel:0.16 } },
-  // bioplastic: waxy cream, distinctly GLOSSY (strong highlight, low roughness)
-  bioplastic: { color:"#e7dcbb", light:{ ambient:0.46, diffuse:0.76, specular:0.55, roughness:0.26, fresnel:0.30 } },
+  concrete:   { color:"#9a9790", light:{ ambient:0.52, diffuse:0.84, specular:0.14, roughness:0.82, fresnel:0.16 } },
 };
-const MAT_IMPERFECTION = { bioplastic:0.045, clay:0.11, concrete:0.13 };   // vertex-noise amplitude
-function currentMaterial() { const v = $("material") ? $("material").value : "clay"; return MATERIAL_LOOK[v] ? v : "clay"; }
+function currentMaterial() { const v = $("material") ? $("material").value : "pha"; return MATERIAL_LOOK[v] ? v : "pha"; }
 function materialLook() { return MATERIAL_LOOK[currentMaterial()]; }
 function stressOn() { const el = $("show_stress"); return el ? el.checked : true; }
 // matte, bark-like roots (very low specular, high roughness — no plastic sheen)
@@ -215,36 +215,11 @@ function buildBounds() {
 let LANDINGS = [];
 function groundOpts() { return { sunx: SUN.x, suny: SUN.y, landings: LANDINGS }; }
 
-// per-vertex surface imperfection on the base (no-stress) pod so it doesn't read
-// as uniformly clean CG — amplitude per material (coarse clay/concrete, smooth
-// bioplastic). Static noise field from vertex position, cached per material.
-let _podNoise = null;
-function podNoiseField() {
-  if (_podNoise) return _podNoise;
-  const x = BASE_MESH.x, y = BASE_MESH.y, z = BASE_MESH.z, n = x.length, f = new Float32Array(n);
-  for (let i = 0; i < n; i++)
-    f[i] = Math.sin(x[i] * 0.15 + 2.1) * Math.cos(y[i] * 0.13 - 1.3) * 0.6
-         + Math.sin(z[i] * 0.09 + 0.5) * 0.4 + Math.sin((x[i] + z[i]) * 0.3) * 0.25;
-  _podNoise = f; return f;
-}
-function hexToRgb(h) { h = h.replace("#", ""); return [parseInt(h.slice(0, 2), 16) / 255, parseInt(h.slice(2, 4), 16) / 255, parseInt(h.slice(4, 6), 16) / 255]; }
-const _podColorCache = {};
-function podBaseColors(matKey) {
-  if (_podColorCache[matKey]) return _podColorCache[matKey];
-  const base = hexToRgb(MATERIAL_LOOK[matKey].color), amp = MAT_IMPERFECTION[matKey] || 0.06;
-  const nf = podNoiseField(), n = nf.length, out = new Array(n);
-  for (let i = 0; i < n; i++) {
-    const s = 1 + amp * nf[i];
-    out[i] = `rgb(${Math.round(clamp(base[0] * s, 0, 1) * 255)},${Math.round(clamp(base[1] * s, 0, 1) * 255)},${Math.round(clamp(base[2] * s, 0, 1) * 255)})`;
-  }
-  _podColorCache[matKey] = out; return out;
-}
-
 function baseLayout() {
   const ax = { visible:false, showbackground:false, showgrid:false, zeroline:false, showspikes:false };
   return {
     paper_bgcolor:"rgba(0,0,0,0)", plot_bgcolor:"rgba(0,0,0,0)",
-    font:{ color:"#c9d4de", size:12 }, margin:{ l:0, r:0, t:20, b:0 }, title:"",
+    font:{ color:"#5c5347", size:12 }, margin:{ l:0, r:0, t:20, b:0 }, title:"",
     scene:{ xaxis:ax, yaxis:ax, zaxis:{...ax}, bgcolor:"rgba(0,0,0,0)",
       aspectmode:"data", camera:{ eye:{ x:1.65, y:1.65, z:0.72 }, center:{ x:0, y:0, z:-0.06 } }, uirevision:"keep" },
   };
@@ -285,15 +260,14 @@ function buildPropTrace(g) {
     color:PROP_COLOR, flatshading:false, hoverinfo:"skip", name:"seedling",
     lighting:{ ambient:0.5, diffuse:0.8, specular:0.12, roughness:0.8 }, lightposition:LIGHT_POS };
 }
-function propOn() { const el = $("show_prop"); return el ? el.checked : true; }
+function propOn() { const el = $("show_prop"); return el ? el.checked : false; }
 // Exploded view driven by the authored 4-piece asset (data/pieces.js). Each
 // piece is pushed outward by `gap` (world units) along its own explode dir.
 // VISUAL-ONLY: per-piece material colour, no stress mapping (different topology).
 const PIECE_GAP_FRAC = 0.6;   // widen for clarity in the Exploded display
-function pieceColor(idx) {
-  const base = hexToRgb(materialLook().color), f = 1 + (idx - 1.5) * 0.05;   // ±7.5% across the 4
-  return `rgb(${Math.round(clamp(base[0] * f, 0, 1) * 255)},${Math.round(clamp(base[1] * f, 0, 1) * 255)},${Math.round(clamp(base[2] * f, 0, 1) * 255)})`;
-}
+// all 4 pieces share the one selected material (no per-piece tint — a stray tint
+// read as a mismatched darker piece; the 4 pieces are one material by definition)
+function pieceColor(idx) { return materialLook().color; }
 function pieceTraces(gap, look) {
   const P = ENGINE.assetPieces(); if (!P) return null;
   return P.map((p, idx) => ({
@@ -339,7 +313,7 @@ function render() {
       m.intensity = LAST.intensity; m.colorscale = stressScale();
       m.cmin = 0; m.cmax = LAST.cmax; m.showscale = true; m.colorbar = CBAR;
     } else {
-      m.vertexcolor = podBaseColors(currentMaterial());   // material-appropriate surface imperfection
+      m.color = look.color;   // clean flat material colour — smooth-shaded, no vertex noise
     }
     data.push(m);
     if (sceneRevealed && propOn() && PROP_TRACE) data.push(PROP_TRACE);
@@ -387,7 +361,7 @@ function compute(fn) {
 function showError(where, e) {
   const vd = $("verdict");
   vd.className = "verdict nobreak";
-  vd.innerHTML = `⚠ ${where} failed: ${e.message}`;
+  vd.innerHTML = `${where} failed: ${e.message}`;
   console.error(where, e);
 }
 async function runSim() {
@@ -429,7 +403,7 @@ function buildShootTrace(g) {
   return tr;
 }
 function setPlayBtn(playing) {
-  const b = $("playBtn"); if (b) b.innerHTML = playing ? "⏸ Pause growth" : "▶ Play growth";
+  const b = $("playBtn"); if (b) b.innerHTML = playing ? "Pause growth" : "Play growth";
 }
 async function playGrowth() {
   if (animPlaying) { pauseAnim(); return; }
@@ -631,7 +605,7 @@ function timeStrip(s) {
   const t = s.breakthrough_time, w = s.window_time, el = $("timeline");
   if (!t || t.label === "—") { el.classList.add("hidden"); return; }
   el.classList.remove("hidden");
-  el.innerHTML = `<span class="tclock">⏱ breaks at <b>${t.label}</b></span>` +
+  el.innerHTML = `<span class="tclock">Breaks at <b>${t.label}</b></span>` +
     `<span class="tsub">of a ${w? w.label : ""} window · ${phys_line(s)}</span>`;
 }
 function renderSingle(s) {
@@ -639,16 +613,16 @@ function renderSingle(s) {
   const bm = s.breakthrough_time, fm = s.first_crack_time, vd = $("verdict");
   if (bt != null) {
     vd.className = "verdict broke";
-    vd.innerHTML = `✔ Pod <b>breaks at step ${bt}</b> of ${N}` +
+    vd.innerHTML = `Pod <b>breaks at step ${bt}</b> of ${N}` +
       (bm && bm.months!=null ? ` — <b>${bm.label}</b>` : "") +
       `, releasing along the seam / slot→foot ligaments.`;
   } else if (fc != null) {
     vd.className = "verdict nobreak";
-    vd.innerHTML = `⚠ Cracks start at step ${fc}` +
+    vd.innerHTML = `Cracks start at step ${fc}` +
       (fm && fm.months!=null ? ` (${fm.label})` : "") + ` but <b>no full breakthrough</b> within ${N} steps.`;
   } else {
     vd.className = "verdict nobreak";
-    vd.innerHTML = `✖ No wall failure within ${N} steps — roots never overcome the wall.`;
+    vd.innerHTML = `No wall failure within ${N} steps — roots never overcome the wall.`;
   }
   timeStrip(s);
   $("statcards").innerHTML =
@@ -659,7 +633,7 @@ function renderSingle(s) {
 
   const labels = s.sites.map(x => x.label);
   const steps = s.sites.map(x => x.activation_step == null ? N : x.activation_step);
-  const colors = s.sites.map(x => x.activation_step == null ? "#3a4550" : (x.is_ligament ? "#d6564a" : "#5a8fce"));
+  const colors = s.sites.map(x => x.activation_step == null ? "#cdc3b2" : (x.is_ligament ? "#c1121f" : "#5a7fa8"));
   Plotly.react($("siteChart"), [{
     type:"bar", orientation:"h", x:steps, y:labels, marker:{ color:colors },
     text: s.sites.map(x => x.activation_step == null ? "—" : "t"+x.activation_step),
@@ -677,7 +651,7 @@ function renderSingle(s) {
 function renderMC(s) {
   const N = s.n_time_steps, rel = Math.round(s.reliability * 100), bm = s.breakthrough_time, vd = $("verdict");
   vd.className = "verdict " + (rel >= 80 ? "broke" : "nobreak");
-  vd.innerHTML = `${rel>=80?"✔":"⚠"} Breaks in <b>${rel}% of ${s.n_runs} runs</b>` +
+  vd.innerHTML = `Breaks in <b>${rel}% of ${s.n_runs} runs</b>` +
     (s.mean_breakthrough!=null ? ` — mean breakthrough <b>step ${s.mean_breakthrough.toFixed(1)}</b>` +
       (bm && bm.months!=null ? ` (${bm.label})` : "") + ` ± ${(s.std_breakthrough||0).toFixed(1)}.` : ".");
   timeStrip(s);
@@ -690,7 +664,7 @@ function renderMC(s) {
 
   const labels = Object.keys(s.site_activation_rate);
   const rates = labels.map(l => s.site_activation_rate[l]*100);
-  const colors = labels.map(l => l.startsWith("slot") ? "#d6564a" : "#5a8fce");
+  const colors = labels.map(l => l.startsWith("slot") ? "#c1121f" : "#5a7fa8");
   Plotly.react($("siteChart"), [{
     type:"bar", orientation:"h", x:rates, y:labels, marker:{color:colors},
     text: labels.map(l => { const t=s.mean_site_activation_step[l]; return t!=null? "t"+t.toFixed(0):""; }),
@@ -706,8 +680,8 @@ function renderMC(s) {
 }
 function themeBar(xtitle, xrange) {
   return { paper_bgcolor:"rgba(0,0,0,0)", plot_bgcolor:"rgba(0,0,0,0)",
-    font:{color:"#c9d4de", size:11}, margin:{l:96,r:14,t:6,b:34}, height:210,
-    xaxis:{title:{text:xtitle,font:{size:11}}, gridcolor:"#2f3945", range:xrange, zeroline:false},
+    font:{color:"#5c5347", size:11}, margin:{l:96,r:14,t:6,b:34}, height:210,
+    xaxis:{title:{text:xtitle,font:{size:11}}, gridcolor:"#d7cdba", range:xrange, zeroline:false},
     yaxis:{automargin:true}, bargap:0.28 };
 }
 
@@ -742,7 +716,7 @@ function renderProv(reg) {
 }
 function renderProvMini() {
   if (!LAST_PROV) { $("provMini").innerHTML =
-    `<button class="linklike" onclick="openProv()">🔬 Open data provenance — see what's proven vs. assumed</button>`; return; }
+    `<button class="linklike" onclick="openProv()">Open data provenance — see what's proven vs. assumed</button>`; return; }
   const lv = LAST_PROV.levels, c = LAST_PROV.counts;
   const chips = Object.entries(c).map(([k,v]) =>
     `<span class="lvchip sm" style="border-color:${lv[k].color};color:${lv[k].color}">${v} ${lv[k].label.split(" ")[0]}</span>`).join("");
@@ -759,7 +733,7 @@ async function init() {
   try {
     await ENGINE.loadPod();
   } catch (e) {
-    $("bootmsg").innerHTML = "⚠ could not load the pod geometry (data/pod.js).<br>" + e.message;
+    $("bootmsg").innerHTML = "Could not load the pod geometry (data/pod.js).<br>" + e.message;
     return;
   }
   try {
@@ -768,8 +742,7 @@ async function init() {
     renderMaterial(); renderSpecies(); renderProvMini();
     const f = ENGINE.features();
     $("podinfo").textContent =
-      `${f.n_faces.toLocaleString()} triangles · ${f.n_slots} waist slots · ${f.n_feet} feet · ` +
-      `waist R≈${f.outer_r_waist.toFixed(0)} · wall≈${f.wall_thickness.toFixed(0)} · runs in-browser`;
+      `${f.n_slots} break slots · ${f.n_feet} feet · scanned from the physical pod geometry`;
     document.querySelectorAll("#viewSeg .segbtn").forEach(b =>
       b.addEventListener("click", () => setView(b.dataset.view)));
     ["show_roots","show_prop","show_stress","show_ground"].forEach(id => { const el = $(id); if (el) el.addEventListener("change", render); });
@@ -794,7 +767,7 @@ async function init() {
     render();
     $("boot").classList.add("hidden");
   } catch (e) {
-    $("bootmsg").innerHTML = "⚠ init error: " + e.message + "<br><small>" + ((e.stack||"").split("\n").slice(0,3).join("<br>")) + "</small>";
+    $("bootmsg").innerHTML = "Init error: " + e.message + "<br><small>" + ((e.stack||"").split("\n").slice(0,3).join("<br>")) + "</small>";
   }
 }
 init();

@@ -1,0 +1,104 @@
+/* =========================================================================
+   base.css — shared design system for the Mangrove Pod site
+   Light "gallery" direction: warm near-white stage, near-black type, the pod's
+   real material colours (terracotta / concrete grey / tan) as the only accents.
+   Loaded by BOTH the Story page (index.html) and the Design Tool (tool.html).
+   ========================================================================= */
+:root{
+  /* --- surfaces (warm neutrals, not blue-grey) --- */
+  --paper:      #f4efe6;   /* primary warm near-white stage           */
+  --paper-2:    #ede6d9;   /* slightly deeper panel / alt section      */
+  --paper-3:    #e3dbc8;   /* card / raised surface                    */
+  --paper-sink: #e7dfd0;   /* recessed field (inputs)                  */
+  --line:       #d7cdba;   /* hairline                                 */
+  --line-soft:  #e2dac9;   /* fainter hairline                         */
+
+  /* --- ink (warm near-black, never pure #000) --- */
+  --ink:        #201b14;   /* headlines / primary text                 */
+  --ink-2:      #5c5347;   /* body / secondary                         */
+  --ink-3:      #8a8072;   /* muted / captions                         */
+
+  /* --- material accents (the ONLY real colour) --- */
+  --clay:       #b5673c;   /* terracotta earthenware                   */
+  --clay-deep:  #964e28;
+  --concrete:   #8f8b81;   /* unreinforced concrete grey               */
+  --tan:        #c2a463;   /* tan bioplastic                           */
+  --tan-deep:   #a5863f;
+
+  --accent:     var(--clay);     /* primary interactive accent          */
+  --good:       #5f7d4f;         /* muted botanical green (verdicts)     */
+  --warn:       #b5673c;
+  --bad:        #a23b2e;
+
+  /* --- type --- */
+  --sans: -apple-system, "SF Pro Display", "SF Pro Text", "Helvetica Neue",
+          Helvetica, Arial, system-ui, "Segoe UI", Roboto, sans-serif;
+  --mono: "SF Mono", ui-monospace, "SFMono-Regular", "Roboto Mono", Menlo,
+          Consolas, monospace;
+
+  --nav-h: 60px;
+  --maxw: 1240px;
+  --ease: cubic-bezier(.22,.61,.36,1);
+}
+
+*{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%}
+html,body{margin:0;background:var(--paper);color:var(--ink);
+  font-family:var(--sans);font-size:16px;line-height:1.6;
+  -webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility}
+body{overflow-x:hidden}
+a{color:inherit;text-decoration:none}
+img{max-width:100%}
+
+/* -------- typography primitives -------- */
+.eyebrow{font-size:12px;font-weight:600;letter-spacing:.16em;text-transform:uppercase;
+  color:var(--ink-3)}
+.eyebrow.accent{color:var(--clay)}
+h1,h2,h3{margin:0;font-weight:600;letter-spacing:-.02em;line-height:1.05;color:var(--ink)}
+.display{font-size:clamp(2.6rem,7vw,5.6rem);font-weight:600;letter-spacing:-.035em;line-height:1.0}
+.headline{font-size:clamp(1.9rem,4.2vw,3.4rem);font-weight:600;letter-spacing:-.028em;line-height:1.08}
+.lede{font-size:clamp(1.05rem,1.7vw,1.35rem);color:var(--ink-2);font-weight:400;line-height:1.5}
+.tnum{font-variant-numeric:tabular-nums}
+
+/* -------- shared top nav -------- */
+.nav{position:fixed;top:0;left:0;right:0;height:var(--nav-h);z-index:60;
+  display:flex;align-items:center;justify-content:space-between;
+  padding:0 clamp(16px,4vw,40px);
+  background:color-mix(in srgb, var(--paper) 78%, transparent);
+  backdrop-filter:saturate(140%) blur(14px);-webkit-backdrop-filter:saturate(140%) blur(14px);
+  border-bottom:1px solid transparent;transition:border-color .3s, background .3s}
+.nav.scrolled{border-bottom-color:var(--line);
+  background:color-mix(in srgb, var(--paper) 90%, transparent)}
+.nav-brand{display:flex;align-items:center;gap:10px;font-weight:600;letter-spacing:-.01em;
+  font-size:15px;color:var(--ink)}
+.nav-sub{color:var(--ink-3);font-weight:500;font-size:13px;letter-spacing:0}
+.nav-mark{width:22px;height:22px;flex:0 0 auto}
+.nav-links{display:flex;align-items:center;gap:6px}
+.nav-link{position:relative;padding:8px 14px;border-radius:999px;font-size:14px;font-weight:500;
+  color:var(--ink-2);transition:color .2s, background .2s}
+.nav-link:hover{color:var(--ink)}
+.nav-link.active{color:var(--ink);font-weight:600}
+.nav-link.active::after{content:"";position:absolute;left:14px;right:14px;bottom:2px;height:2px;
+  border-radius:2px;background:var(--clay)}
+.nav-link.cta{background:var(--ink);color:var(--paper);font-weight:600}
+.nav-link.cta:hover{background:var(--clay);color:#fff}
+.nav-ext{color:var(--ink-3);font-size:13px;padding:8px 10px}
+.nav-ext:hover{color:var(--ink)}
+
+/* -------- buttons (shared) -------- */
+.btn{cursor:pointer;font-family:inherit;font-size:14px;font-weight:600;
+  border-radius:999px;padding:11px 22px;border:1px solid var(--line);
+  background:var(--paper-3);color:var(--ink);transition:.18s var(--ease)}
+.btn:hover{border-color:var(--ink-3)}
+.btn.solid{background:var(--ink);border-color:var(--ink);color:var(--paper)}
+.btn.solid:hover{background:var(--clay);border-color:var(--clay);color:#fff}
+.btn.clay{background:var(--clay);border-color:var(--clay);color:#fff}
+.btn.clay:hover{background:var(--clay-deep);border-color:var(--clay-deep)}
+
+/* -------- utility -------- */
+.wrap{max-width:var(--maxw);margin:0 auto;width:100%}
+.sr-only{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)}
+
+@media (prefers-reduced-motion: reduce){
+  *{scroll-behavior:auto !important}
+}

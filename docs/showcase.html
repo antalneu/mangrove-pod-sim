@@ -53,9 +53,28 @@
   .pill.red{border-color:var(--red);color:#f0b3ac}
   .pill.blue{border-color:var(--blue);color:#bcd6f2}
   footer{padding:30px 0;color:var(--muted);font-size:13px}
+  .topnav{position:sticky;top:0;z-index:20;background:rgba(18,22,26,.92);
+    backdrop-filter:blur(10px);border-bottom:1px solid var(--line)}
+  .topnav .wrap{display:flex;align-items:center;justify-content:space-between;height:54px}
+  .topnav .brand{color:var(--text);font-weight:700;text-decoration:none;font-size:15px}
+  .topnav nav{display:flex;gap:4px}
+  .topnav nav a{color:var(--muted);text-decoration:none;font-size:14px;padding:7px 13px;border-radius:20px}
+  .topnav nav a:hover{color:var(--text)}
+  .topnav nav a.on{color:var(--text);font-weight:600}
 </style>
 </head>
 <body>
+
+<div class="topnav">
+  <div class="wrap">
+    <a class="brand" href="index.html">Mangrove Pod</a>
+    <nav>
+      <a href="index.html">Design Tool</a>
+      <a href="showcase.html" class="on">About</a>
+      <a href="https://github.com/antalneu/mangrove-pod-sim" target="_blank" rel="noopener">GitHub</a>
+    </nav>
+  </div>
+</div>
 
 <header>
   <div class="wrap">

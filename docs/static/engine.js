@@ -172,23 +172,40 @@ const MAT_PARAMS = {
 const REF_FRACTURE_MPA = 55, REF_ROOT_PRESSURE_MPA = 0.75, STRENGTH_SENSITIVITY = 0.9;
 
 const MATERIALS = {
-  bioplastic: {
-    key: "bioplastic", name: "Bioplastic (marine-degradable PHA/PLA)",
+  // PHA / PHBV — genuinely marine-biodegradable; the calibration reference
+  // material (fracture strength == REF_FRACTURE_MPA, so it reproduces the
+  // original calibration and its mechanical behaviour is unchanged from the old
+  // combined "bioplastic" preset).
+  pha: {
+    key: "pha", name: "PHA / PHBV (marine-degradable)",
     fracture_strength_mpa: 55, fracture_range_mpa: [40, 75], stiffness_mpa: 2800,
     wet_strength_loss_per_month: 0.05, biodegradable: true,
-    biodegradability: "Marine-biodegradable (formulation-dependent)",
-    biodegradability_note: "Designed to hold shape initially, then weaken and biodegrade over the establishment window. Real degradation rate is highly formulation/site-dependent (PHA degrades faster than PLA in seawater). Estimate — verify with immersion testing.",
+    biodegradability: "Marine-biodegradable — months to ~1 yr",
+    biodegradability_note: "PHA (incl. PHBV) genuinely biodegrades in seawater — field studies show full marine degradation on the order of months to a few years (within ~1 yr for some formulations), depending on thickness, formulation and site. This is the design-intent baseline that holds shape, then dissolves to release the seedling. Estimate — verify with immersion testing.",
     warn: false, warn_text: "",
-    blurb: "Strong at first, then degrades to release the seedling cleanly. The design-intent baseline.",
+    blurb: "Strong at first, then genuinely biodegrades in seawater to release the seedling. The design-intent baseline.",
+  },
+  // PLA — mechanically stronger/stiffer, but NOT reliably marine-degradable:
+  // needs the heat of industrial composting. Distinct preset, distinct claim.
+  pla: {
+    key: "pla", name: "PLA (industrial-compost only)",
+    fracture_strength_mpa: 90, fracture_range_mpa: [70, 110], stiffness_mpa: 3500,
+    wet_strength_loss_per_month: 0.006, biodegradable: false,
+    biodegradability: "NOT marine-degradable — industrial composting only",
+    biodegradability_note: "PLA does NOT reliably biodegrade in ambient marine or soil conditions — it needs the elevated heat of industrial composting. In side-by-side testing PLA did not meet standard marine-biodegradation thresholds where PHA did. It persists in seawater over the establishment window. Estimate.",
+    warn: true,
+    warn_text: "PLA is NOT marine-degradable: it requires industrial composting heat and does not reliably break down in ambient seawater or soil. For a leave-in-place ocean pod, choose PHA instead.",
+    blurb: "Stiffer and stronger than PHA — but it only composts industrially, so it won't dissolve at sea.",
   },
   clay: {
     key: "clay", name: "Clay (low-fired earthenware)",
-    fracture_strength_mpa: 15, fracture_range_mpa: [8, 25], stiffness_mpa: 8000,
+    fracture_strength_mpa: 6, fracture_range_mpa: [1, 25], stiffness_mpa: 8000,
+    strength_note: "Flexural strength across fired-clay studies spans roughly 1–25 MPa; true low-fired earthenware sits toward the LOW/weak end (intentionally more porous and less vitrified than higher-fired stoneware), so ~6 MPa is more representative than the mid-range. Treat the low end as the working value; verify by testing notched samples.",
     wet_strength_loss_per_month: 0.03, biodegradable: true,
     biodegradability: "Inert mineral — environmentally benign",
     biodegradability_note: "Fired clay is not 'biodegradable' in the polymer sense, but it is an inert, non-toxic mineral that breaks down to sediment. Unfired/low-fired clay slakes faster in water (higher degradation). Estimate.",
     warn: false, warn_text: "",
-    blurb: "Brittle ceramic; cracks readily at a scored seam. Benign if it stays behind.",
+    blurb: "Brittle, porous low-fired ceramic; cracks readily at a scored seam. Benign if it stays behind.",
   },
   concrete: {
     key: "concrete", name: "Concrete (unreinforced, thin-wall)",
@@ -197,7 +214,7 @@ const MATERIALS = {
     biodegradability: "Not biodegradable — persistent",
     biodegradability_note: "LEAST biodegradable option. Persists in the marine environment for decades; alkaline leachate can locally raise pH. Cracks in tension at a scored seam, but the fragments remain. Not recommended for leave-in-place / dissolving pod designs. Estimate.",
     warn: true,
-    warn_text: "⚠ Concrete is the LEAST biodegradable material: it persists in the marine environment and can leach alkalinity. It may crack at the seam, but fragments stay behind — avoid for leave-in-place pods.",
+    warn_text: "Concrete is the LEAST biodegradable material: it persists in the marine environment and can leach alkalinity. It may crack at the seam, but fragments stay behind — avoid for leave-in-place pods.",
     blurb: "Durable and cheap, but persistent. Weak in tension so a thin scored seam still cracks.",
   },
 };
@@ -253,7 +270,7 @@ function spTimeContext(sp, step, T, sal) {
 
 // physical context
 function physFromCfg(cfg) {
-  const material = MATERIALS[cfg.material] || MATERIALS.bioplastic;
+  const material = MATERIALS[cfg.material] || MATERIALS.pha;
   const species = SPECIES[cfg.species] || SPECIES.rhizophora;
   let sal = (cfg.salinity_ppt === "" || cfg.salinity_ppt == null) ? null : +cfg.salinity_ppt;
   let p = (cfg.root_pressure_mpa === "" || cfg.root_pressure_mpa == null) ? REF_ROOT_PRESSURE_MPA : +cfg.root_pressure_mpa;
@@ -314,11 +331,13 @@ function buildRegistry(cfg) {
   cs.push(C("geom_slots", "Detected waist slots", String(f.slots.length), "count", "geometry", "Auto-detected from the mesh.", "", "geometry"));
   cs.push(C("geom_feet", "Detected base feet", String(f.feet.length), "count", "geometry", "Auto-detected from the mesh.", "", "geometry"));
   cs.push(C("ref_root_pressure", "Reference root pressure (surrogate anchor)", String(REF_ROOT_PRESSURE_MPA), "MPa", "calibrated", "Mid-point of the grounded working range.", "Root pressure enters the surrogate only as pressure/this-reference; at this value the drive equals the original calibration.", "coupling"));
-  cs.push(C("ref_fracture", "Reference fracture strength (surrogate anchor)", String(REF_FRACTURE_MPA), "MPa", "calibrated", "Bioplastic flexural-strength estimate (see materials).", `Seam capacity scales as (material strength / this reference) ^ ${STRENGTH_SENSITIVITY}; bioplastic reproduces the original calibration.`, "coupling"));
+  cs.push(C("ref_fracture", "Reference fracture strength (surrogate anchor)", String(REF_FRACTURE_MPA), "MPa", "calibrated", "PHA flexural-strength estimate (see materials).", `Seam capacity scales as (material strength / this reference) ^ ${STRENGTH_SENSITIVITY}; PHA reproduces the original calibration.`, "coupling"));
   cs.push(C("strength_sensitivity", "Strength-to-capacity sensitivity", String(STRENGTH_SENSITIVITY), "exponent", "calibrated", "Modelling choice.", "Compresses the between-material capacity spread in this reduced-order surrogate. A tunable modelling knob, not a physical constant.", "coupling"));
   // material entries
   const m = ph.material, lo = m.fracture_range_mpa[0], hi = m.fracture_range_mpa[1];
-  cs.push(C(`mat_${m.key}_strength`, `${m.name}: fracture strength (flexural)`, `${m.fracture_strength_mpa}  (range ${lo}-${hi})`, "MPa", "estimate", "Engineering estimate for a thin scored wall of this class.", "NOT a datasheet value and NOT measured on a pod. Sets seam capacity relative to the reference material. Verify by testing notched samples.", "material"));
+  const strengthNote = m.strength_note || "NOT a datasheet value and NOT measured on a pod. Sets seam capacity relative to the reference material. Verify by testing notched samples.";
+  const strengthVal = m.strength_note ? `${lo}-${hi} (≈${m.fracture_strength_mpa}, low end weighted)` : `${m.fracture_strength_mpa}  (range ${lo}-${hi})`;
+  cs.push(C(`mat_${m.key}_strength`, `${m.name}: fracture strength (flexural)`, strengthVal, "MPa", "estimate", "Engineering estimate for a thin scored wall of this class.", strengthNote, "material"));
   cs.push(C(`mat_${m.key}_stiffness`, `${m.name}: stiffness (elastic modulus)`, `~${m.stiffness_mpa}`, "MPa", "estimate", "Order-of-magnitude estimate for the material class.", "Indicative only; verify by testing.", "material"));
   cs.push(C(`mat_${m.key}_degrade`, `${m.name}: wet/tidal strength loss`, `${m.wet_strength_loss_per_month * 100}`, "% per month", "estimate", "Engineering estimate of marine/tidal degradation.", "Strongly formulation- and site-dependent. Verify with immersion testing. Drives how the seam weakens over the window.", "material"));
   cs.push(C(`mat_${m.key}_biodeg`, `${m.name}: biodegradability`, m.biodegradability, "", "estimate", "Environmental classification (estimate).", m.biodegradability_note, "material"));
@@ -1022,6 +1041,46 @@ function groundMesh(nR = 28, nT = 120, reveal = 1, opts) {
   return { x: X.map(rnd), y: Y.map(rnd), z: Z.map(rnd), i: I, j: J, k: K, vertexcolor: C };
 }
 
+// A soft CONTACT SHADOW disc for the Story page — the way a product page floats
+// an object on a light plinth. A flat disc under the pod whose colour fades from
+// a soft warm shadow at the centre to the exact page background at the rim (so
+// the edge dissolves — no hard ellipse). Offset gently opposite the light and
+// stretched into a soft ellipse. NOT the textured mud plane (that stays on the
+// Design Tool where the substrate is functionally meaningful).
+function contactShadow(opts) {
+  opts = opts || {};
+  const f = POD.features, footR = rOuterAt(0.05 * f.height);
+  const R = (opts.radius || 1.42) * footR, z0 = opts.z != null ? opts.z : -0.4;
+  const bg = opts.bg || [0.957, 0.937, 0.902];      // page background rgb (0..1)
+  const sh = opts.shadow || [0.79, 0.75, 0.68];     // soft shadow centre
+  const sux = opts.sunx != null ? opts.sunx : 0.83, suy = opts.suny != null ? opts.suny : 0.55;
+  const nR = 44, nT = 100, X = [], Y = [], Z = [], C = [], I = [], J = [], K = [];
+  const ocx = -sux * 0.22 * footR, ocy = -suy * 0.22 * footR;   // centre offset opposite the light
+  const colAt = (x, y) => {
+    const dx = x - ocx, dy = y - ocy;
+    const along = dx * sux + dy * suy, across = -dx * suy + dy * sux;
+    const e = Math.hypot(along / (1.14 * footR), across / (0.94 * footR));  // soft ellipse, longer away from light
+    return _rgb(_lerp3(sh, bg, _smoother(clip(e, 0, 1))));
+  };
+  X.push(ocx); Y.push(ocy); Z.push(z0); C.push(colAt(ocx, ocy));
+  const starts = [0];
+  for (let ri = 1; ri <= nR; ri++) {
+    starts.push(X.length);
+    for (let t = 0; t < nT; t++) {
+      const a = 2 * Math.PI * t / nT, rr = R * (ri / nR);
+      const x = ocx + rr * Math.cos(a), y = ocy + rr * Math.sin(a);
+      X.push(x); Y.push(y); Z.push(z0); C.push(colAt(x, y));
+    }
+  }
+  const r1 = starts[1];
+  for (let t = 0; t < nT; t++) { const t2 = (t + 1) % nT; I.push(0); J.push(r1 + t); K.push(r1 + t2); }
+  for (let ri = 1; ri < nR; ri++) {
+    const s0 = starts[ri], s1 = starts[ri + 1];
+    for (let t = 0; t < nT; t++) { const t2 = (t + 1) % nT; I.push(s0 + t, s0 + t); J.push(s0 + t2, s1 + t2); K.push(s1 + t2, s1 + t); }
+  }
+  return { x: X, y: Y, z: Z, i: I, j: J, k: K, vertexcolor: C };
+}
+
 function seamAngles() {
   const s = POD.features.slots; return s.length ? s.map(x => x.theta_deg) : POD.features.split_line_deg.slice();
 }
@@ -1360,11 +1419,14 @@ function simulateFrames(cfg) {
 }
 
 // ---------------------------------------------------------------------------
-//  growing seedling shoot at the top opening: an olive stem that, once it clears
-//  the rim, carries a symmetric OPPOSITE PAIR of first leaves — each on a short
-//  visible petiole from a single junction, an elongated pointed cotyledon blade
-//  that is cupped + midribbed + given a little thickness so it shades as a real
-//  double-sided leaf (not a flat cutout). Glossy dark green with a lighter midrib.
+//  growing seedling shoot — built as ONE CONTINUOUS ORGANIC MESH (not stem-object
+//  + leaf-object placed near each other). A single tube spine originates inside
+//  the pod bore, rises through the opening with a gentle organic lean and taper,
+//  closes at an apex vertex, and the paired cotyledon leaves are WELDED to that
+//  apex vertex — so there is no seam or gap to float, at any growth stage or
+//  camera angle. Each leaf is a lanceolate, midribbed, double-sided blade with an
+//  upward arch, edge curl, a slight twist and per-leaf asymmetry (not flat mirror
+//  planes). Olive stem, dark-green blades, lighter midrib.
 // ---------------------------------------------------------------------------
 const _SHOOT_STEM = [0.42, 0.55, 0.28], _SHOOT_LEAF = [0.15, 0.39, 0.18], _SHOOT_MIDRIB = [0.44, 0.61, 0.31];
 function _cross(a, b) { return [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]]; }
@@ -1377,60 +1439,94 @@ function shootMesh(gfrac) {
   if (stemH < 1) return null;
   const X = [], Y = [], Z = [], I = [], J = [], K = [], C = [];
   const stemCol = _rgb(_SHOOT_STEM), leafCol = _rgb(_SHOOT_LEAF), midCol = _rgb(_SHOOT_MIDRIB);
-  // small tapered-tube helper (stem + petioles) appended to the shared arrays
-  const pushTube = (a, b, ra, rb, col, sides) => {
-    const tx = b[0]-a[0], ty = b[1]-a[1], tz = b[2]-a[2], L = Math.hypot(tx,ty,tz); if (L < 1e-6) return;
-    const [n1x,n1y,n1z,n2x,n2y,n2z] = frame(tx,ty,tz), c0 = [], c1 = [];
-    for (let k=0;k<sides;k++){ const g=2*Math.PI*k/sides, cc=Math.cos(g), ss=Math.sin(g);
-      c0.push(X.length); X.push(a[0]+ra*(cc*n1x+ss*n2x)); Y.push(a[1]+ra*(cc*n1y+ss*n2y)); Z.push(a[2]+ra*(cc*n1z+ss*n2z)); C.push(col); }
-    for (let k=0;k<sides;k++){ const g=2*Math.PI*k/sides, cc=Math.cos(g), ss=Math.sin(g);
-      c1.push(X.length); X.push(b[0]+rb*(cc*n1x+ss*n2x)); Y.push(b[1]+rb*(cc*n1y+ss*n2y)); Z.push(b[2]+rb*(cc*n1z+ss*n2z)); C.push(col); }
-    for (let k=0;k<sides;k++){ const k2=(k+1)%sides; I.push(c0[k],c0[k]); J.push(c0[k2],c1[k2]); K.push(c1[k2],c1[k]); }
+  const rBase = Math.max(2.2, 0.055 * f.inner_r_waist);
+
+  // ----- stem spine: anchored inside the bore, rising through the opening with a
+  //       gentle S-lean and a plump→slim taper; built as a closed tube so the
+  //       leaves weld onto its apex as part of the same mesh -----
+  const descend = 0.17 * H, zBase = zT - descend, apexZ = zT + stemH, span = apexZ - zBase;
+  const leanAz = 0.7, leanMag = 0.05 * H * gfrac;             // gentle curve, only above the rim
+  const sides = 8, nSeg = 18;
+  const spineAt = (t) => {
+    const zc = zBase + span * t, a = clip((zc - zT) / Math.max(stemH, 1), 0, 1);
+    const lat = leanMag * (a * a * (3 - 2 * a));               // smoothstep lean above the rim
+    return [cx0 + Math.cos(leanAz) * lat, cy0 + Math.sin(leanAz) * lat, zc];
   };
-  // --- stem (tapered tube up from the rim) ---
-  const rBase = Math.max(2.2, 0.055 * f.inner_r_waist), nSeg = 10;
-  let prev = [cx0, cy0, zT];
-  for (let s=1;s<=nSeg;s++){ const t=s/nSeg, p=[cx0,cy0,zT+stemH*t]; pushTube(prev,p,_lerp(rBase,rBase*0.5,(s-1)/nSeg),_lerp(rBase,rBase*0.5,t),stemCol,7); prev=p; }
-  // --- paired leaf node: junction -> petiole -> cupped, thick, midribbed blade ---
-  const leafG = clip((gfrac - 0.38) / 0.62, 0, 1);
-  if (leafG > 0.05) {
-    const tip = [cx0, cy0, zT + stemH];
-    const petLen = 0.03*H*leafG, blLen = 0.14*H*leafG, blW = 0.24*blLen;
-    const thk = Math.max(0.4, 0.02*blLen), cup = 0.35, ridge = 0.6, phi = 22*Math.PI/180, tilt = 0.55;
-    for (const az of [phi, phi + Math.PI]) {                 // symmetric opposite pair (V)
-      const pdir = _nrm([Math.cos(az)*tilt, Math.sin(az)*tilt, Math.sqrt(Math.max(1-tilt*tilt,0.05))]);
-      const pend = [tip[0]+pdir[0]*petLen, tip[1]+pdir[1]*petLen, tip[2]+pdir[2]*petLen];
-      pushTube(tip, pend, 0.9, 0.7, stemCol, 6);              // short visible petiole
-      const F = _nrm([Math.cos(az)*0.78, Math.sin(az)*0.78, 0.62]);   // blade forward (up-and-out)
-      let S = _nrm(_cross(F, [0,0,1])); if (!isFinite(S[0]) || (S[0]===0&&S[1]===0&&S[2]===0)) S = [1,0,0];
-      const N = _nrm(_cross(S, F));                            // blade normal (up)
-      const nT = 7, nS = 3, cols = 2*nS+1, topR = [], botR = [];
-      for (let i=0;i<=nT;i++){
-        const t = i/nT;
-        const w = blW * Math.pow(t,0.45) * Math.pow(1-t,0.8) * 2.25;   // lanceolate, pointed tip
-        const arch = 0.12*blLen*Math.sin(Math.PI*t);          // gentle upward arch
-        const cx = pend[0]+F[0]*blLen*t+N[0]*arch, cy = pend[1]+F[1]*blLen*t+N[1]*arch, cz = pend[2]+F[2]*blLen*t+N[2]*arch;
-        topR.push([]); botR.push([]);
-        for (let j=-nS;j<=nS;j++){
-          const sf = j/nS, off = w*sf;
-          const lift = cup*w*sf*sf + ridge*(1-Math.abs(sf));  // cup up at edges + raised midrib
-          const mx = cx+S[0]*off+N[0]*lift, my = cy+S[1]*off+N[1]*lift, mz = cz+S[2]*off+N[2]*lift;
-          const col = j===0 ? midCol : leafCol;
-          topR[i].push(X.length); X.push(mx+N[0]*thk); Y.push(my+N[1]*thk); Z.push(mz+N[2]*thk); C.push(col);
-          botR[i].push(X.length); X.push(mx-N[0]*thk); Y.push(my-N[1]*thk); Z.push(mz-N[2]*thk); C.push(col);
-        }
-      }
-      for (let i=0;i<nT;i++) for (let j=0;j<cols-1;j++){
-        let a=topR[i][j],b=topR[i][j+1],c=topR[i+1][j+1],d=topR[i+1][j];
-        I.push(a,a); J.push(b,c); K.push(c,d);                // top face
-        a=botR[i][j];b=botR[i][j+1];c=botR[i+1][j+1];d=botR[i+1][j];
-        I.push(a,a); J.push(c,b); K.push(d,c);                // bottom face (reversed winding)
-      }
-      const seam = (jj) => { for(let i=0;i<nT;i++){ const t0=topR[i][jj],t1=topR[i+1][jj],b0=botR[i][jj],b1=botR[i+1][jj]; I.push(t0,t0); J.push(b0,b1); K.push(b1,t1); } };
-      seam(0); seam(cols-1);                                  // close the two long edges → proper thin blade
+  const stemR = (zc) => { const a = clip((zc - zT) / Math.max(stemH, 1), 0, 1); return _lerp(rBase * 1.25, rBase * 0.34, a); };
+  const ringStart = [];
+  for (let s = 0; s <= nSeg; s++) {
+    const t = s / nSeg, p = spineAt(t);
+    const pn = spineAt(Math.min(t + 1e-3, 1)), pp = spineAt(Math.max(t - 1e-3, 0));
+    const fr = frame(pn[0] - pp[0], pn[1] - pp[1], pn[2] - pp[2]), r = stemR(p[2]);
+    ringStart.push(X.length);
+    for (let k = 0; k < sides; k++) {
+      const g = 2 * Math.PI * k / sides, cc = Math.cos(g), ss = Math.sin(g);
+      X.push(p[0] + r * (cc * fr[0] + ss * fr[3])); Y.push(p[1] + r * (cc * fr[1] + ss * fr[4])); Z.push(p[2] + r * (cc * fr[2] + ss * fr[5])); C.push(stemCol);
     }
   }
-  const rnd = v => Math.round(v * 10) / 10;
+  for (let s = 0; s < nSeg; s++) {
+    const a = ringStart[s], b = ringStart[s + 1];
+    for (let k = 0; k < sides; k++) { const k2 = (k + 1) % sides; I.push(a + k, a + k); J.push(a + k2, b + k2); K.push(b + k2, b + k); }
+  }
+  const apex = spineAt(1), apexIdx = X.length;
+  X.push(apex[0]); Y.push(apex[1]); Z.push(apex[2]); C.push(stemCol);
+  { const a = ringStart[nSeg]; for (let k = 0; k < sides; k++) { const k2 = (k + 1) % sides; I.push(a + k); J.push(a + k2); K.push(apexIdx); } }
+
+  // ----- leaf pair: each cotyledon welded to the apex vertex (=> one continuous,
+  //       gap-free mesh). Lanceolate blade, raised midrib, upward arch, edge curl,
+  //       slight twist; the two leaves differ in length / curl / bend / tilt so
+  //       they read as a natural pair, not flat mirror planes -----
+  const leafG = clip((gfrac - 0.34) / 0.66, 0, 1);
+  if (leafG > 0.04) {
+    const baseAz = leanAz + Math.PI / 2;
+    const specs = [
+      { az: baseAz,                  lenK: 1.00, curlK: 0.9, bend: +1, tilt: 0.60, twist: +0.12 },
+      { az: baseAz + Math.PI * 0.96, lenK: 0.86, curlK: 1.3, bend: -1, tilt: 0.70, twist: -0.18 },
+    ];
+    for (const sp of specs) {
+      const L = 0.15 * H * leafG * sp.lenK, thk = Math.max(0.3, 0.012 * L);
+      const Fd = _nrm([Math.cos(sp.az) * 0.82, Math.sin(sp.az) * 0.82, sp.tilt]);
+      let S = _nrm(_cross(Fd, [0, 0, 1])); if (!isFinite(S[0]) || (S[0] === 0 && S[1] === 0 && S[2] === 0)) S = [1, 0, 0];
+      const Nn = _nrm(_cross(S, Fd));
+      const nL = 9, nW = 2, cols = 2 * nW + 1, topR = [], botR = [];
+      for (let i = 0; i <= nL; i++) {
+        const t = i / nL;
+        const w = 0.13 * L * Math.pow(t, 0.5) * Math.pow(1 - t, 0.72) * 2.35;   // lanceolate, pointed tip
+        const arch = 0.14 * L * Math.sin(Math.PI * t);                          // upward arch
+        const bend = sp.bend * 0.12 * L * Math.sin(Math.PI * t) * t;            // sideways bend (asymmetry)
+        const cx = apex[0] + Fd[0] * L * t + Nn[0] * arch + S[0] * bend;
+        const cy = apex[1] + Fd[1] * L * t + Nn[1] * arch + S[1] * bend;
+        const cz = apex[2] + Fd[2] * L * t + Nn[2] * arch + S[2] * bend;
+        topR.push([]); botR.push([]);
+        for (let j = -nW; j <= nW; j++) {
+          if (i === 0) { topR[i].push(apexIdx); botR[i].push(apexIdx); continue; }   // base welded to apex
+          const sf = j / nW, off = w * sf, twist = sp.twist * t;
+          const lift = sp.curlK * w * (0.28 + 0.55 * t) * sf * sf + 0.55 * w * (1 - Math.abs(sf));   // edge curl + raised midrib
+          const mx = cx + S[0] * off + Nn[0] * lift + Fd[0] * twist * off;
+          const my = cy + S[1] * off + Nn[1] * lift + Fd[1] * twist * off;
+          const mz = cz + S[2] * off + Nn[2] * lift + Fd[2] * twist * off;
+          const col = j === 0 ? midCol : leafCol;
+          topR[i].push(X.length); X.push(mx + Nn[0] * thk); Y.push(my + Nn[1] * thk); Z.push(mz + Nn[2] * thk); C.push(col);
+          botR[i].push(X.length); X.push(mx - Nn[0] * thk); Y.push(my - Nn[1] * thk); Z.push(mz - Nn[2] * thk); C.push(col);
+        }
+      }
+      for (let i = 0; i < nL; i++) for (let j = 0; j < cols - 1; j++) {
+        const ta = topR[i][j], tb = topR[i][j + 1], tc = topR[i + 1][j + 1], td = topR[i + 1][j];
+        const bc = botR[i + 1][j + 1], bd = botR[i + 1][j];
+        if (i === 0) { I.push(apexIdx, apexIdx); J.push(tc, bd); K.push(td, bc); }    // apex fan (top + bottom)
+        else {
+          const ba = botR[i][j], bb = botR[i][j + 1];
+          I.push(ta, ta); J.push(tb, tc); K.push(tc, td);          // top
+          I.push(ba, ba); J.push(bc, bb); K.push(bd, bc);          // bottom (reversed)
+        }
+      }
+      const seam = (jj) => { for (let i = 0; i < nL; i++) { const t0 = topR[i][jj], t1 = topR[i + 1][jj], b0 = botR[i][jj], b1 = botR[i + 1][jj];
+        if (t0 === b0) { I.push(t0); J.push(b1); K.push(t1); }      // base row is the apex point
+        else { I.push(t0, t0); J.push(b0, b1); K.push(b1, t1); } } };
+      seam(0); seam(cols - 1);                                       // close the two long edges → thin blade
+    }
+  }
+  const rnd = v => Math.round(v * 100) / 100;
   return { x: X.map(rnd), y: Y.map(rnd), z: Z.map(rnd), i: I, j: J, k: K, vertexcolor: C };
 }
 
@@ -1458,7 +1554,7 @@ function crackReport(cfg, nRuns) {
     g.down_bias = clip(gp.down_bias * (1 + 0.5 * jNorm() * 0.3), 0.1, 1);
     rootSys.push(grow(g, kk));
   }
-  const mats = ["clay", "bioplastic", "concrete"], byMat = {};
+  const mats = ["pha", "pla", "clay", "concrete"], byMat = {};
   const finite = a => a.filter(v => isFinite(v)), mean = a => a.length ? a.reduce((s, x) => s + x, 0) / a.length : Infinity;
   for (const mk of mats) {
     const ph = physFromCfg(Object.assign({}, cfg, { material: mk }));
@@ -1489,15 +1585,15 @@ function crackReport(cfg, nRuns) {
   const fcMonths = s.first_crack_months, brkMonths = s.breakthrough_months;
   const win = ph.species.window_months, outplant = ph.species.outplant_months;
   const rel = Math.round(100 * s.reliability);
-  const strengthCur = MATERIALS[cur].fracture_strength_mpa, strengthBio = MATERIALS.bioplastic.fracture_strength_mpa;
+  const strengthCur = MATERIALS[cur].fracture_strength_mpa, strengthRef = MATERIALS.pha.fracture_strength_mpa;
   const nm = v => v == null ? "—" : `month ${v.toFixed(1)}`;
   const matName = MATERIALS[cur].name;
   // ---- narrative ----
   const where = topSite
     ? `In ${matName} pods, cracking initiates at the ${isLig ? "upper-waist slot → foot ligament" : "base split-line"} seam at ${posWords}${consistency >= 60 ? ", consistently" : ", though the location varies"} — this seam is the first to fail in ${consistency}% of ${n} randomized runs.`
     : `No consistent first-crack site emerged in ${n} runs (the wall rarely reaches threshold for ${matName}).`;
-  const why = `That seam overlaps the peak root-pressure band in the upper waist, where the thickening propagule presses hardest against the narrow inner bore. ${matName}'s low flexural strength (~${strengthCur} MPa, versus bioplastic's ~${strengthBio} MPa) means it reaches its failure threshold there before the other seams — so the weakest material fails earliest and most predictably at the highest-stress ligament.`;
-  const when = `Timing (${matName}): first crack at ~${nm(fcMonths)}, full 4-piece breakthrough at ~${nm(brkMonths)} of a ~${win}-month growth window (${rel}% of runs break within the window). By comparison — first crack: clay ~${nm(byMat.clay.first_crack_months)}, bioplastic ~${nm(byMat.bioplastic.first_crack_months)}, concrete ~${nm(byMat.concrete.first_crack_months)}.`;
+  const why = `That seam overlaps the peak root-pressure band in the upper waist, where the thickening propagule presses hardest against the narrow inner bore. ${matName}'s flexural strength (~${strengthCur} MPa, versus the PHA reference's ~${strengthRef} MPa) sets when it reaches its failure threshold there relative to the other seams — the weaker the material, the earlier and more predictably it fails at the highest-stress ligament.`;
+  const when = `Timing (${matName}): first crack at ~${nm(fcMonths)}, full 4-piece breakthrough at ~${nm(brkMonths)} of a ~${win}-month growth window (${rel}% of runs break within the window). By comparison — first crack: PHA ~${nm(byMat.pha.first_crack_months)}, PLA ~${nm(byMat.pla.first_crack_months)}, clay ~${nm(byMat.clay.first_crack_months)}, concrete ~${nm(byMat.concrete.first_crack_months)}.`;
   const consistencyText = consistency >= 80
     ? `This is a reliable, repeatable failure point: ${consistency}% of runs crack at the same seam.`
     : consistency >= 50
@@ -1542,6 +1638,21 @@ function features() {
 //  VISUAL-ONLY — different topology from the sim mesh, so no live stress mapping.
 // ---------------------------------------------------------------------------
 let POD_PIECES = null;
+// Weld coincident vertices (the authored asset concatenates a render mesh per
+// Brep face, leaving ~27% exactly-duplicated vertices along the face seams).
+// Merging them lets Plotly's flatshading:false average normals ACROSS those
+// seams, so curved surfaces shade smoothly instead of faceted. Positions are
+// already quantised to 0.1 in the export, so an exact key merge is safe.
+function weldMesh(x, y, z, ii, jj, kk) {
+  const map = new Map(), nx = [], ny = [], nz = [], remap = new Int32Array(x.length);
+  for (let i = 0; i < x.length; i++) {
+    const key = x[i] + "," + y[i] + "," + z[i];
+    let idx = map.get(key);
+    if (idx === undefined) { idx = nx.length; map.set(key, idx); nx.push(x[i]); ny.push(y[i]); nz.push(z[i]); }
+    remap[i] = idx;
+  }
+  return { x: nx, y: ny, z: nz, i: ii.map(v => remap[v]), j: jj.map(v => remap[v]), k: kk.map(v => remap[v]) };
+}
 function buildPieces(raw) {
   if (!raw || !raw.pieces) return null;
   POD_PIECES = raw.pieces.map(p => {
@@ -1550,7 +1661,8 @@ function buildPieces(raw) {
     for (let i = 0; i < nV; i++) { x[i] = V[3 * i]; y[i] = V[3 * i + 1]; z[i] = V[3 * i + 2]; }
     const ii = new Array(nF), jj = new Array(nF), kk = new Array(nF);
     for (let f = 0; f < nF; f++) { ii[f] = F[3 * f]; jj[f] = F[3 * f + 1]; kk[f] = F[3 * f + 2]; }
-    return { x, y, z, i: ii, j: jj, k: kk, dx: p.dx, dy: p.dy };
+    const w = weldMesh(x, y, z, ii, jj, kk);
+    return { x: w.x, y: w.y, z: w.z, i: w.i, j: w.j, k: w.k, dx: p.dx, dy: p.dy };
   });
   return POD_PIECES;
 }
@@ -1569,10 +1681,10 @@ async function loadPod() {
 
 window.ENGINE = {
   loadPod, features, simulate, montecarlo,
-  materials: () => ({ materials: Object.fromEntries(Object.entries(MATERIALS).map(([k, m]) => [k, materialCard(m)])), default: "bioplastic" }),
+  materials: () => ({ materials: Object.fromEntries(Object.entries(MATERIALS).map(([k, m]) => [k, materialCard(m)])), default: "pha" }),
   species: () => ({ species: SPECIES, default: "rhizophora" }),
   provenance: buildRegistry,
   baseMesh, seams: seamTubeMesh, exploded: explodedSectors, assetPieces, propagule: propaguleMesh,
-  stageRoots: stageRootMesh, ground: groundMesh, rootLandings,
+  stageRoots: stageRootMesh, ground: groundMesh, rootLandings, contactShadow,
   simulateFrames, shoot: shootMesh, crackReport,
 };

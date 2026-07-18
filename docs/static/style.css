@@ -420,20 +420,49 @@ button.wide{width:100%}
 .settings-pop .ghost{margin-top:12px}
 
 /* =========================================================================
-   RESPONSIVE — panels stay usable on narrow screens (desktop-first tool)
+   RESPONSIVE — desktop-first floating panels, collapsing to a scrolling
+   page on phones so the 3-D scene stays the hero and nothing overlaps.
    ========================================================================= */
 @media (max-width:1180px){
   .panel-tl{width:320px}
   .panel-tr{width:326px}
 }
-@media (max-width:900px){
-  .panel-tl,.panel-tr{width:calc(50vw - 20px);min-width:220px;max-height:52vh}
+/* small tablet / large phone landscape: keep floating, just narrower.
+   (base max-heights already reserve room for the bottom corner elements) */
+@media (max-width:900px) and (min-width:761px){
+  .panel-tl,.panel-tr{width:min(45vw,320px);min-width:230px}
   .panel-bl{max-width:calc(100vw - 32px)}
 }
-@media (max-width:640px){
-  .glasspanel{width:calc(100vw - 32px)!important}
-  .panel-tl{max-height:40vh}
-  .panel-tr{top:auto;bottom:16px;max-height:56vh}
-  .panel-bl{display:none}
-  .panel-br{bottom:auto;top:16px}
+/* PHONES — stack everything into a normal scrolling page:
+   scene on top, then Controls, Results, branding as full-width cards. */
+@media (max-width:760px){
+  html,body.tool-body{height:auto;overflow-x:hidden;overflow-y:auto}
+  body.tool-body{display:flex;flex-direction:column;min-height:100%}
+
+  /* the 3-D scene becomes a fixed-height hero at the top of the flow */
+  #viewpane{position:relative;inset:auto;width:100%;height:54vh;min-height:300px;
+    order:0;flex:0 0 auto}
+
+  /* panels become full-width cards in normal document flow */
+  .glasspanel{position:static;width:auto!important;min-width:0;max-height:none;
+    margin:10px 10px 0;border-radius:14px}
+  .glasspanel.min{max-height:none}
+  #controls{order:2}
+  #results{order:3}
+  .panel-scroll{overflow:visible;padding:2px 14px 14px}
+
+  /* viewer icons ride just under the scene as a right-aligned row */
+  .panel-br{position:relative;right:auto;bottom:auto;order:1;
+    flex-direction:row;align-items:center;justify-content:flex-end;gap:10px;margin:8px 10px 0}
+  .settings-pop{position:absolute;top:calc(100% + 8px);right:0;bottom:auto;z-index:40}
+
+  /* branding sits at the foot of the scroll */
+  .panel-bl{position:static;right:auto;bottom:auto;display:flex;order:4;
+    max-width:none;margin:10px 10px 16px}
+
+  /* playback bar pinned to the bottom while growth plays; wrap so it never clips */
+  .animbar{position:fixed;left:50%;bottom:12px;max-width:calc(100vw - 20px);
+    flex-wrap:wrap;justify-content:center;row-gap:8px}
+  .animreadout{min-width:0;white-space:normal;text-align:center;font-size:11px}
+  .animrange{min-width:120px}
 }

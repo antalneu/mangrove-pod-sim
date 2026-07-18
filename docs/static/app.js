@@ -900,6 +900,22 @@ function wireViewerChrome() {
     b.textContent = panel.classList.toggle("min") ? "+" : "–";
   }));
 }
+// On phones the panels stack in a scrolling page, so collapse Controls by default
+// (just its header shows) — the 3-D scene leads. Expanded automatically on wider
+// screens / rotation so a floating panel is never left collapsed.
+function initPhoneControlsCollapse() {
+  const mq = window.matchMedia && window.matchMedia("(max-width: 760px)");
+  if (!mq) return;
+  const apply = m => {
+    const c = $("controls"); if (!c) return;
+    const mb = c.querySelector(".minbtn");
+    c.classList.toggle("min", m.matches);
+    if (mb) mb.textContent = m.matches ? "+" : "–";
+  };
+  apply(mq);
+  if (mq.addEventListener) mq.addEventListener("change", apply);
+  else if (mq.addListener) mq.addListener(apply);
+}
 
 // ---- init -------------------------------------------------------------------
 async function init() {
@@ -951,6 +967,7 @@ async function init() {
     wireToggleGroup("speciesToggles", "species", "species");
     initSiteLoader();
     wireViewerChrome();
+    initPhoneControlsCollapse();   // on phones, start with Controls collapsed so the scene leads
     $("boot").classList.add("hidden");
   } catch (e) {
     $("bootmsg").innerHTML = "Init error: " + e.message + "<br><small>" + ((e.stack||"").split("\n").slice(0,3).join("<br>")) + "</small>";

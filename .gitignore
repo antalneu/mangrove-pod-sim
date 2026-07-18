@@ -14,3 +14,6 @@ webapp/static/plotly.min.js
 .claude/settings.local.json
 .DS_Store
 Thumbs.db
+
+# Rhino auto-backups (the *.3dm models are tracked; *.3dmbak are transient save backups)
+*.3dmbak

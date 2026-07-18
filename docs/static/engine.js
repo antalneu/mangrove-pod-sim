@@ -847,43 +847,57 @@ function rootTubeMesh(roots, sides = 6, scale = 1.35, rMin = 0.8, rMax = 7, iter
   return acc.payload();
 }
 // ---------------------------------------------------------------------------
-//  Rhizophora prop-root architecture  (RENDERING ONLY — the physics still runs
-//  on the space-colonization node tree; this is a spline-based visual overlay).
-//  Redesigned to match real Rhizophora prop roots: they leave the lower trunk at
-//  SEVERAL heights (overlapping generations), arch OUTWARD then curve down under
-//  gravity in a hanging bezier arch, enter the sediment, and branch underground
-//  into secondary/tertiary roots. Each is tapered (thick at the trunk → thin at
-//  the tip), swayed and sized differently, so the system reads as a broad radial
-//  support cage rather than a spike cluster. `p` in [0,1] drives incremental
-//  growth: tips extend, then thicken, then higher/newer generations emerge.
+//  Young Rhizophora prop-root generator  (RENDERING ONLY — the physics still
+//  runs on the space-colonization node tree; this is a spline overlay).
+//
+//  Rebuilt from scratch to reproduce a naturally growing young (~1–2 yr)
+//  Rhizophora: a broad radial CAGE of long, smooth structural arches. Each root
+//  behaves like a bent support beam — it leaves the stem, curves OUTWARD, reaches
+//  its maximum horizontal distance, then curves DOWN and enters the mud. No
+//  straight segments: every arch is a Catmull-Rom spline through five
+//  morphological waypoints. Roots emerge from FIVE stem heights (overlapping
+//  generations), spread ~360° with irregular spacing, taper continuously
+//  (100%→70%→30%), twist slightly out of plane, differ in length/reach, and some
+//  stay aerial (never reaching the mud). `p` in [0,1] drives growth: each tip
+//  EXTENDS first, then the root THICKENS, and higher generations emerge later.
 //  Fully deterministic from _rzParams.seed.
 // ---------------------------------------------------------------------------
 const _RZ = {
-  woodDark: [0.34, 0.20, 0.15],   // reddish-brown older wood near the trunk
-  woodTan:  [0.55, 0.40, 0.29],   // lighter tan toward the arch / ground
-  ugDark:   [0.28, 0.18, 0.14],   // underground root — darker, desaturated
-  ugDeep:   [0.22, 0.15, 0.12],   // deepest underground tips
+  barkDark: [0.34, 0.20, 0.15],    // reddish-brown older wood near the stem
+  barkTan:  [0.60, 0.45, 0.32],    // warm tan toward the arch / tip
+  barkGrey: [0.30, 0.26, 0.22],    // weathered grey-brown mottle patches
+  lenticel: [0.66, 0.55, 0.42],    // pale corky lenticel speckle (Rhizophora signature)
+  soilDark: [0.29, 0.19, 0.145],   // underground planting root — darker
+  soilDeep: [0.22, 0.15, 0.12],    // deepest underground tip
 };
-// tunable architecture (read/patch via ENGINE.rootParams). Lengths are × pod
-// height H or × foot radius footR so the whole cage scales with the model.
+// tunable architecture (read/patch via ENGINE.rootParams). Radii are model units;
+// heights are × pod height H and reaches are × foot radius footR, so the whole
+// cage scales with the model.
 let _rzParams = {
-  seed: 20,
-  nodeHeights: [0.15, 0.21, 0.28],   // young stage: only a few low prop roots, not a mature cage
-  rootsPerNode: [1, 2],              // inclusive range: 1–2 prop roots per node
-  trunkRLow: 6.6, trunkRHigh: 4.0,   // trunk radius at the low vs high nodes (attach point)
-  reachMin: 0.72, reachMax: 1.30,    // ground landing radius (× footR)
-  rootRBase: 2.4, rootROlder: 1.9,   // base tube radius + extra for older/lower roots
-  taperMid: 0.70, taperTip: 0.34,    // thickness at mid / tip (× base) — 100%→70%→34%
-  gravity: 0.62,        // how steeply the arch plunges into the ground (0..1)
-  archLift: 0.24,       // upward lean as it leaves the trunk (the arch height)
-  curvature: 0.11,      // lateral S-curve sway amplitude (× reach)
-  branchProb: 0.55,     // chance an underground branch actually forms (sparse at this stage)
-  branchMax: 2,         // up to this many secondary roots per prop root
-  genSpread: 0.5,       // how much later higher generations emerge in p
-  growSpan: 0.5,        // per-root growth window length in p
-  archSamp: 20, ugSamp: 6,
-  ugDepth: 0.055,       // underground descent depth (× H)
-  ugSpread: 0.14,       // underground lateral run (× reach)
+  seed: 6,
+  // A tight COLLAR of overlapping generations on the LOWER stem — the roots all
+  // sweep DOWN from a small vertical band to an even ground circle, the classic
+  // upright Rhizophora stilt-cone (matches the reference photos). Anchored just
+  // above the seedling's woody hypocotyl crown (z≈0.14·H) so the cone attaches to
+  // the seed body — NOT sprouting from mid-air above it.
+  levels: [0.18, 0.25, 0.32],  // stem heights (× H) of the emergence collar (low=old → high=new)
+  rootsPerLevel: [2, 3],       // inclusive random count per level
+  minRoots: 7, maxRoots: 9,    // ~8 clean stilts (reference young trees show ~6–9)
+  stemRLow: 6.5, stemRHigh: 5.5, // attach ON the thin stem surface (shoot radius ≈6) so roots meet the trunk
+  reach: [0.85, 1.15],         // ground landing radius (× footR) — even cone base
+  overArch: [1.00, 1.05],      // apex horizontal reach (× landing) → lands near its widest point
+  apexZ: [0.40, 0.52],         // apex height between mud (0) and origin (1) — max horizontal at mid
+  baseR: [2.9, 3.7],           // near-stem tube radius — slender, fairly uniform reddish stilts
+  olderThick: 0.6,             // extra base radius for older/lower roots
+  taperMid: 0.72, taperTip: 0.32,   // continuous taper 100% → 72% (halfway) → 32% (tip)
+  twist: 0.06,                 // out-of-plane drift — small, so arches stay ~in their radial plane
+  swayAmp: 0.02,               // minimal organic wobble amplitude (× reach)
+  shortFrac: 0.12,             // nearly all reach the mud (one young short root at most)
+  genDelay: 0.42,              // higher generations emerge this much later in p
+  growSpan: 0.55,              // per-root growth window length in p
+  seg: 8,                      // spline samples per waypoint segment (smooth, no straight runs)
+  ugDepth: 0.05,               // short planting plunge below the mud (× H)
+  ugRun: 0.14,                 // its lateral run (× reach)
 };
 function rootParams(overrides) {
   if (overrides) { _rzParams = Object.assign({}, _rzParams, overrides); _rzCache = null; }
@@ -902,98 +916,131 @@ function _bez3(P, Q, R, S, t) {
           a * P[1] + b * Q[1] + c * R[1] + d * S[1],
           a * P[2] + b * Q[2] + c * R[2] + d * S[2]];
 }
-// smooth taper 100% (trunk) → mid → tip along the normalised arc length t
+// ---- small spline / vector helpers for the arches ----
+function _rand(rng, ab) { return ab[0] + (ab[1] - ab[0]) * rng(); }
+function _pol(r, az, z) { return [r * Math.cos(az), r * Math.sin(az), z]; }
+function _dist(a, b) { return Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]); }
+function _tint(c, f) { return [c[0] * f, c[1] * f, c[2] * f]; }
+// stateless integer hash → [0,1) for per-vertex bark speckle (deterministic)
+function _rhash(a, b, c) {
+  let h = (((a | 0) * 374761393) + ((b | 0) * 668265263) + ((c | 0) * 2147483647)) >>> 0;
+  h = Math.imul(h ^ (h >>> 13), 1274126177); h ^= h >>> 16;
+  return (h >>> 0) / 4294967296;
+}
+function _landDir(pts) {
+  const a = pts[pts.length - 2], b = pts[pts.length - 1];
+  const dx = b[0] - a[0], dy = b[1] - a[1], l = Math.hypot(dx, dy) || 1;
+  return [dx / l, dy / l, 0];
+}
+// uniform Catmull-Rom through waypoints W (each [x,y,z]); clamped ends. Returns a
+// smooth polyline of [x,y,z] — guarantees a continuous curve with no straight legs.
+function _catmull(W, seg) {
+  const n = W.length, out = [], pt = i => W[Math.max(0, Math.min(n - 1, i))];
+  for (let i = 0; i < n - 1; i++) {
+    const p0 = pt(i - 1), p1 = pt(i), p2 = pt(i + 1), p3 = pt(i + 2), last = i === n - 2;
+    for (let s = 0; s < seg + (last ? 1 : 0); s++) {
+      const t = s / seg, t2 = t * t, t3 = t2 * t, o = [0, 0, 0];
+      for (let d = 0; d < 3; d++)
+        o[d] = 0.5 * (2 * p1[d] + (-p0[d] + p2[d]) * t +
+               (2 * p0[d] - 5 * p1[d] + 4 * p2[d] - p3[d]) * t2 +
+               (-p0[d] + 3 * p1[d] - 3 * p2[d] + p3[d]) * t3);
+      out.push(o);
+    }
+  }
+  return out;
+}
+// smooth taper 100% (stem) → mid → tip along normalised arc length t
 function _taper(t) {
   const P = _rzParams;
   return t < 0.5 ? _lerp(1, P.taperMid, _smoother(t / 0.5))
                  : _lerp(P.taperMid, P.taperTip, _smoother((t - 0.5) / 0.5));
 }
-// one aerial prop-root arch: leaves the trunk surface, bows outward + slightly
-// up, then plunges to the ground under "gravity". Samples = [x,y,z,radius,u];
-// returns { pts, land:[x,y], landDir:[x,y,z] } for the underground continuation.
-function _propArch(o) {
-  const P = _rzParams, O = [Math.cos(o.az), Math.sin(o.az), 0];
-  const perp = [-Math.sin(o.az), Math.cos(o.az), 0];
-  const S = [o.cx + O[0] * o.rTrunk, o.cy + O[1] * o.rTrunk, o.hz];
-  const laz = o.az + o.landJit, Lo = [Math.cos(laz), Math.sin(laz), 0];
-  const land = [o.cx + Lo[0] * o.reach, o.cy + Lo[1] * o.reach, o.gz];
-  const leave = _nrm([O[0] * 0.94, O[1] * 0.94, P.archLift]);           // out + slight up
-  const C1 = [S[0] + leave[0] * o.reach * 0.55, S[1] + leave[1] * o.reach * 0.55, S[2] + leave[2] * o.reach * 0.55];
-  const C2 = [land[0] + Lo[0] * o.reach * 0.04, land[1] + Lo[1] * o.reach * 0.04, land[2] + o.hz * P.gravity];
-  const pts = [], N = P.archSamp;
-  for (let i = 0; i <= N; i++) {
-    const t = i / N, b = _bez3(S, C1, C2, land, t), env = Math.sin(Math.PI * t);
-    const sway = o.sway * env * Math.sin(2.3 * Math.PI * t + o.phase);   // lateral S-curve, 0 at ends
-    pts.push([b[0] + perp[0] * sway, b[1] + perp[1] * sway, b[2], o.baseR * _taper(t), t]);
+// one aerial prop-root arch: a bent support beam. Five morphological waypoints —
+// attach → rise out → MAX horizontal → curve down → enter mud — with the azimuth
+// drifting along the arch (out-of-plane twist) and small organic asymmetry. If
+// `short`, the arch ends in the air (never reaches the mud). Samples = [x,y,z,r,u].
+function _archStrand(o) {
+  const P = _rzParams, rng = o.rng, gz = o.gz, hz = o.hz, drop = hz - gz;
+  const reach = o.reach, over = reach * _rand(rng, P.overArch);
+  const apexZ = gz + drop * _rand(rng, P.apexZ);
+  const tw = P.twist * o.twistSign;                       // azimuth drifts as it descends
+  const azAt = f => o.az + tw * f + (rng() - 0.5) * 0.05;
+  const landR = o.short ? reach * _lerp(0.45, 0.72, rng()) : reach;
+  const landZ = o.short ? gz + drop * _lerp(0.14, 0.42, rng()) : gz;
+  const W = [
+    _pol(o.stemR,                               azAt(0.00), hz),
+    _pol(o.stemR + 0.28 * (reach - o.stemR),    azAt(0.15), hz - drop * 0.03),   // leave: out, starts down
+    _pol(over,                                  azAt(0.45), apexZ),              // max horizontal (mid height)
+    _pol(o.short ? landR * 1.02 : reach * 0.99, azAt(0.76), _lerp(apexZ, landZ, 0.55)), // curve down
+    _pol(landR,                                 azAt(1.00), landZ),             // enter mud / aerial tip
+  ];
+  const raw = _catmull(W, P.seg), N = raw.length, cum = [0];
+  for (let i = 1; i < N; i++) cum.push(cum[i - 1] + _dist(raw[i], raw[i - 1]));
+  const L = cum[N - 1] || 1, pts = [];
+  for (let i = 0; i < N; i++) {
+    const u = cum[i] / L, p = raw[i], env = Math.sin(Math.PI * u);
+    const sway = o.sway * P.swayAmp * reach * env * Math.sin(2.4 * Math.PI * u + o.phase);
+    const rr = Math.hypot(p[0], p[1]) || 1;               // wobble perpendicular to the radial dir
+    pts.push([p[0] - (p[1] / rr) * sway, p[1] + (p[0] / rr) * sway, p[2], o.baseR * _taper(u), u]);
   }
-  const a = pts[pts.length - 2], c = pts[pts.length - 1];
-  return { pts, land: [land[0], land[1]], landDir: _nrm([c[0] - a[0], c[1] - a[1], 0]) };
+  return { pts, land: o.short ? null : [pts[N - 1][0], pts[N - 1][1]],
+           landDir: _landDir(pts), tipR: o.baseR * P.taperTip };
 }
-// underground continuation / branch: runs outward + descends, thinning, with a
-// gentle sway. Samples = [x,y,z,radius,u].
-function _underground(start, dir, r0, o) {
-  const P = _rzParams, N = o.samp, pts = [], depth = P.ugDepth * o.H;
-  const d = _nrm([dir[0], dir[1], 0]), perp = [-d[1], d[0], 0];
-  for (let i = 0; i <= N; i++) {
-    const t = i / N, out = o.spread * t, down = depth * _smoother(t);
-    const sway = o.spread * 0.35 * Math.sin(2.1 * Math.PI * t + o.phase);
-    pts.push([start[0] + d[0] * out + perp[0] * sway,
-              start[1] + d[1] * out + perp[1] * sway,
-              start[2] - down, _lerp(r0, r0 * 0.4, t), t]);
-  }
+// short underground planting root: from the landing, curves down + slightly out
+// and thins to a tip, so an arch plants into the mud instead of just touching a
+// plane. Samples = [x,y,z,radius,u].
+function _ugPlunge(land, dir, r0, rng, phase, reach) {
+  const P = _rzParams, gz = groundZ(), depth = P.ugDepth * POD.features.height;
+  const run = P.ugRun * reach * (0.7 + 0.5 * rng()), dx = dir[0], dy = dir[1];
+  const W = [
+    [land[0], land[1], gz],
+    [land[0] + dx * run * 0.55, land[1] + dy * run * 0.55, gz - depth * 0.5],
+    [land[0] + dx * run, land[1] + dy * run, gz - depth],
+  ];
+  const raw = _catmull(W, 5), N = raw.length, pts = [];
+  for (let i = 0; i < N; i++) { const u = i / (N - 1); pts.push([raw[i][0], raw[i][1], raw[i][2], _lerp(r0, r0 * 0.4, u), u]); }
   return pts;
 }
 
 let _rzCache = null;
-// Build the whole prop-root forest ONCE (deterministic; cached). Every entry is
-// a strand {pts,colA,colB,phase,birthP,span} that the mesher reveals + tubes by
-// the growth parameter p. Structure: for each trunk node (low→high = old→new
-// generation) emit 2–4 arching prop roots at spread azimuths; each lands, then
-// continues underground and spawns irregular secondary/tertiary branches.
+// Build the whole prop-root cage ONCE (deterministic; cached). Each entry is a
+// strand {pts,colA,colB,phase,birthP,span} that the mesher reveals + tubes by the
+// growth parameter p. Five stem levels (low→high = old→new generation) each emit
+// a few arches at continuously-accumulating, irregular azimuths so generations
+// interleave and the landing points form an irregular ~360° circle. Each grounded
+// arch adds one short underground planting root; some upper arches stay aerial.
 function _rzForest() {
   if (_rzCache) return _rzCache;
   const P = _rzParams, H = POD.features.height, footR = rOuterAt(0.05 * H), gz = groundZ();
-  const rng = mulberry32(P.seed), strands = [], landings = [];
-  const cx = 0, cy = 0;                           // trunk axis at the pod base
-  const nH = P.nodeHeights, nNodes = nH.length;
-  let azC = rng() * Math.PI * 2;                  // running azimuth so roots spread, not stack
-  for (let ni = 0; ni < nNodes; ni++) {
-    const hz = nH[ni] * H, gen = nNodes > 1 ? ni / (nNodes - 1) : 0, older = 1 - gen;
-    const rTrunk = _lerp(P.trunkRLow, P.trunkRHigh, gen);
-    const nRoots = P.rootsPerNode[0] + Math.floor(rng() * (P.rootsPerNode[1] - P.rootsPerNode[0] + 1));
-    for (let r = 0; r < nRoots; r++) {
-      azC += (Math.PI * 2 / (nRoots + 1)) * (0.7 + 0.7 * rng());        // irregular angular spacing
-      const az = azC + (rng() - 0.5) * 0.4;
-      const reach = footR * _lerp(P.reachMin, P.reachMax, rng()) * (1 + older * 0.22);
-      const baseR = (P.rootRBase + older * P.rootROlder) * (0.82 + 0.36 * rng());
-      const birthP = clip(gen * P.genSpread + (rng() - 0.5) * 0.06, 0, 0.85);   // newer nodes emerge later
-      const span = P.growSpan * (0.85 + 0.3 * rng()), phase = rng() * 6.28;
-      const sway = reach * P.curvature * (0.7 + 0.6 * rng()), landJit = (rng() - 0.5) * 0.45;
-      const arch = _propArch({ cx, cy, hz, az, rTrunk, reach, baseR, gz, sway, phase, landJit });
-      strands.push({ pts: arch.pts, colA: _RZ.woodDark, colB: _RZ.woodTan, phase, birthP, span: span * 0.6 });
-      landings.push(arch.land);
-      // underground main root — appears once the arch has reached the ground
-      const ugMain = _underground([arch.land[0], arch.land[1], gz], arch.landDir, baseR * P.taperTip,
-        { H, spread: P.ugSpread * reach, samp: P.ugSamp, phase });
-      strands.push({ pts: ugMain, colA: _RZ.woodTan, colB: _RZ.ugDeep, phase, birthP: birthP + span * 0.5, span: span * 0.5 });
-      // secondary (and occasional tertiary) underground branches — irregular
-      const nSec = 1 + Math.floor(rng() * P.branchMax);
-      for (let s = 0; s < nSec; s++) {
-        if (rng() > P.branchProb) continue;
-        const an = ugMain[1 + Math.floor(rng() * (ugMain.length - 1))];
-        const bdir = [Math.cos(az + (rng() - 0.5) * 2.2), Math.sin(az + (rng() - 0.5) * 2.2), 0];
-        const sec = _underground([an[0], an[1], an[2]], bdir, an[3] * 0.9,
-          { H, spread: P.ugSpread * reach * 0.7, samp: P.ugSamp, phase: phase + s });
-        strands.push({ pts: sec, colA: _RZ.ugDark, colB: _RZ.ugDeep, phase: phase + s,
-          birthP: clip(birthP + span * 0.72, 0, 0.95), span: span * 0.42 });
-        if (rng() < P.branchProb * 0.45) {
-          const a2 = sec[1 + Math.floor(rng() * (sec.length - 1))];
-          const tdir = [Math.cos(az + (rng() - 0.5) * 3), Math.sin(az + (rng() - 0.5) * 3), 0];
-          const ter = _underground([a2[0], a2[1], a2[2]], tdir, a2[3] * 0.85,
-            { H, spread: P.ugSpread * reach * 0.45, samp: 4, phase: phase + s + 1 });
-          strands.push({ pts: ter, colA: _RZ.ugDark, colB: _RZ.ugDeep, phase: phase + s + 1,
-            birthP: clip(birthP + span * 0.85, 0, 0.98), span: span * 0.35 });
-        }
+  const rng = mulberry32(P.seed), strands = [], landings = [], nL = P.levels.length;
+  // per-level counts, clamped so the total visible arch count lands in [min,max]
+  const counts = P.levels.map(() => P.rootsPerLevel[0] +
+    Math.floor(rng() * (P.rootsPerLevel[1] - P.rootsPerLevel[0] + 1)));
+  let total = counts.reduce((a, b) => a + b, 0);
+  while (total < P.minRoots) { counts[Math.floor(rng() * nL)]++; total++; }
+  while (total > P.maxRoots) { const k = Math.floor(rng() * nL); if (counts[k] > 1) { counts[k]--; total--; } }
+  let az = rng() * Math.PI * 2;                     // continuous azimuth accumulator
+  const step = Math.PI * 2 / total;                 // even base spacing over all roots
+  for (let li = 0; li < nL; li++) {
+    const gen = nL > 1 ? li / (nL - 1) : 0, older = 1 - gen;
+    const hz = P.levels[li] * H, stemR = _lerp(P.stemRLow, P.stemRHigh, gen);
+    for (let r = 0; r < counts[li]; r++) {
+      az += step * (0.82 + 0.36 * rng());                           // mild jitter — even cone, not chaotic
+      const reach = footR * _rand(rng, P.reach) * (1 + older * 0.14);
+      const baseR = _rand(rng, P.baseR) + older * P.olderThick;
+      const short = rng() < P.shortFrac && li >= 1;                 // some upper roots stay aerial
+      const phase = rng() * 6.283, tint = 0.9 + 0.2 * rng();
+      const birthP = clip(gen * P.genDelay + (rng() - 0.5) * 0.06, 0, 0.9);   // higher emerge later
+      const span = P.growSpan * (0.85 + 0.3 * rng());
+      const a = _archStrand({ hz, az: az + (rng() - 0.5) * 0.12, stemR, reach, baseR, gz,
+        twistSign: rng() < 0.5 ? -1 : 1, sway: 0.6 + 0.8 * rng(), phase, rng, short });
+      strands.push({ pts: a.pts, colA: _tint(_RZ.barkDark, tint), colB: _tint(_RZ.barkTan, tint),
+        phase, birthP, span: span * 0.62 });
+      if (!short && a.land) {
+        landings.push(a.land);
+        strands.push({ pts: _ugPlunge(a.land, a.landDir, a.tipR, rng, phase, reach),
+          colA: _tint(_RZ.soilDark, tint), colB: _RZ.soilDeep,
+          phase, birthP: clip(birthP + span * 0.55, 0, 0.95), span: span * 0.5 });
       }
     }
   }
@@ -1006,7 +1053,7 @@ function stageRootMesh(p) {
   const strands = rhizophoreStrands();
   const gz = groundZ();
   const X = [], Y = [], Z = [], I = [], J = [], K = [], C = [];
-  const sides = 6, cs = [], sn = [];
+  const sides = 8, cs = [], sn = [];
   for (let k = 0; k < sides; k++) { const A = 2 * Math.PI * k / sides; cs.push(Math.cos(A)); sn.push(Math.sin(A)); }
   for (let sIdx = 0; sIdx < strands.length; sIdx++) {
     const st = strands[sIdx];
@@ -1035,15 +1082,27 @@ function stageRootMesh(p) {
       const base = _lerp3(st.colA, st.colB, u);
       let ao = 1;
       const dg = Math.abs(P[2] - gz);
-      if (dg < 6) ao *= _lerp(0.85, 1, clip(dg / 6, 0, 1));   // subtle mud-contact darkening
+      if (dg < 6) ao *= _lerp(0.82, 1, clip(dg / 6, 0, 1));    // mud-contact darkening
+      if (u < 0.08) ao *= _lerp(0.8, 1, clip(u / 0.08, 0, 1)); // AO where the root meets the trunk
       ringBase.push(X.length);
-      const rr = P[3] * thicken;
+      // irregular diameter (low-freq knuckling) so roots aren't perfect cylinders
+      const knuck = 1 + 0.05 * (_vnoise(sIdx * 3.1 + i * 0.4, sIdx * 0.7) - 0.5) * 2;
+      const rr = P[3] * thicken * knuck;
       for (let k = 0; k < sides; k++) {
         X.push(P[0] + rr * (cs[k] * n1x + sn[k] * n2x));
         Y.push(P[1] + rr * (cs[k] * n1y + sn[k] * n2y));
         Z.push(P[2] + rr * (cs[k] * n1z + sn[k] * n2z));
-        const shade = ao * (1 + 0.035 * Math.cos(2 * Math.PI * k / sides + st.phase));  // faint woody ridging
-        C.push(_rgb([base[0] * shade, base[1] * shade, base[2] * shade]));
+        const ang = 2 * Math.PI * k / sides;
+        // bark relief: longitudinal furrows (two harmonics), shaded in the grooves
+        const ridge = 1 + 0.06 * Math.cos(2 * ang + st.phase) + 0.03 * Math.cos(3 * ang - i * 0.6);
+        // patchy grey-brown weathering
+        let col = _lerp3(base, _RZ.barkGrey, 0.30 * _vnoise(sIdx * 5.7 + i * 0.8, k * 1.7 + sIdx * 2.3));
+        // Rhizophora lenticels: sparse pale corky speckle + occasional dark pit
+        const hsh = _rhash(sIdx, i, k);
+        if (hsh > 0.90) col = _lerp3(col, _RZ.lenticel, 0.6);
+        else if (hsh < 0.07) col = [col[0] * 0.72, col[1] * 0.72, col[2] * 0.72];
+        const shade = ao * ridge;
+        C.push(_rgb([col[0] * shade, col[1] * shade, col[2] * shade]));
       }
     }
     for (let i = 0; i < draw.length - 1; i++) {
@@ -1668,7 +1727,7 @@ function shootMesh(gfrac) {
   const rCrown = 0.50 * f.inner_r_waist;     // thick woody base (fits the bore: rInner ≥ ~13)
   const rShoulder = 0.34 * f.inner_r_waist;  // body radius where it exits the rim
   const rTip = 0.07 * f.inner_r_waist;       // slim growing tip
-  const zRoot = 0.14 * H;                     // hypocotyl base = the root-cluster origin
+  const zRoot = groundZ() - 0.03 * H;         // hypocotyl base — planted DOWN into the mud (was 0.14·H, floating)
   const apexZ = zT + stemH, span = apexZ - zRoot;
   const leanAz = 0.7, leanMag = 0.05 * H * gfrac;   // gentle S-lean, only above the rim
   const centerAt = (zc) => {

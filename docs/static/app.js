@@ -342,6 +342,10 @@ function render() {
     if (sceneRevealed && propOn() && PROP_TRACE) data.push(PROP_TRACE);   // seedling revealed between the pieces
     // roots grow INSIDE the pod — only shown once it has broken apart
     if (sceneRevealed && $("show_roots").checked && ROOTS_TRACE) data.push(ROOTS_TRACE);
+    // the germinated seedling stem the prop-roots hang from — drawn WITH the roots so
+    // the cone connects to a visible trunk (was only drawn in the Play-growth animation,
+    // which is why the exploded view showed roots floating with no seed body)
+    if (sceneRevealed && $("show_roots").checked) { const sh = buildShootTrace(ENGINE.shoot(1)); if (sh) data.push(sh); }
   } else {
     // clean material-coloured pod is the DEFAULT look; stress is a toggled overlay
     const m = Object.assign({}, podGeom());

@@ -409,6 +409,7 @@ function showError(where, e) {
 }
 async function runSim() {
   busy(true, "growing roots & pressurising wall…");
+  { const scw = $("stressChartWrap"); if (scw) scw.classList.add("hidden"); }  // no timeline in a single run
   try {
     const { intensity, cmax, roots, stats } = await compute(() => ENGINE.simulate(cfg()));
     updateStress(intensity, cmax, roots);
@@ -419,6 +420,7 @@ async function runSim() {
 async function runMC() {
   const n = +$("n_runs").value;
   busy(true, `running ${n} randomized simulations…`);
+  { const scw = $("stressChartWrap"); if (scw) scw.classList.add("hidden"); }  // no timeline in a Monte Carlo sweep
   try {
     const { intensity, cmax, roots, stats } = await compute(() => ENGINE.montecarlo(cfg(), n));
     updateStress(intensity, cmax, roots);
@@ -436,6 +438,9 @@ const clamp = (v, lo, hi) => v < lo ? lo : (v > hi ? hi : v);
 // small, even outward drift per quarter-piece as it breaks through (not a blow-apart)
 const SHOOT_COLOR = "#6f9f3f", POP_FRAMES = 12, POP_GAP_FRAC = 0.14;
 let ANIM = null, animTimer = null, animPlaying = false, animIdx = 0, animSpeed = 1, animPhase = "intact", animDirty = true;
+// per-frame peak wall stress (normalized 0..1), precomputed once per animation for
+// the live stress-over-time chart. Derived from existing frames — no new sim.
+let STRESS_SERIES = null;
 
 function buildShootTrace(g) {
   if (!g) return null;
@@ -466,6 +471,8 @@ async function playGrowth() {
     LAST.intensity = null;
     const bar = $("animBar"); if (bar) bar.classList.remove("hidden");
     const sl = $("anim_timeline"); if (sl) { sl.max = ANIM.T; sl.value = 1; }
+    buildStressSeries();
+    const scw = $("stressChartWrap"); if (scw) scw.classList.remove("hidden");
   }
   if (animIdx >= ANIM.T - 1) { animIdx = 0; ANIM._needNewPlot = true; }
   startAnim();
@@ -538,6 +545,39 @@ function setSpeed(s) {
   animSpeed = s;
   document.querySelectorAll("#speedSeg .segbtn").forEach(b => b.classList.toggle("active", +b.dataset.speed === s));
 }
+// ---- live wall-stress-over-time chart ---------------------------------------
+// peak intensity of each frame ÷ cmax → a 0..1 "how close to failure" curve.
+function buildStressSeries() {
+  if (!ANIM || !ANIM.frames) { STRESS_SERIES = null; return; }
+  const cmax = ANIM.cmax || 1, out = new Array(ANIM.frames.length);
+  for (let i = 0; i < ANIM.frames.length; i++) {
+    const f = ANIM.frames[i]; let mx = 0;
+    for (let k = 0; k < f.length; k++) if (f[k] > mx) mx = f[k];
+    out[i] = cmax ? mx / cmax : 0;
+  }
+  STRESS_SERIES = out;
+}
+function renderStressChart(idx) {
+  const el = $("stressChart"); if (!el || !STRESS_SERIES) return;
+  const n = Math.max(1, Math.min(idx + 1, STRESS_SERIES.length)), xs = [], ys = [];
+  for (let i = 0; i < n; i++) { xs.push(i + 1); ys.push(STRESS_SERIES[i]); }
+  const brk = ANIM ? ANIM.breakthrough_step : null, shapes = [];
+  if (brk != null && brk <= n) shapes.push({ type:"line", x0:brk, x1:brk, y0:0, y1:1,
+    yref:"paper", line:{ color:"#dd6350", width:1.4, dash:"dot" } });
+  Plotly.react(el, [{
+    type:"scatter", mode:"lines", x:xs, y:ys, hoverinfo:"x+y", name:"peak wall stress",
+    line:{ color:"#e69564", width:2.4, shape:"spline" },
+    fill:"tozeroy", fillcolor:"rgba(205,120,66,0.14)",
+  }], {
+    paper_bgcolor:"rgba(0,0,0,0)", plot_bgcolor:"rgba(0,0,0,0)",
+    font:{ color:"#bdb7ab", size:11 }, margin:{ l:32, r:12, t:8, b:28 }, height:150,
+    xaxis:{ title:{ text:"growth step", font:{ size:10 } }, range:[1, ANIM ? ANIM.T : n],
+      gridcolor:"rgba(255,255,255,0.08)", zeroline:false },
+    yaxis:{ range:[0, 1.03], gridcolor:"rgba(255,255,255,0.08)", zeroline:false,
+      tickvals:[0, 0.5, 1], ticktext:["0", "½", "peak"] },
+    shapes,
+  }, { displaylogo:false, responsive:true });
+}
 function renderAnimFrame(idx) {
   const A = ANIM, T = A.T, tl = A.timeline[idx], look = materialLook(), data = [], sc = stressScale();
   if (BOUNDS_TRACE) data.push(BOUNDS_TRACE);
@@ -583,6 +623,7 @@ function renderAnimFrame(idx) {
   const sl = $("anim_timeline"); if (sl) sl.value = idx + 1;
   updateAnimReadout(idx);
   renderAnimSidebar(idx);   // keep the results sidebar synced to the current step
+  renderStressChart(idx);   // live stress-over-time curve, revealed up to this step
   const phase = exploded ? "exploded" : "intact";
   if (A._needNewPlot || phase !== animPhase) { Plotly.newPlot(plotDiv, data, BASE_LAYOUT, { responsive:true, displaylogo:false }); A._needNewPlot = false; }
   else Plotly.react(plotDiv, data, BASE_LAYOUT, { responsive:true, displaylogo:false });
@@ -765,6 +806,101 @@ function renderProvMini() {
     `<button class="linklike" onclick="openProv()">open full provenance panel →</button>`;
 }
 
+// ============================================================================
+//  PRESET TOGGLES · SITE LOADER · VIEWER CHROME  (layout wiring only)
+//  The <select id="material"> / <select id="species"> stay the source of truth,
+//  so cfg(), renderMaterial(), renderSpecies() and every engine call are unchanged.
+// ============================================================================
+function syncToggleGroup(groupId, attr, selId) {
+  const sel = $(selId), val = sel ? sel.value : null;
+  document.querySelectorAll(`#${groupId} .ptoggle`).forEach(b =>
+    b.classList.toggle("active", b.dataset[attr] === val));
+}
+function wireToggleGroup(groupId, attr, selId) {
+  const sel = $(selId); if (!sel) return;
+  document.querySelectorAll(`#${groupId} .ptoggle`).forEach(b =>
+    b.addEventListener("click", () => {
+      if (sel.value === b.dataset[attr]) return;
+      sel.value = b.dataset[attr];
+      sel.dispatchEvent(new Event("change", { bubbles: true }));
+      syncToggleGroup(groupId, attr, selId);
+    }));
+  sel.addEventListener("change", () => syncToggleGroup(groupId, attr, selId));
+  syncToggleGroup(groupId, attr, selId);
+}
+
+// Curated real-world sites — literature-estimate salinity + likely species, mapped
+// to the two modeled species. These only set the EXISTING salinity_ppt input and
+// species toggle (no new sim inputs). Verify primary sources before quoting.
+const SITES = [
+  { id:"tampa",    name:"Tampa Bay, Florida (USA)",            species:"rhizophora", salinity:25,
+    note:"Gulf estuary; <i>Rhizophora mangle</i> dominant. ~25 ppt mid-estuary (literature estimate — verify primary source)." },
+  { id:"cispata",  name:"Cispatá Bay, Colombia (Caribbean)",   species:"rhizophora", salinity:30,
+    note:"Restoration / blue-carbon delta; <i>R. mangle</i>. ~30 ppt (literature estimate — verify primary source)." },
+  { id:"saloum",   name:"Saloum Delta, Senegal (W. Africa)",   species:"rhizophora", salinity:38,
+    note:"Seasonally hypersaline inverse estuary; <i>R. mangle</i>. ~38 ppt dry-season (estimate — verify primary source)." },
+  { id:"indus",    name:"Indus Delta, Pakistan",               species:"avicennia",  salinity:38,
+    note:"Freshwater-starved delta; <i>Avicennia marina</i> dominant. ~38 ppt (literature estimate — verify primary source)." },
+  { id:"abudhabi", name:"Eastern Mangroves, Abu Dhabi (Gulf)", species:"avicennia",  salinity:40,
+    note:"Hypersaline arid coast (~45 ppt in situ; shown at the 40 ppt model max); <i>A. marina</i> — verify primary source." },
+  { id:"moreton",  name:"Moreton Bay, Queensland (Australia)", species:"avicennia",  salinity:33,
+    note:"Temperate-edge <i>A. marina</i>. ~33 ppt (literature estimate — verify primary source)." },
+];
+function initSiteLoader() {
+  const sel = $("siteSelect"); if (!sel) return;
+  sel.innerHTML = `<option value="">Choose a location…</option>` +
+    SITES.map(s => `<option value="${s.id}">${s.name}</option>`).join("");
+  const load = () => {
+    const s = SITES.find(x => x.id === sel.value); if (!s) return;
+    const sp = $("species");
+    if (sp && sp.value !== s.species) { sp.value = s.species; sp.dispatchEvent(new Event("change", { bubbles: true })); }
+    const sal = $("salinity_ppt");
+    if (sal) {
+      sal.value = s.salinity; sal.dispatchEvent(new Event("input", { bubbles: true }));
+      const o = $("o_salinity_ppt"); if (o) o.textContent = sal.value;
+    }
+    renderSpecies();
+    const note = $("siteNote"); if (note) note.innerHTML = s.note;
+  };
+  const btn = $("siteLoad"); if (btn) btn.addEventListener("click", load);
+}
+
+function defaultCamera() {
+  const c = (BASE_LAYOUT && BASE_LAYOUT.scene && BASE_LAYOUT.scene.camera);
+  return c || baseLayout().scene.camera;
+}
+function wireViewerChrome() {
+  const shot = $("shotBtn");
+  if (shot) shot.addEventListener("click", () => {
+    try { Plotly.downloadImage(plotDiv, { format:"png", filename:"mangrove-pod",
+      width: plotDiv.clientWidth || 1600, height: plotDiv.clientHeight || 900 }); }
+    catch (e) { console.error("screenshot", e); }
+  });
+  const reset = $("resetViewBtn");
+  if (reset) reset.addEventListener("click", () => {
+    try { Plotly.relayout(plotDiv, { "scene.camera": defaultCamera() }); }
+    catch (e) { console.error("reset view", e); }
+  });
+  const setBtn = $("settingsBtn"), pop = $("settingsPop");
+  if (setBtn && pop) setBtn.addEventListener("click", () => {
+    const isHidden = pop.classList.toggle("hidden");
+    setBtn.classList.toggle("active", !isHidden);
+  });
+  // advanced drawer open/close (mirrors the provenance/crack drawers)
+  const openAdv = () => {
+    const p = $("advPanel"); if (p) p.classList.remove("hidden");
+    if (pop) { pop.classList.add("hidden"); if (setBtn) setBtn.classList.remove("active"); }
+  };
+  document.querySelectorAll(".adv-open").forEach(b => b.addEventListener("click", openAdv));
+  const advClose = $("advClose");
+  if (advClose) advClose.addEventListener("click", () => { const p = $("advPanel"); if (p) p.classList.add("hidden"); });
+  // panel collapse / expand
+  document.querySelectorAll(".minbtn").forEach(b => b.addEventListener("click", () => {
+    const panel = b.closest(".glasspanel"); if (!panel) return;
+    b.textContent = panel.classList.toggle("min") ? "+" : "–";
+  }));
+}
+
 // ---- init -------------------------------------------------------------------
 async function init() {
   syncOutputs();
@@ -795,7 +931,9 @@ async function init() {
     if ($("crackBtn")) $("crackBtn").addEventListener("click", openCrackReport);
     if ($("crackClose")) $("crackClose").addEventListener("click", () => $("crackPanel").classList.add("hidden"));
     // any change to the design/species/material controls invalidates a cached animation
-    if ($("controls")) $("controls").addEventListener("input", () => { animDirty = true; });
+    // (controls now live across the top-right panel + Advanced drawer, so listen globally)
+    document.addEventListener("input", () => { animDirty = true; });
+    document.addEventListener("change", () => { animDirty = true; });
     BASE_MESH = ENGINE.baseMesh();
     VIZ_MESH = ENGINE.vizPod();     // high-res visual pod (render-only); null if not loaded
     BASE_LAYOUT = baseLayout();
@@ -808,6 +946,11 @@ async function init() {
     DEBRIS_TRACE = buildDebrisTrace(ENGINE.debris(groundOpts()));
     rebuildRoots();     // prepared, but hidden until a run reveals the scene
     render();
+    // new floating-UI wiring (layout only — no simulation logic touched)
+    wireToggleGroup("materialToggles", "material", "material");
+    wireToggleGroup("speciesToggles", "species", "species");
+    initSiteLoader();
+    wireViewerChrome();
     $("boot").classList.add("hidden");
   } catch (e) {
     $("bootmsg").innerHTML = "Init error: " + e.message + "<br><small>" + ((e.stack||"").split("\n").slice(0,3).join("<br>")) + "</small>";

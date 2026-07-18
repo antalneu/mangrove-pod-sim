@@ -21,18 +21,81 @@
 @keyframes bootspin{to{transform:rotate(360deg)}}
 #bootmsg small{color:var(--ink-3)}
 
-/* ---- 3-column app under the fixed nav ---- */
-main.tool{display:grid;grid-template-columns:340px 1fr 360px;
-  height:calc(100vh - var(--nav-h));margin-top:var(--nav-h)}
+/* =========================================================================
+   FULL-BLEED SCENE + FLOATING GLASS PANELS (structural overhaul)
+   The 3-D pod fills the whole window as the background; compact glass panels
+   float in the four corners. Same --glass-* tokens + .glass recipe as before,
+   so every panel reads as one system.
+   ========================================================================= */
+html,body.tool-body{height:100%}
+body.tool-body{overflow:hidden}
 
-/* glass sidebars: dark frosted panes with a specular top rim + inner shading */
-aside{overflow-y:auto;padding:20px 18px;
+/* glass panel shell (top-left results / top-right controls) */
+.glasspanel{position:fixed;z-index:20;display:flex;flex-direction:column;
+  border-radius:16px;overflow:hidden;
   background:linear-gradient(157deg,var(--glass-a),var(--glass-b));
-  backdrop-filter:var(--blur);-webkit-backdrop-filter:var(--blur)}
-#controls{border-right:1px solid var(--edge);
-  box-shadow:inset 0 1px 0 var(--edge-hi), inset -1px 0 0 var(--edge-hi-2)}
-#results{border-left:1px solid var(--edge);
-  box-shadow:inset 0 1px 0 var(--edge-hi), inset 1px 0 0 var(--edge-hi-2)}
+  backdrop-filter:var(--blur);-webkit-backdrop-filter:var(--blur);
+  border:1px solid var(--edge);
+  box-shadow:inset 0 1px 0 var(--edge-hi), inset 0 0 0 1px var(--edge-hi-2),
+    inset 0 -1px 0 var(--edge-lo), 0 24px 60px -18px rgba(0,0,0,.7)}
+/* max-heights reserve room at the bottom of each side so the top panels never
+   run into the bottom corner elements (left → branding panel; right → icon cluster) */
+.panel-tl{top:16px;left:16px;width:340px;max-height:calc(100vh - 176px)}
+.panel-tr{top:16px;right:16px;width:346px;max-height:calc(100vh - 104px)}
+.panel-head{display:flex;align-items:center;justify-content:space-between;
+  padding:13px 16px 8px;flex:0 0 auto}
+.panel-head .results-h{margin:0}
+.panel-scroll{overflow-y:auto;padding:2px 16px 16px;flex:1 1 auto}
+.minbtn{width:26px;height:26px;border-radius:8px;border:1px solid var(--edge);
+  background:var(--sink-2);color:var(--ink-2);cursor:pointer;font-size:17px;line-height:1;
+  display:flex;align-items:center;justify-content:center;flex:0 0 auto;font-family:inherit}
+.minbtn:hover{border-color:var(--edge-hi);color:var(--ink)}
+.glasspanel.min{max-height:none}
+.glasspanel.min .panel-scroll{display:none}
+
+/* control groups inside the top-right panel */
+.ctl-group{margin-top:13px;padding-top:12px;border-top:1px solid var(--edge-soft)}
+.ctl-group:first-child{margin-top:0;padding-top:0;border-top:none}
+.ctl-label{font-size:11px;text-transform:uppercase;letter-spacing:.09em;
+  color:var(--ink);font-weight:700}
+/* Run + Play side by side to keep the whole panel compact
+   (double class beats the later `.actions{flex-direction:column}` rule) */
+.actions.primary-actions{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:13px}
+.actions.primary-actions button{padding:11px 10px}
+.secondary-actions .mcrow{margin-bottom:8px}
+
+/* preset toggle buttons (material / species) */
+.toggle-grid{display:grid;grid-template-columns:1fr 1fr;gap:7px;margin-top:8px}
+.ptoggle{display:flex;flex-direction:column;align-items:flex-start;gap:2px;
+  padding:9px 11px;border:1px solid var(--edge);border-radius:11px;cursor:pointer;
+  background:var(--sink-2);color:var(--ink-2);font-family:inherit;text-align:left;
+  transition:.15s var(--ease)}
+.ptoggle b{font-size:13px;font-weight:700;color:var(--ink);letter-spacing:-.01em}
+.ptoggle span{font-size:10.5px;color:var(--ink-3)}
+.ptoggle:hover{border-color:var(--edge-hi)}
+.ptoggle.active{background:linear-gradient(160deg,var(--clay),var(--clay-deep));
+  border-color:transparent;box-shadow:inset 0 1px 0 rgba(255,255,255,.25)}
+.ptoggle.active b{color:#fff}
+.ptoggle.active span,.ptoggle.active span i{color:rgba(255,255,255,.82)}
+
+/* hidden source-of-truth selects — engine + app.js read these ids unchanged */
+.src-select{display:none}
+
+/* collapsible material / species detail */
+.mini-detail{margin-top:11px}
+.mini-detail>summary{cursor:pointer;list-style:none;font-size:11.5px;color:var(--ink-3);
+  font-weight:600;padding:3px 0}
+.mini-detail>summary::-webkit-details-marker{display:none}
+.mini-detail>summary::before{content:"▸";display:inline-block;margin-right:6px;
+  transition:transform .15s}
+.mini-detail[open]>summary::before{transform:rotate(90deg)}
+.mini-detail>summary:hover{color:var(--ink-2)}
+
+/* real-world site loader */
+.site-row{display:flex;gap:8px;margin-top:9px;align-items:stretch}
+.site-row select{flex:1 1 auto;margin-top:0;min-width:0}
+.site-row .ghost{flex:0 0 auto;align-self:center}
+
 .controls-intro{margin:0 0 20px;font-size:13px;line-height:1.55;color:var(--ink-2)}
 .controls-intro b{color:var(--ink)}
 
@@ -152,11 +215,13 @@ button.wide{width:100%}
 .segbtn.active{background:linear-gradient(160deg,var(--clay),var(--clay-deep));
   border-color:transparent;color:#fff;box-shadow:inset 0 1px 0 rgba(255,255,255,.25)}
 
-/* ---- viewpane (the dark 3-D stage the glass floats over) ---- */
-#viewpane{position:relative;
+/* ---- viewpane: the 3-D stage, now full-bleed behind the floating glass ---- */
+#viewpane{position:fixed;inset:0;z-index:0;
   background:
     radial-gradient(130% 100% at 50% 6%, #1b2434 0%, #0f1219 46%, #07080b 100%)}
 #plot{width:100%;height:100%}
+/* Plotly's built-in hover modebar is replaced by our bottom-right icon cluster */
+.modebar{display:none !important}
 #overlay{position:absolute;inset:0;display:flex;flex-direction:column;gap:14px;
   align-items:center;justify-content:center;z-index:5;color:var(--ink);
   background:rgba(8,9,12,.5);backdrop-filter:var(--blur-lite);-webkit-backdrop-filter:var(--blur-lite)}
@@ -260,8 +325,8 @@ button.wide{width:100%}
   border:1px solid;white-space:nowrap}
 
 /* ---- growth animation bar (strong glass, floats over the scene) ---- */
-.animbar{position:absolute;left:50%;bottom:44px;transform:translateX(-50%);
-  display:flex;align-items:center;gap:12px;padding:10px 15px;z-index:8;
+.animbar{position:fixed;left:50%;bottom:86px;transform:translateX(-50%);
+  display:flex;align-items:center;gap:12px;padding:10px 15px;z-index:30;
   background:linear-gradient(160deg,var(--glass-a),var(--glass-b));
   backdrop-filter:var(--blur);-webkit-backdrop-filter:var(--blur);
   border:1px solid var(--edge);border-radius:14px;max-width:min(780px,92%);
@@ -298,12 +363,77 @@ button.wide{width:100%}
 .cmptbl tr.curmat td{background:rgba(116,176,106,.14);color:var(--ink);font-weight:600}
 .crackfoot{margin-top:16px;font-size:11.5px;color:var(--ink-3);line-height:1.5}
 
-/* ---- responsive ---- */
-@media (max-width:1080px){
-  main.tool{grid-template-columns:300px 1fr 320px}
+/* ---- legend now lives inline in the results panel (was a scene overlay) ---- */
+#legend.viewpane-legend{position:static;left:auto;top:auto;max-width:none;width:100%;
+  margin:0 0 12px;background:var(--sink-2);box-shadow:inset 0 1px 0 var(--edge-hi-2)}
+
+/* ---- live wall-stress-over-time chart (results panel, during Play) ---- */
+#stressChartWrap{margin-top:6px}
+#stressChartWrap.hidden{display:none}
+#stressChart{width:100%;height:154px}
+
+/* =========================================================================
+   BOTTOM-LEFT — branding + interaction hint
+   ========================================================================= */
+.panel-bl{position:fixed;left:16px;bottom:16px;z-index:20;max-width:min(46vw,440px);
+  display:flex;flex-direction:column;gap:5px;padding:11px 14px;border-radius:14px;
+  background:linear-gradient(157deg,var(--glass-a),var(--glass-b));
+  backdrop-filter:var(--blur-lite);-webkit-backdrop-filter:var(--blur-lite);
+  border:1px solid var(--edge);
+  box-shadow:inset 0 1px 0 var(--edge-hi-2), 0 16px 40px -16px rgba(0,0,0,.66)}
+.brand-row{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+.brand-mark{display:flex;align-items:center;gap:9px;font-size:14px;font-weight:600;color:var(--ink)}
+.brand-mark .nav-mark{width:20px;height:20px;flex:0 0 auto;color:var(--clay)}
+.brand-row .nav-sub{color:var(--ink-3);font-weight:500;font-size:12px;letter-spacing:0}
+.mini-link{font-size:12px;color:var(--ink-3);padding:2px 7px;border-radius:8px;transition:.15s var(--ease)}
+.mini-link:hover{color:var(--ink);background:var(--edge-soft)}
+.hint-row{font-size:11.5px;color:var(--ink-2)}
+.scene-note{font-size:10.5px;color:var(--ink-3);line-height:1.5}
+.scene-note.dim{opacity:.82}
+.scene-note b{color:var(--ink-2)}
+
+/* =========================================================================
+   BOTTOM-RIGHT — consolidated viewer icon cluster + settings popover
+   ========================================================================= */
+.panel-br{position:fixed;right:16px;bottom:16px;z-index:20;
+  display:flex;flex-direction:column;align-items:flex-end;gap:10px}
+.icon-cluster{display:flex;gap:8px;padding:7px;border-radius:14px;
+  background:linear-gradient(157deg,var(--glass-a),var(--glass-b));
+  backdrop-filter:var(--blur-lite);-webkit-backdrop-filter:var(--blur-lite);
+  border:1px solid var(--edge);
+  box-shadow:inset 0 1px 0 var(--edge-hi), 0 16px 40px -14px rgba(0,0,0,.7)}
+.iconbtn{width:40px;height:40px;border-radius:10px;border:1px solid var(--edge);
+  background:var(--sink-2);color:var(--ink-2);cursor:pointer;display:flex;
+  align-items:center;justify-content:center;transition:.15s var(--ease)}
+.iconbtn svg{width:20px;height:20px}
+.iconbtn:hover{border-color:var(--edge-hi);color:var(--ink)}
+.iconbtn.active{border-color:var(--clay);color:var(--clay-lite)}
+.settings-pop{width:236px;padding:14px;border-radius:14px;
+  background:linear-gradient(157deg,var(--glass-a),var(--glass-b));
+  backdrop-filter:var(--blur);-webkit-backdrop-filter:var(--blur);
+  border:1px solid var(--edge);
+  box-shadow:inset 0 1px 0 var(--edge-hi), 0 20px 50px -16px rgba(0,0,0,.72)}
+.settings-pop.hidden{display:none}
+.settings-pop .pop-label{font-size:11px;text-transform:uppercase;letter-spacing:.08em;
+  color:var(--ink);font-weight:700;margin-bottom:10px}
+.settings-pop .chk{margin:9px 0}
+.settings-pop .ghost{margin-top:12px}
+
+/* =========================================================================
+   RESPONSIVE — panels stay usable on narrow screens (desktop-first tool)
+   ========================================================================= */
+@media (max-width:1180px){
+  .panel-tl{width:320px}
+  .panel-tr{width:326px}
 }
 @media (max-width:900px){
-  main.tool{grid-template-columns:1fr;height:auto;min-height:calc(100vh - var(--nav-h))}
-  #viewpane{height:70vh;min-height:420px;order:-1}
-  #controls,#results{border:none;border-bottom:1px solid var(--edge)}
+  .panel-tl,.panel-tr{width:calc(50vw - 20px);min-width:220px;max-height:52vh}
+  .panel-bl{max-width:calc(100vw - 32px)}
+}
+@media (max-width:640px){
+  .glasspanel{width:calc(100vw - 32px)!important}
+  .panel-tl{max-height:40vh}
+  .panel-tr{top:auto;bottom:16px;max-height:56vh}
+  .panel-bl{display:none}
+  .panel-br{bottom:auto;top:16px}
 }

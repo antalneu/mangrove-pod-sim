@@ -5,31 +5,193 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Mangrove Pod — Design Tool</title>
 <script src="https://cdn.plot.ly/plotly-2.35.2.min.js" charset="utf-8"></script>
-<link rel="stylesheet" href="static/base.css?v=37">
-<link rel="stylesheet" href="static/style.css?v=37">
+<link rel="stylesheet" href="static/base.css?v=38">
+<link rel="stylesheet" href="static/style.css?v=38">
 </head>
 <body class="tool-body">
 <div id="boot"><div class="boot-mark"></div><div id="bootmsg">Loading the pod &amp; booting the in-browser engine…</div></div>
 
-<nav class="nav" id="nav">
-  <a class="nav-brand" href="index.html" aria-label="Mangrove Pod — Design Tool">
-    <svg class="nav-mark" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-      <path d="M12 2c3.6 3.2 5.4 7 5.4 11.1 0 4.3-2.4 8.9-5.4 8.9s-5.4-4.6-5.4-8.9C6.6 9 8.4 5.2 12 2Z"
-            stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/>
-      <path d="M12 3.2V21" stroke="currentColor" stroke-width="1.2" opacity=".55"/>
-    </svg>
-    <span>Mangrove&nbsp;Pod <span class="nav-sub">Design Tool</span></span>
-  </a>
-  <div class="nav-links">
-    <a class="nav-ext" href="showcase.html">About</a>
-    <a class="nav-ext" href="https://github.com/antalneu/mangrove-pod-sim" target="_blank" rel="noopener">GitHub</a>
+<!-- ===== FULL-BLEED 3-D SCENE (background) ============================== -->
+<div id="viewpane">
+  <div id="plot"></div>
+  <div id="overlay" class="hidden"><div class="spinner"></div><span id="overlayMsg">simulating…</span></div>
+  <div id="animBar" class="animbar hidden">
+    <button id="animPlay" class="abtn" onclick="document.getElementById('playBtn').click()" title="play / pause" aria-label="play / pause"></button>
+    <div class="seg small" id="speedSeg">
+      <button type="button" class="segbtn active" data-speed="1">1×</button>
+      <button type="button" class="segbtn" data-speed="2">2×</button>
+      <button type="button" class="segbtn" data-speed="4">4×</button>
+    </div>
+    <input type="range" id="anim_timeline" class="animrange" min="1" max="120" step="1" value="1" title="scrub through growth">
+    <div id="anim_readout" class="animreadout">—</div>
   </div>
-</nav>
+</div>
 
-<main class="tool">
-  <aside id="controls">
-    <p class="controls-intro">Shape the break, the material and the growing conditions, then
-      run the simulation to see <b>where</b> and <b>when</b> the pod comes apart.</p>
+<!-- ===== TOP-LEFT — RESULTS ============================================ -->
+<aside id="results" class="glasspanel glass-sheen panel-tl">
+  <div class="panel-head">
+    <h2 class="results-h">Results</h2>
+    <button id="panel-results-min" class="minbtn" title="collapse" aria-label="collapse">–</button>
+  </div>
+  <div class="panel-scroll" id="resultsScroll">
+    <div class="viewpane-legend" id="legend">
+      <span><i style="background:#e9c46a"></i>rising stress</span>
+      <span><i style="background:#c1121f"></i>peak stress</span>
+      <span><i style="background:#6b4525"></i>roots</span>
+    </div>
+    <div id="verdict" class="verdict idle">Run a simulation to see where and when the pod breaks.</div>
+    <div id="timeline" class="timeline hidden"></div>
+    <div id="statcards"></div>
+    <h3>Break sites</h3>
+    <div id="siteChart"></div>
+    <div id="stressChartWrap" class="hidden">
+      <h3>Wall stress over time <span class="subnote">live during Play growth</span></h3>
+      <div id="stressChart"></div>
+    </div>
+    <div id="detail"></div>
+    <div id="provMini" class="provmini"></div>
+    <button id="provBtn" class="ghost small wide">Data provenance</button>
+  </div>
+</aside>
+
+<!-- ===== TOP-RIGHT — PRIMARY CONTROLS ================================= -->
+<aside id="controls" class="glasspanel glass-sheen panel-tr">
+  <div class="panel-head">
+    <h2 class="results-h">Controls</h2>
+    <button id="panel-controls-min" class="minbtn" title="collapse" aria-label="collapse">–</button>
+  </div>
+  <div class="panel-scroll" id="controlsScroll">
+    <!-- view -->
+    <div class="seg" id="viewSeg">
+      <button type="button" class="segbtn active" data-view="intact">Intact</button>
+      <button type="button" class="segbtn" data-view="exploded">Exploded — 4 pieces</button>
+    </div>
+
+    <!-- primary run actions -->
+    <div class="actions primary-actions">
+      <button id="runBtn" class="primary">Run simulation</button>
+      <button id="playBtn" class="primary alt">Play growth</button>
+    </div>
+
+    <!-- material presets (big toggles) -->
+    <div class="ctl-group">
+      <div class="ctl-label">Material</div>
+      <div class="toggle-grid" id="materialToggles">
+        <button type="button" class="ptoggle" data-material="pha"><b>PHA · PHBV</b><span>marine-degradable</span></button>
+        <button type="button" class="ptoggle" data-material="pla"><b>PLA</b><span>compost-only</span></button>
+        <button type="button" class="ptoggle" data-material="clay"><b>Clay</b><span>low-fired earthenware</span></button>
+        <button type="button" class="ptoggle" data-material="concrete"><b>Concrete</b><span>unreinforced</span></button>
+      </div>
+      <!-- hidden source-of-truth select (engine + app.js read this id unchanged) -->
+      <select id="material" class="src-select">
+        <option value="pha">PHA / PHBV — marine-degradable</option>
+        <option value="pla">PLA — industrial-compost only</option>
+        <option value="clay">Clay — low-fired earthenware</option>
+        <option value="concrete">Concrete — unreinforced</option>
+      </select>
+      <div id="materialWarn" class="warn hidden"></div>
+      <details class="mini-detail">
+        <summary>Material details</summary>
+        <div id="materialCard" class="matcard"></div>
+        <p class="estnote">All material constants are <b>engineering estimates requiring lab
+          verification</b> — not datasheet or pod-measured values.</p>
+      </details>
+    </div>
+
+    <!-- species presets (toggles) -->
+    <div class="ctl-group">
+      <div class="ctl-label">Species</div>
+      <div class="toggle-grid two" id="speciesToggles">
+        <button type="button" class="ptoggle" data-species="rhizophora"><b>Rhizophora</b><span><i>R. mangle</i></span></button>
+        <button type="button" class="ptoggle" data-species="avicennia"><b>Avicennia</b><span><i>A. marina</i></span></button>
+      </div>
+      <select id="species" class="src-select">
+        <option value="rhizophora">Rhizophora mangle</option>
+        <option value="avicennia">Avicennia marina</option>
+      </select>
+      <details class="mini-detail">
+        <summary>Species details</summary>
+        <div id="speciesInfo" class="matcard"></div>
+        <p class="hint" id="salNote"></p>
+      </details>
+    </div>
+
+    <!-- real-world site loader -->
+    <div class="ctl-group site-loader">
+      <div class="ctl-label">Real-world site</div>
+      <div class="site-row">
+        <select id="siteSelect"></select>
+        <button id="siteLoad" class="ghost small">Load</button>
+      </div>
+      <p class="hint" id="siteNote">Loads a real coastal location's typical salinity &amp; likely
+        species. Values are literature estimates — verify the primary source.</p>
+    </div>
+
+    <!-- secondary analyses -->
+    <div class="ctl-group secondary-actions">
+      <div class="mcrow">
+        <button id="mcBtn">Monte Carlo</button>
+        <input type="number" id="n_runs" value="24" min="2" max="120" title="number of runs">
+      </div>
+      <button id="crackBtn" class="ghost wide">Crack analysis — current material</button>
+      <button id="advBtn" class="ghost wide adv-open">Advanced simulation controls ▸</button>
+    </div>
+  </div>
+</aside>
+
+<!-- ===== BOTTOM-LEFT — branding + interaction hint ==================== -->
+<div class="panel-bl">
+  <div class="brand-row">
+    <a class="brand-mark" href="index.html" aria-label="Mangrove Pod — Design Tool">
+      <svg class="nav-mark" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+        <path d="M12 2c3.6 3.2 5.4 7 5.4 11.1 0 4.3-2.4 8.9-5.4 8.9s-5.4-4.6-5.4-8.9C6.6 9 8.4 5.2 12 2Z"
+              stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/>
+        <path d="M12 3.2V21" stroke="currentColor" stroke-width="1.2" opacity=".55"/>
+      </svg>
+      <span>Mangrove&nbsp;Pod <span class="nav-sub">Design Tool</span></span>
+    </a>
+    <a class="mini-link" href="showcase.html">About</a>
+    <a class="mini-link" href="https://github.com/antalneu/mangrove-pod-sim" target="_blank" rel="noopener">GitHub</a>
+  </div>
+  <div class="hint-row">Drag to orbit · scroll to zoom · right-drag to pan</div>
+  <div class="scene-note" id="podinfo">loading pod…</div>
+  <div class="scene-note dim">Reduced-order engineering surrogate — <b>relative</b> comparison, not FEA · runs 100% in your browser.</div>
+</div>
+
+<!-- ===== BOTTOM-RIGHT — icon cluster ================================== -->
+<div class="panel-br">
+  <div id="settingsPop" class="settings-pop hidden">
+    <div class="pop-label">Layers</div>
+    <label class="chk"><input type="checkbox" id="show_stress" checked> Stress heatmap overlay</label>
+    <label class="chk"><input type="checkbox" id="show_roots" checked> Roots</label>
+    <label class="chk"><input type="checkbox" id="show_ground" checked> Ground / substrate</label>
+    <button id="advBtn2" class="ghost small wide adv-open">Advanced simulation controls ▸</button>
+  </div>
+  <div class="icon-cluster">
+    <button id="shotBtn" class="iconbtn" title="Save a screenshot (PNG)" aria-label="screenshot">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M4 8h3l1.5-2h7L17 8h3a1 1 0 0 1 1 1v9a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V9a1 1 0 0 1 1-1Z"/><circle cx="12" cy="13" r="3.2"/></svg>
+    </button>
+    <button id="resetViewBtn" class="iconbtn" title="Reset the camera view" aria-label="reset view">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M20 11a8 8 0 1 0-.6 4"/><path d="M20 4v6h-6"/></svg>
+    </button>
+    <button id="settingsBtn" class="iconbtn" title="Layers &amp; settings" aria-label="settings">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+        <circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9c.2.63.77 1.09 1.44 1.15H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1Z"/></svg>
+    </button>
+  </div>
+</div>
+
+<!-- ===== ADVANCED CONTROLS DRAWER (right slide-in) ==================== -->
+<div id="advPanel" class="provpanel hidden">
+  <div class="provinner">
+    <div class="provtop">
+      <h2>Advanced simulation controls</h2>
+      <button id="advClose" class="ghost">Close</button>
+    </div>
+    <p class="controls-intro">Every granular control lives here. Shape the break, the growing
+      conditions and the solver, then run the simulation from the top-right panel.</p>
 
     <section>
       <h2>Break design</h2>
@@ -73,34 +235,12 @@
     </section>
 
     <section>
-      <h2>Material</h2>
-      <label>Pod material
-        <select id="material">
-          <option value="pha">PHA / PHBV — marine-degradable</option>
-          <option value="pla">PLA — industrial-compost only</option>
-          <option value="clay">Clay — low-fired earthenware</option>
-          <option value="concrete">Concrete — unreinforced</option>
-        </select>
-      </label>
-      <div id="materialWarn" class="warn hidden"></div>
-      <div id="materialCard" class="matcard"></div>
-      <p class="estnote">All material constants are <b>engineering estimates requiring lab
-        verification</b> — not datasheet or pod-measured values.</p>
-    </section>
-
-    <section>
       <h2>Environment</h2>
-      <label>Propagule species
-        <select id="species">
-          <option value="rhizophora">Rhizophora mangle</option>
-          <option value="avicennia">Avicennia marina</option>
-        </select>
-      </label>
-      <div id="speciesInfo" class="matcard"></div>
       <label>Salinity <span class="unit">ppt</span> <output id="o_salinity_ppt">20</output>
         <input type="range" id="salinity_ppt" min="0" max="40" step="1" value="20"></label>
-      <p class="hint" id="salNote">Optimal early-growth band shown per species; outside it,
-        growth slows and the same steps span more real time.</p>
+      <p class="hint" id="salNoteAdv">Optimal early-growth band shown per species; outside it,
+        growth slows and the same steps span more real time. Use the <b>Real-world site</b>
+        loader (top-right) to set salinity for a named location.</p>
     </section>
 
     <section>
@@ -123,18 +263,7 @@
     </section>
 
     <section>
-      <h2>View</h2>
-      <div class="seg" id="viewSeg">
-        <button type="button" class="segbtn active" data-view="intact">Intact</button>
-        <button type="button" class="segbtn" data-view="exploded">Exploded — 4 pieces</button>
-      </div>
-      <p class="hint">Exploded pulls the four quarter-pieces apart along the seams, so the
-        intended split is clear before running anything.</p>
-      <div class="toggles">
-        <label class="chk"><input type="checkbox" id="show_stress" checked> Stress heatmap overlay</label>
-        <label class="chk"><input type="checkbox" id="show_roots" checked> Roots</label>
-        <label class="chk"><input type="checkbox" id="show_ground" checked> Ground / substrate</label>
-      </div>
+      <h2>Root growth stage</h2>
       <label>Root growth stage <output id="o_root_stage">100</output><span class="unit">%</span>
         <input type="range" id="root_stage" min="0" max="100" step="1" value="100"></label>
       <p class="hint">How far the prop-root cage has extended into the substrate. Roots stay
@@ -142,79 +271,29 @@
         animation breaks through.</p>
     </section>
 
-    <details class="advanced">
-      <summary>Advanced simulation controls</summary>
-      <div class="adv-section">
-        <div class="subhead">Root growth</div>
-        <label>Random seed <output id="o_seed">1</output>
-          <input type="range" id="seed" min="0" max="60" step="1" value="1"></label>
-        <label>Root downward bias <output id="o_down_bias">0.55</output>
-          <input type="range" id="down_bias" min="0.1" max="1.0" step="0.05" value="0.55"></label>
-        <label>Root pull toward slots / feet <output id="o_slot_bias">2.2</output>
-          <input type="range" id="slot_bias" min="0" max="4" step="0.1" value="2.2"></label>
-        <label>Root density <span class="unit">attractors</span> <output id="o_n_attractors">2600</output>
-          <input type="range" id="n_attractors" min="1000" max="4000" step="100" value="2600"></label>
-        <div class="subhead">Pressure &amp; failure</div>
-        <label>Wall contact stiffness <output id="o_contact_stiffness">20</output>
-          <input type="range" id="contact_stiffness" min="5" max="40" step="1" value="20"></label>
-        <label>Simulation length <span class="unit">steps</span> <output id="o_n_time_steps">120</output>
-          <input type="range" id="n_time_steps" min="60" max="160" step="5" value="120"></label>
-        <label>Planting-team pull assist <output id="o_pull_assist">0</output>
-          <input type="range" id="pull_assist" min="0" max="4" step="0.2" value="0"></label>
-      </div>
-    </details>
-
-    <section class="actions">
-      <button id="runBtn" class="primary">Run simulation</button>
-      <button id="playBtn" class="primary alt">Play growth</button>
-      <div class="mcrow">
-        <button id="mcBtn">Monte Carlo</button>
-        <input type="number" id="n_runs" value="24" min="2" max="120" title="number of runs">
-      </div>
-      <button id="crackBtn" class="ghost wide">Crack analysis — current material</button>
-      <p class="hint"><b>Run</b> shows the final snapshot. <b>Play growth</b> animates the pod
-        through its ~year-long growth — roots emerging, the pod cracking open at breakthrough.
-        Everything runs in your browser.</p>
+    <section>
+      <h2>Solver</h2>
+      <div class="subhead">Root growth</div>
+      <label>Random seed <output id="o_seed">1</output>
+        <input type="range" id="seed" min="0" max="60" step="1" value="1"></label>
+      <label>Root downward bias <output id="o_down_bias">0.55</output>
+        <input type="range" id="down_bias" min="0.1" max="1.0" step="0.05" value="0.55"></label>
+      <label>Root pull toward slots / feet <output id="o_slot_bias">2.2</output>
+        <input type="range" id="slot_bias" min="0" max="4" step="0.1" value="2.2"></label>
+      <label>Root density <span class="unit">attractors</span> <output id="o_n_attractors">2600</output>
+        <input type="range" id="n_attractors" min="1000" max="4000" step="100" value="2600"></label>
+      <div class="subhead">Pressure &amp; failure</div>
+      <label>Wall contact stiffness <output id="o_contact_stiffness">20</output>
+        <input type="range" id="contact_stiffness" min="5" max="40" step="1" value="20"></label>
+      <label>Simulation length <span class="unit">steps</span> <output id="o_n_time_steps">120</output>
+        <input type="range" id="n_time_steps" min="60" max="160" step="5" value="120"></label>
+      <label>Planting-team pull assist <output id="o_pull_assist">0</output>
+        <input type="range" id="pull_assist" min="0" max="4" step="0.2" value="0"></label>
     </section>
-  </aside>
-
-  <div id="viewpane">
-    <div id="plot"></div>
-    <div id="overlay" class="hidden"><div class="spinner"></div><span id="overlayMsg">simulating…</span></div>
-    <div id="animBar" class="animbar hidden">
-      <button id="animPlay" class="abtn" onclick="document.getElementById('playBtn').click()" title="play / pause" aria-label="play / pause"></button>
-      <div class="seg small" id="speedSeg">
-        <button type="button" class="segbtn active" data-speed="1">1×</button>
-        <button type="button" class="segbtn" data-speed="2">2×</button>
-        <button type="button" class="segbtn" data-speed="4">4×</button>
-      </div>
-      <input type="range" id="anim_timeline" class="animrange" min="1" max="120" step="1" value="1" title="scrub through growth">
-      <div id="anim_readout" class="animreadout">—</div>
-    </div>
-    <div class="viewpane-legend" id="legend">
-      <span><i style="background:#e9c46a"></i>rising stress</span>
-      <span><i style="background:#c1121f"></i>peak stress</span>
-      <span><i style="background:#6b4525"></i>roots</span>
-    </div>
-    <div class="modelnote">Reduced-order engineering surrogate — <b>relative</b> comparison, not FEA · runs 100% in your browser.</div>
-    <p id="podinfo" class="podinfo">loading pod…</p>
   </div>
+</div>
 
-  <aside id="results">
-    <div class="results-top">
-      <h2 class="results-h">Results</h2>
-      <button id="provBtn" class="ghost small">Data provenance</button>
-    </div>
-    <div id="verdict" class="verdict idle">Run a simulation to see where and when the pod breaks.</div>
-    <div id="timeline" class="timeline hidden"></div>
-    <div id="statcards"></div>
-    <h3>Break sites</h3>
-    <div id="siteChart"></div>
-    <div id="detail"></div>
-    <div id="provMini" class="provmini"></div>
-  </aside>
-</main>
-
+<!-- ===== DATA PROVENANCE DRAWER ======================================= -->
 <div id="provPanel" class="provpanel hidden">
   <div class="provinner">
     <div class="provtop">
@@ -227,6 +306,7 @@
   </div>
 </div>
 
+<!-- ===== CRACK ANALYSIS DRAWER ======================================== -->
 <div id="crackPanel" class="provpanel hidden">
   <div class="provinner">
     <div class="provtop">
@@ -237,10 +317,10 @@
   </div>
 </div>
 
-<script src="data/pod.js?v=37"></script>
-<script src="data/pieces.js?v=37"></script>
-<script src="data/podviz.js?v=37"></script>
-<script src="static/engine.js?v=37"></script>
-<script src="static/app.js?v=37"></script>
+<script src="data/pod.js?v=38"></script>
+<script src="data/pieces.js?v=38"></script>
+<script src="data/podviz.js?v=38"></script>
+<script src="static/engine.js?v=38"></script>
+<script src="static/app.js?v=38"></script>
 </body>
 </html>

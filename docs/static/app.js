@@ -7,13 +7,20 @@ const $ = (id) => document.getElementById(id);
 const plotDiv = $("plot");
 
 // ---- parameter defaults & presets ------------------------------------------
+// Seam scoring defaults to 0.85 because that is what the mechanics say a
+// 24 mm wall needs before a mangrove root can release it — an unscored pod of
+// any of these materials simply does not break. "As moulded" keeps the raw
+// geometry so you can see that baseline for yourself.
 const DEFAULTS = {
   n_slots: 4, slot_length_frac: 0.22, slot_width_deg: 15,
   slot_z_center_frac: 0.55, align: "feet", split_score: 0.35,
-  seam_score: 0.0, seam_width_deg: 40, theta_offset_deg: 0,
+  seam_score: 0.85, seam_width_deg: 50, theta_offset_deg: 0,
 };
 const PRESETS = {
   "as-drawn": {},
+  "unscored-seams": { seam_score: 0 },
+  "shallow-seams": { seam_score: 0.6 },
+  "deep-seams": { seam_score: 0.92 },
   "shorter-slots": { slot_length_frac: 0.10 },
   "longer-slots": { slot_length_frac: 0.34 },
   "slots-higher": { slot_z_center_frac: 0.62 },
@@ -23,7 +30,6 @@ const PRESETS = {
   "8-slots": { n_slots: 8 },
   "slots-over-splits": { align: "split" },
   "deep-base-score": { split_score: 0.7 },
-  "deep-seams": { seam_score: 0.6, seam_width_deg: 50 },
 };
 const WRITE_IDS = ["n_slots","slot_length_frac","slot_width_deg","slot_z_center_frac",
                    "split_score","seam_score","seam_width_deg","theta_offset_deg"];
@@ -118,6 +124,19 @@ function renderCalib() {
   else { out.textContent = "using the estimated root pressure above"; }
 }
 
+// Controls the simulation actually reads (mirrors cfg() below). Anything not in
+// here — layer toggles, the timeline scrubber, playback speed, the Monte Carlo
+// run count, the root-growth-stage display slider — is presentation only and
+// must NOT invalidate a cached animation.
+const SIM_INPUT_IDS = new Set([
+  "preset","n_slots","slot_length_frac","slot_width_deg","slot_z_center_frac","align",
+  "split_score","seam_score","seam_width_deg","theta_offset_deg","material","species",
+  "salinity_ppt","root_pressure_mpa","calibration_active","calibration_force_n",
+  "calibration_area_mm2","seed","down_bias","slot_bias","n_attractors",
+  "contact_stiffness","n_time_steps","pull_assist",
+]);
+function affectsSim(el) { return !!(el && el.id && SIM_INPUT_IDS.has(el.id)); }
+
 // ---- gather config ----------------------------------------------------------
 function cfg(extra) {
   const preset = $("preset").value;
@@ -156,17 +175,21 @@ function cfg(extra) {
 // ---- render state -----------------------------------------------------------
 // stress heat-scale: the low end is the CURRENT material's own colour, so the
 // pod still reads as clay / concrete / bioplastic at low stress (finish + hue
-// stay legible even mid-animation), ramping up to warning → critical.
+// stay legible even mid-animation), ramping up to warning → critical. The scale
+// is anchored to the material's REMAINING fracture strength, so the top of the
+// ramp literally means "at fracture" and swapping material recolours the pod.
 function stressScale() {
   const c = materialLook().color;
   return [[0.0, c], [0.16, c], [0.42, "#e9c46a"], [0.72, "#e76f51"], [1.0, "#c1121f"]];
 }
 // explicit colorbar sizing (Plotly's auto-sizing can throw "axis scaling" here)
 const CBAR = { len:0.6, thickness:14, x:0.98, xpad:0, ypad:0, outlinecolor:"rgba(255,255,255,0.12)",
-  tickfont:{ color:"#bdb7ab", size:10 }, title:{ text:"stress", font:{ color:"#bdb7ab", size:11 } } };
+  tickfont:{ color:"#bdb7ab", size:10 },
+  title:{ text:"wall stress<br>MPa", font:{ color:"#bdb7ab", size:11 } } };
+const fmtMPa = v => (v == null ? "—" : (v >= 100 ? v.toFixed(0) : v >= 10 ? v.toFixed(1) : v.toFixed(2)));
+const pct = v => (v == null ? "—" : Math.round(v * 100) + "%");
 // subtle molded parting-line accent (reads as a deliberate product feature)
 const SEAM_COLOR = "#7c6f5d", ROOT_COLOR = "#6b4525", PIECE_COLOR = "#c7b291";
-const PROP_COLOR = "#7d8c4e";   // olive seedling / propagule body
 // per-material product finish: a clean flat base colour + soft studio lighting.
 // The pod renders SMOOTH (flatshading:false → interpolated normals); the base
 // pod is a flat material colour (no per-vertex noise — that read as faceting).
@@ -193,7 +216,7 @@ const MESH_LIGHT = { ambient:0.42, diffuse:0.9, specular:0.18, roughness:0.55, f
 const SUN = { x:0.832, y:0.555 };                 // sun xy direction (ground shadow uses this)
 const LIGHT_POS = { x:300, y:200, z:340 };
 
-let BASE_MESH = null, VIZ_MESH = null, BASE_LAYOUT = null, SEAM_TRACE = null, PROP_TRACE = null, EXPLODED = null;
+let BASE_MESH = null, VIZ_MESH = null, BASE_LAYOUT = null, SEAM_TRACE = null, EXPLODED = null;
 
 // The intact pod renders from the high-res VISUAL mesh when present (smoother
 // curves); the SIM still runs on BASE_MESH's geometry. Stress is a per-sim-vertex
@@ -293,13 +316,6 @@ function pushSubstrate(data, reveal) {
   }
 }
 function groundOn() { const el = $("show_ground"); return el ? el.checked : true; }
-function buildPropTrace(g) {
-  if (!g) return null;
-  return { type:"mesh3d", x:g.x, y:g.y, z:g.z, i:g.i, j:g.j, k:g.k,
-    color:PROP_COLOR, flatshading:false, hoverinfo:"skip", name:"seedling",
-    lighting:{ ambient:0.5, diffuse:0.8, specular:0.12, roughness:0.8 }, lightposition:LIGHT_POS };
-}
-function propOn() { const el = $("show_prop"); return el ? el.checked : false; }
 // Exploded view driven by the authored 4-piece asset (data/pieces.js). Each
 // piece is pushed outward by `gap` (world units) along its own explode dir.
 // VISUAL-ONLY: per-piece material colour, no stress mapping (different topology).
@@ -339,13 +355,12 @@ function render() {
         data.push(t);
       }
     }
-    if (sceneRevealed && propOn() && PROP_TRACE) data.push(PROP_TRACE);   // seedling revealed between the pieces
     // roots grow INSIDE the pod — only shown once it has broken apart
     if (sceneRevealed && $("show_roots").checked && ROOTS_TRACE) data.push(ROOTS_TRACE);
     // the germinated seedling stem the prop-roots hang from — drawn WITH the roots so
     // the cone connects to a visible trunk (was only drawn in the Play-growth animation,
     // which is why the exploded view showed roots floating with no seed body)
-    if (sceneRevealed && $("show_roots").checked) { const sh = buildShootTrace(ENGINE.shoot(1)); if (sh) data.push(sh); }
+    if (sceneRevealed && $("show_roots").checked) { const sh = fullShootTrace(); if (sh) data.push(sh); }
   } else {
     // clean material-coloured pod is the DEFAULT look; stress is a toggled overlay
     const m = Object.assign({}, podGeom());
@@ -359,7 +374,6 @@ function render() {
       m.color = look.color;   // clean flat material colour — smooth-shaded, no vertex noise
     }
     data.push(m);
-    if (sceneRevealed && propOn() && PROP_TRACE) data.push(PROP_TRACE);
     // (seam markings intentionally not drawn on the intact pod — the break-lines
     //  are shown by the actual pieces in the Exploded view)
     // while intact, roots stay hidden inside the pod — the outward push shows
@@ -369,8 +383,22 @@ function render() {
   // to an existing 3D plot; newPlot rebuilds cleanly, uirevision keeps the camera.
   Plotly.newPlot(plotDiv, data, BASE_LAYOUT, { responsive:true, displaylogo:false });
 }
+// The heat scale is anchored to the material's remaining fracture strength, so
+// the legend has to state that in MPa — otherwise "red" means nothing.
+function updateLegend() {
+  const el = $("legend"); if (!el) return;
+  const c = materialLook().color, hi = LAST.cmax;
+  el.innerHTML = (LAST.intensity && hi)
+    ? `<span><i style="background:${c}"></i>0</span>` +
+      `<span><i style="background:#e9c46a"></i>${fmtMPa(hi * 0.42)}</span>` +
+      `<span><i style="background:#c1121f"></i>${fmtMPa(hi)} MPa — fracture</span>` +
+      `<span><i style="background:#6b4525"></i>roots</span>`
+    : `<span><i style="background:${c}"></i>pod wall</span>` +
+      `<span><i style="background:#6b4525"></i>roots</span>`;
+}
 function updateStress(intensity, cmax, roots) {
   LAST.intensity = intensity; LAST.cmax = cmax;
+  updateLegend();
   sceneRevealed = true;   // a run reveals the ground + mature roots
   // roots come from the parametric stage model, not the sim node tree; a full
   // run means mature roots, so show the full stilt cage.
@@ -380,7 +408,10 @@ function updateStress(intensity, cmax, roots) {
 }
 function setView(v) {
   viewMode = v;
-  document.querySelectorAll("#viewSeg .segbtn").forEach(b => b.classList.toggle("active", b.dataset.view === v));
+  document.querySelectorAll("#viewSeg .segbtn").forEach(b => {
+    const on = b.dataset.view === v;
+    b.classList.toggle("active", on); b.setAttribute("aria-pressed", on ? "true" : "false");
+  });
   if (v === "exploded" && !ENGINE.assetPieces() && !EXPLODED) {
     busy(true, "building exploded view…");
     compute(() => { EXPLODED = ENGINE.exploded(); })
@@ -393,12 +424,38 @@ function setView(v) {
 function busy(on, msg) {
   $("overlay").classList.toggle("hidden", !on);
   if (msg) $("overlayMsg").textContent = msg;
-  $("runBtn").disabled = on; $("mcBtn").disabled = on;
+  ["runBtn", "mcBtn", "playBtn", "crackBtn"].forEach(id => { const b = $(id); if (b) b.disabled = on; });
 }
 // run heavy compute off the paint frame so the spinner shows
 function compute(fn) {
   return new Promise((res, rej) =>
     setTimeout(() => { try { res(fn()); } catch (e) { rej(e); } }, 20));
+}
+// Yield between chunks of a long sweep. While the page is visible we wait for a
+// paint so the spinner and progress text actually update. While it is HIDDEN we
+// must not: requestAnimationFrame never fires in a background tab (and timers
+// get clamped to ~1 s), which would stall a sweep the moment the user switches
+// away. MessageChannel is a macrotask that keeps running either way.
+function nextFrame() {
+  return new Promise(res => {
+    if (!document.hidden) { requestAnimationFrame(() => setTimeout(res, 0)); return; }
+    const ch = new MessageChannel();
+    ch.port1.onmessage = () => { ch.port1.close(); res(); };
+    ch.port2.postMessage(0);
+  });
+}
+// Drive a generator-based engine sweep, yielding to the browser after every
+// run so the spinner animates, the progress text updates and the page stays
+// interactive instead of locking up for several seconds.
+async function drive(iter, label) {
+  let r = iter.next();
+  while (!r.done) {
+    const p = r.value;
+    if (p && p.total) busy(true, `${label} — ${p.done}/${p.total}${p.phase ? " · " + p.phase : ""}`);
+    await nextFrame();
+    r = iter.next();
+  }
+  return r.value;
 }
 
 function showError(where, e) {
@@ -408,23 +465,25 @@ function showError(where, e) {
   console.error(where, e);
 }
 async function runSim() {
-  busy(true, "growing roots & pressurising wall…");
-  { const scw = $("stressChartWrap"); if (scw) scw.classList.add("hidden"); }  // no timeline in a single run
+  busy(true, "growing roots & loading the wall…");
   try {
     const { intensity, cmax, roots, stats } = await compute(() => ENGINE.simulate(cfg()));
     updateStress(intensity, cmax, roots);
     renderSingle(stats);
+    renderStressChart(stats.mechanics, stats.breakthrough_step);
   } catch (e) { showError("Simulation", e); }
   finally { busy(false); }
 }
 async function runMC() {
   const n = +$("n_runs").value;
-  busy(true, `running ${n} randomized simulations…`);
-  { const scw = $("stressChartWrap"); if (scw) scw.classList.add("hidden"); }  // no timeline in a Monte Carlo sweep
+  busy(true, `sampling ${n} randomized pods…`);
   try {
-    const { intensity, cmax, roots, stats } = await compute(() => ENGINE.montecarlo(cfg(), n));
+    await nextFrame();
+    const { intensity, cmax, roots, stats } =
+      await drive(ENGINE.montecarloIter(cfg(), n), "sampling pods");
     updateStress(intensity, cmax, roots);
     renderMC(stats);
+    renderStressChart(stats.mechanics, stats.mean_breakthrough != null ? Math.round(stats.mean_breakthrough) : null);
   } catch (e) { showError("Monte Carlo", e); }
   finally { busy(false); }
 }
@@ -438,9 +497,6 @@ const clamp = (v, lo, hi) => v < lo ? lo : (v > hi ? hi : v);
 // small, even outward drift per quarter-piece as it breaks through (not a blow-apart)
 const SHOOT_COLOR = "#6f9f3f", POP_FRAMES = 12, POP_GAP_FRAC = 0.14;
 let ANIM = null, animTimer = null, animPlaying = false, animIdx = 0, animSpeed = 1, animPhase = "intact", animDirty = true;
-// per-frame peak wall stress (normalized 0..1), precomputed once per animation for
-// the live stress-over-time chart. Derived from existing frames — no new sim.
-let STRESS_SERIES = null;
 
 function buildShootTrace(g) {
   if (!g) return null;
@@ -449,6 +505,14 @@ function buildShootTrace(g) {
     lighting:{ ambient:0.46, diffuse:0.82, specular:0.34, roughness:0.42, fresnel:0.12 }, lightposition:LIGHT_POS };
   if (g.vertexcolor) tr.vertexcolor = g.vertexcolor; else tr.color = SHOOT_COLOR;
   return tr;
+}
+// The fully-grown shoot never changes, but render() ran shootMesh(1) — a few
+// hundred vertices of spline + leaf geometry — on every single repaint. Build
+// it once.
+let FULL_SHOOT = null;
+function fullShootTrace() {
+  if (!FULL_SHOOT) FULL_SHOOT = buildShootTrace(ENGINE.shoot(1));
+  return FULL_SHOOT;
 }
 function setPlayBtn(playing) {
   const b = $("playBtn"); if (b) b.innerHTML = playing ? "Pause growth" : "Play growth";
@@ -471,8 +535,6 @@ async function playGrowth() {
     LAST.intensity = null;
     const bar = $("animBar"); if (bar) bar.classList.remove("hidden");
     const sl = $("anim_timeline"); if (sl) { sl.max = ANIM.T; sl.value = 1; }
-    buildStressSeries();
-    const scw = $("stressChartWrap"); if (scw) scw.classList.remove("hidden");
   }
   if (animIdx >= ANIM.T - 1) { animIdx = 0; ANIM._needNewPlot = true; }
   startAnim();
@@ -499,7 +561,19 @@ function buildAnimStats(idx) {
   const order = sites.filter(si => si.activation_step != null)
     .sort((a, b) => a.activation_step - b.activation_step).map(si => si.label);
   const tcAt = (step) => (step == null || !tl[step - 1]) ? { months: null, label: "—" } : { months: tl[step - 1].months, label: tl[step - 1].label };
+  // mechanics AT this step, not at the end of the run — otherwise the cards
+  // would report the final stress while the pod is still barely loaded
+  let mech = A.stats.mechanics;
+  if (mech && mech.stress_series && mech.stress_series[idx] != null) {
+    const sNow = mech.stress_series[idx], cNow = mech.strength_series[idx];
+    mech = Object.assign({}, mech, {
+      seam_stress_mpa: sNow, strength_end_mpa: cNow,
+      utilisation: +(sNow / Math.max(cNow, 1e-9)).toFixed(3),
+      safety_factor: sNow > 0 ? +(cNow / sNow).toFixed(2) : null,
+    });
+  }
   return Object.assign({}, A.stats, {
+    mechanics: mech,
     n_time_steps: A.T,
     breakthrough_step: broken ? brk : null,
     breakthrough_time: broken ? A.stats.breakthrough_time : { months: null, label: "—" },
@@ -518,21 +592,30 @@ function finishAnim() {
   if (ANIM.breakthrough_step == null) return;
   if ($("root_stage")) { $("root_stage").value = 100; const o = $("o_root_stage"); if (o) o.textContent = "100"; }
   rebuildRoots();
-  viewMode = "exploded";
-  document.querySelectorAll("#viewSeg .segbtn").forEach(b => b.classList.toggle("active", b.dataset.view === "exploded"));
   if (!ENGINE.assetPieces() && !EXPLODED) EXPLODED = ENGINE.exploded();
-  render();
+  setView("exploded");
 }
 // sidebar synced to an anim step, with a gentle "in progress" verdict pre-crack
 function renderAnimSidebar(idx) {
   const A = ANIM, st = buildAnimStats(idx);
   renderSingle(st);
-  if (st.breakthrough_step == null && st.first_crack_step == null) {
-    const vd = $("verdict"); if (vd) {
-      vd.className = "verdict idle";
-      const lab = A.timeline[idx] ? A.timeline[idx].label : "";
-      vd.innerHTML = `Growth in progress — <b>${lab}</b>. Wall intact; root pressure building toward the seams.`;
-    }
+  // Mid-playback the run has not finished, so renderSingle's end-of-run
+  // language ("never runs across the seam", "no release") would be wrong —
+  // nothing has been ruled out yet. Report the state at THIS step instead.
+  if (st.breakthrough_step != null) return;
+  const vd = $("verdict"); if (!vd) return;
+  const lab = A.timeline[idx] ? A.timeline[idx].label : "";
+  const M = st.mechanics;
+  const load = M ? ` Seam at <b>${fmtMPa(M.seam_stress_mpa)} MPa</b> of
+    <b>${fmtMPa(M.strength_end_mpa)} MPa</b> remaining strength — <b>${pct(M.utilisation)}</b>.` : "";
+  vd.className = "verdict idle";
+  if (st.first_crack_step != null) {
+    let cracked = 0, nLig = 0;
+    for (let i = 0; i < A.activation.length; i++) if (A.is_lig[i]) { nLig++; if (A.activation[i] != null && A.activation[i] <= idx + 1) cracked++; }
+    vd.innerHTML = `Cracking — <b>${lab}</b>. ${cracked} of ${nLig} seams torn; the pod releases once
+      ${Math.max(1, Math.ceil(nLig * 0.75))} give way.` + load;
+  } else {
+    vd.innerHTML = `Growth in progress — <b>${lab}</b>. Wall intact; root pressure building toward the seams.` + load;
   }
 }
 function animScrub() {
@@ -543,38 +626,53 @@ function animScrub() {
 }
 function setSpeed(s) {
   animSpeed = s;
-  document.querySelectorAll("#speedSeg .segbtn").forEach(b => b.classList.toggle("active", +b.dataset.speed === s));
+  document.querySelectorAll("#speedSeg .segbtn").forEach(b => {
+    const on = +b.dataset.speed === s;
+    b.classList.toggle("active", on); b.setAttribute("aria-pressed", on ? "true" : "false");
+  });
 }
-// ---- live wall-stress-over-time chart ---------------------------------------
-// peak intensity of each frame ÷ cmax → a 0..1 "how close to failure" curve.
-function buildStressSeries() {
-  if (!ANIM || !ANIM.frames) { STRESS_SERIES = null; return; }
-  const cmax = ANIM.cmax || 1, out = new Array(ANIM.frames.length);
-  for (let i = 0; i < ANIM.frames.length; i++) {
-    const f = ANIM.frames[i]; let mx = 0;
-    for (let k = 0; k < f.length; k++) if (f[k] > mx) mx = f[k];
-    out[i] = cmax ? mx / cmax : 0;
+// ---- seam stress vs. remaining strength -------------------------------------
+// The whole story of the pod in one chart: root load climbing as the seedling
+// grows, fracture strength falling as the wall degrades in seawater, and the
+// crossing where the seam lets go. Both curves are real MPa.
+function renderStressChart(M, brkStep, revealSteps) {
+  const wrap = $("stressChartWrap"), el = $("stressChart");
+  if (!el || !wrap) return;
+  if (!M || !M.stress_series || !M.stress_series.length) { wrap.classList.add("hidden"); return; }
+  wrap.classList.remove("hidden");
+  const T = M.stress_series.length;
+  const n = revealSteps == null ? T : clamp(revealSteps, 1, T);
+  const xs = [], load = [], cap = [];
+  for (let i = 0; i < n; i++) { xs.push(i + 1); load.push(M.stress_series[i]); cap.push(M.strength_series[i]); }
+  const shapes = [];
+  if (brkStep != null && brkStep <= n)
+    shapes.push({ type:"line", x0:brkStep, x1:brkStep, y0:0, y1:1, yref:"paper",
+      line:{ color:"#dd6350", width:1.4, dash:"dot" } });
+  // log axis: strength and load can be orders of magnitude apart in a design
+  // that is nowhere near releasing, and a linear axis would flatten one to zero
+  let hi = 0, lo = Infinity;
+  for (let i = 0; i < T; i++) {
+    hi = Math.max(hi, M.stress_series[i], M.strength_series[i]);
+    if (M.stress_series[i] > 0) lo = Math.min(lo, M.stress_series[i]);
+    lo = Math.min(lo, M.strength_series[i]);
   }
-  STRESS_SERIES = out;
-}
-function renderStressChart(idx) {
-  const el = $("stressChart"); if (!el || !STRESS_SERIES) return;
-  const n = Math.max(1, Math.min(idx + 1, STRESS_SERIES.length)), xs = [], ys = [];
-  for (let i = 0; i < n; i++) { xs.push(i + 1); ys.push(STRESS_SERIES[i]); }
-  const brk = ANIM ? ANIM.breakthrough_step : null, shapes = [];
-  if (brk != null && brk <= n) shapes.push({ type:"line", x0:brk, x1:brk, y0:0, y1:1,
-    yref:"paper", line:{ color:"#dd6350", width:1.4, dash:"dot" } });
-  Plotly.react(el, [{
-    type:"scatter", mode:"lines", x:xs, y:ys, hoverinfo:"x+y", name:"peak wall stress",
-    line:{ color:"#e69564", width:2.4, shape:"spline" },
-    fill:"tozeroy", fillcolor:"rgba(205,120,66,0.14)",
-  }], {
+  if (!isFinite(lo) || lo <= 0) lo = Math.max(hi * 1e-3, 1e-3);
+  const useLog = hi / lo > 60;
+  Plotly.react(el, [
+    { type:"scatter", mode:"lines", x:xs, y:cap, hovertemplate:"strength %{y:.2f} MPa<extra></extra>",
+      name:"remaining strength", line:{ color:"#6d90bf", width:2, dash:"dash" } },
+    { type:"scatter", mode:"lines", x:xs, y:load, hovertemplate:"seam stress %{y:.2f} MPa<extra></extra>",
+      name:"seam stress", line:{ color:"#e69564", width:2.4, shape:"spline" },
+      fill:"tozeroy", fillcolor:"rgba(205,120,66,0.14)" },
+  ], {
     paper_bgcolor:"rgba(0,0,0,0)", plot_bgcolor:"rgba(0,0,0,0)",
-    font:{ color:"#bdb7ab", size:11 }, margin:{ l:32, r:12, t:8, b:28 }, height:150,
-    xaxis:{ title:{ text:"growth step", font:{ size:10 } }, range:[1, ANIM ? ANIM.T : n],
+    font:{ color:"#bdb7ab", size:11 }, margin:{ l:44, r:12, t:6, b:30 }, height:172,
+    showlegend:true, legend:{ orientation:"h", y:1.22, x:0, font:{ size:10 } },
+    hovermode:"x unified",
+    xaxis:{ title:{ text:"growth step", font:{ size:10 } }, range:[1, T],
       gridcolor:"rgba(255,255,255,0.08)", zeroline:false },
-    yaxis:{ range:[0, 1.03], gridcolor:"rgba(255,255,255,0.08)", zeroline:false,
-      tickvals:[0, 0.5, 1], ticktext:["0", "½", "peak"] },
+    yaxis:{ title:{ text:"MPa", font:{ size:10 } }, type: useLog ? "log" : "linear",
+      rangemode:"tozero", gridcolor:"rgba(255,255,255,0.08)", zeroline:false },
     shapes,
   }, { displaylogo:false, responsive:true });
 }
@@ -623,7 +721,8 @@ function renderAnimFrame(idx) {
   const sl = $("anim_timeline"); if (sl) sl.value = idx + 1;
   updateAnimReadout(idx);
   renderAnimSidebar(idx);   // keep the results sidebar synced to the current step
-  renderStressChart(idx);   // live stress-over-time curve, revealed up to this step
+  // seam stress vs remaining strength, revealed up to the current step
+  renderStressChart(A.stats && A.stats.mechanics, A.breakthrough_step, idx + 1);
   const phase = exploded ? "exploded" : "intact";
   if (A._needNewPlot || phase !== animPhase) { Plotly.newPlot(plotDiv, data, BASE_LAYOUT, { responsive:true, displaylogo:false }); A._needNewPlot = false; }
   else Plotly.react(plotDiv, data, BASE_LAYOUT, { responsive:true, displaylogo:false });
@@ -647,26 +746,40 @@ function updateAnimReadout(idx) {
 // ============================================================================
 //  MATERIAL CRACK-ANALYSIS REPORT
 // ============================================================================
-function openCrackReport() {
+async function openCrackReport() {
   busy(true, "running material crack analysis…");
-  compute(() => ENGINE.crackReport(cfg(), Math.max(16, Math.min(40, +$("n_runs").value))))
-    .then(r => { busy(false); renderCrackReport(r); $("crackPanel").classList.remove("hidden"); })
-    .catch(e => { busy(false); showError("Crack analysis", e); });
+  try {
+    await nextFrame();
+    const n = Math.max(16, Math.min(40, +$("n_runs").value));
+    const r = await drive(ENGINE.crackReportIter(cfg(), n), "crack analysis");
+    renderCrackReport(r);
+    openDrawer($("crackPanel"));
+  } catch (e) { showError("Crack analysis", e); }
+  finally { busy(false); }
 }
 function renderCrackReport(r) {
-  const t = r.text, cur = r.material;
+  const t = r.text, cur = r.material, M = r.mechanics;
   const cmp = r.compare.map(c => `<tr class="${c.key === cur ? "curmat" : ""}"><td>${c.name}</td><td>${c.strength} MPa</td>` +
+    `<td>${pct(c.utilisation)}</td>` +
+    `<td>${c.required_score != null ? pct(c.required_score) : "not reachable"}</td>` +
     `<td>${c.first_crack_months != null ? c.first_crack_months.toFixed(1) : "—"}</td>` +
     `<td>${c.breakthrough_months != null ? c.breakthrough_months.toFixed(1) : "—"}</td><td>${c.reliability}%</td></tr>`).join("");
   $("crackBody").innerHTML =
     `<div class="crackhead">Crack analysis — <b>${r.material_name}</b> · ${r.n_runs} randomized runs</div>` +
     `<div class="cracksum">${t.summary}</div>` +
+    (M ? `<div class="crackmech">` +
+      `<span><i>seam wall</i><b>${M.seam_thickness_mm} mm</b></span>` +
+      `<span><i>seam stress</i><b>${fmtMPa(M.seam_stress_mpa)} MPa</b></span>` +
+      `<span><i>at the slot tip</i><b>${fmtMPa(M.peak_stress_mpa)} MPa</b></span>` +
+      `<span><i>strength left</i><b>${fmtMPa(M.strength_end_mpa)} MPa</b></span>` +
+      `<span><i>utilisation</i><b>${pct(M.utilisation)}</b></span></div>` : "") +
     `<h4>Where it cracks first</h4><p>${t.where}</p>` +
     `<h4>Why there</h4><p>${t.why}</p>` +
     `<h4>When</h4><p>${t.when}</p>` +
     `<h4>Consistency</h4><p>${t.consistency}</p>` +
-    `<h4>Material comparison</h4><table class="cmptbl"><thead><tr><th>Material</th><th>Strength</th><th>First crack</th><th>Breakthrough</th><th>Reliability</th></tr></thead><tbody>${cmp}</tbody></table>` +
-    `<p class="crackfoot">First crack / breakthrough in real elapsed months of the ${r.window_months}-month growth window. Roots self-supporting ≈ month ${r.outplant_months}. Reduced-order surrogate — relative comparison, not FEA.</p>`;
+    `<h4>Material comparison</h4><p class="hint">Scoring depth needed is a conservative back-solve: it asks what section would fail on peak load alone, ignoring degradation and crack run-on, so the full simulation often releases a little shallower.</p>` +
+    `<table class="cmptbl"><thead><tr><th>Material</th><th>Strength</th><th>Utilisation</th><th>Scoring needed</th><th>First crack</th><th>Release</th><th>Rate</th></tr></thead><tbody>${cmp}</tbody></table>` +
+    `<p class="crackfoot">First crack / release in real elapsed months of the ${r.window_months}-month growth window. Roots self-supporting ≈ month ${r.outplant_months}. Reduced-order shell mechanics — relative comparison, not FEA.</p>`;
 }
 
 // ---- render single-run results ---------------------------------------------
@@ -689,28 +802,56 @@ function timeStrip(s) {
   el.innerHTML = `<span class="tclock">Breaks at <b>${t.label}</b></span>` +
     `<span class="tsub">of a ${w? w.label : ""} window · ${phys_line(s)}</span>`;
 }
+// Turn "it doesn't release" into "here is what to change" — the required seam
+// scoring depth and the net wall it leaves, back-solved from the mechanics.
+function guidanceLine(M) {
+  if (!M) return "";
+  if (M.required_score == null)
+    return `<div class="guidance bad">Scoring alone will not open this design — even a 95%-deep seam
+      leaves the wall stronger than the roots can load it. Thin the wall, widen the bore, or move to a
+      weaker / faster-degrading material.</div>`;
+  if (M.required_score <= (M.seam_score || 0) + 1e-6) return "";
+  return `<div class="guidance">To release, score the seams to about <b>${pct(M.required_score)}</b> depth
+    — roughly <b>${M.required_seam_thickness_mm} mm</b> of wall left instead of ${M.seam_thickness_mm} mm.
+    <span class="subnote">conservative estimate: ignores degradation and crack run-on</span></div>`;
+}
 function renderSingle(s) {
   const N = s.n_time_steps, bt = s.breakthrough_step, fc = s.first_crack_step;
   const bm = s.breakthrough_time, fm = s.first_crack_time, vd = $("verdict");
+  const M = s.mechanics;
+  const stressPhrase = M
+    ? ` Seam carries <b>${fmtMPa(M.seam_stress_mpa)} MPa</b> against <b>${fmtMPa(M.strength_end_mpa)} MPa</b>
+        of remaining strength — <b>${pct(M.utilisation)}</b> utilisation on ${M.seam_thickness_mm} mm of wall.`
+    : "";
   if (bt != null) {
     vd.className = "verdict broke";
-    vd.innerHTML = `Pod <b>breaks at step ${bt}</b> of ${N}` +
+    vd.innerHTML = `<b>Releases</b> at step ${bt} of ${N}` +
       (bm && bm.months!=null ? ` — <b>${bm.label}</b>` : "") +
-      `, releasing along the seam / slot→foot ligaments.`;
+      `, tearing along the slot→foot seams.` + stressPhrase;
   } else if (fc != null) {
     vd.className = "verdict nobreak";
     vd.innerHTML = `Cracks start at step ${fc}` +
-      (fm && fm.months!=null ? ` (${fm.label})` : "") + ` but <b>no full breakthrough</b> within ${N} steps.`;
+      (fm && fm.months!=null ? ` (${fm.label})` : "") +
+      ` at the slot-tip stress raiser, but the crack never runs across the seam — <b>no release</b> within ${N} steps.` +
+      stressPhrase + guidanceLine(M);
   } else {
     vd.className = "verdict nobreak";
-    vd.innerHTML = `No wall failure within ${N} steps — roots never overcome the wall.`;
+    vd.innerHTML = `<b>No release.</b> The wall never reaches its fracture strength.` +
+      stressPhrase + guidanceLine(M);
   }
   timeStrip(s);
-  $("statcards").innerHTML =
-    card("Breakthrough", bt ?? "—", bt!=null?(bm&&bm.months!=null?bm.label:`of ${N}`):"no break") +
-    card("First crack", fc ?? "—", s.first_crack_site || "") +
-    card("Root nodes", s.n_nodes, "grown") +
-    card("Pattern", s.slots.length + " slots", s.pattern);
+  $("statcards").innerHTML = (M
+    ? card("Release", bt!=null ? (bm&&bm.months!=null?bm.label:`step ${bt}`) : "none",
+           bt!=null ? `step ${bt} of ${N}` : `within ${N} steps`) +
+      card("Seam stress", fmtMPa(M.seam_stress_mpa), `MPa · ${fmtMPa(M.peak_stress_mpa)} at the slot tip`) +
+      card("Strength left", fmtMPa(M.strength_end_mpa), `MPa · from ${fmtMPa(M.strength_start_mpa)} when moulded`) +
+      card("Utilisation", pct(M.utilisation), M.utilisation >= 1 ? "over fracture" : "of remaining strength") +
+      card("Seam wall", M.seam_thickness_mm ?? "—", `mm left after ${pct(M.seam_score)} scoring`) +
+      card("First crack", fc ?? "—", s.first_crack_site || "no cracking")
+    : card("Breakthrough", bt ?? "—", bt!=null?(bm&&bm.months!=null?bm.label:`of ${N}`):"no break") +
+      card("First crack", fc ?? "—", s.first_crack_site || "") +
+      card("Root nodes", s.n_nodes, "grown") +
+      card("Pattern", s.slots.length + " slots", s.pattern));
 
   const labels = s.sites.map(x => x.label);
   const steps = s.sites.map(x => x.activation_step == null ? N : x.activation_step);
@@ -731,15 +872,24 @@ function renderSingle(s) {
 // ---- render Monte-Carlo results --------------------------------------------
 function renderMC(s) {
   const N = s.n_time_steps, rel = Math.round(s.reliability * 100), bm = s.breakthrough_time, vd = $("verdict");
+  const U = s.uncertainty, M = s.mechanics;
   vd.className = "verdict " + (rel >= 80 ? "broke" : "nobreak");
-  vd.innerHTML = `Breaks in <b>${rel}% of ${s.n_runs} runs</b>` +
-    (s.mean_breakthrough!=null ? ` — mean breakthrough <b>step ${s.mean_breakthrough.toFixed(1)}</b>` +
-      (bm && bm.months!=null ? ` (${bm.label})` : "") + ` ± ${(s.std_breakthrough||0).toFixed(1)}.` : ".");
+  vd.innerHTML = `Releases in <b>${rel}% of ${s.n_runs} sampled pods</b>` +
+    (s.mean_breakthrough!=null ? ` — mean release at <b>step ${s.mean_breakthrough.toFixed(1)}</b>` +
+      (bm && bm.months!=null ? ` (${bm.label})` : "") + ` ± ${(s.std_breakthrough||0).toFixed(1)}.` : ".") +
+    (U ? `<div class="guidance">Each pod redraws its own fracture strength
+        (${U.strength_range_mpa[0]}–${U.strength_range_mpa[1]} MPa published range),
+        ${U.pressure_varied ? "root pressure (0.5–1.0 MPa)" : "the measured root pressure"}
+        and a ±${U.thickness_tolerance_pct}% wall-thickness tolerance, crossed against
+        ${U.n_architectures} grown root architectures.</div>` : "");
   timeStrip(s);
   $("statcards").innerHTML =
-    card("Reliability", rel + "%", `${s.n_runs} runs`) +
-    card("Breakthrough", s.mean_breakthrough!=null? s.mean_breakthrough.toFixed(1):"—",
-         bm&&bm.months!=null? bm.label : `mean ± ${(s.std_breakthrough||0).toFixed(1)}`) +
+    card("Release rate", rel + "%", `${s.n_runs} sampled pods`) +
+    card("Release", s.mean_breakthrough!=null? s.mean_breakthrough.toFixed(1):"—",
+         bm&&bm.months!=null? bm.label : `mean step ± ${(s.std_breakthrough||0).toFixed(1)}`) +
+    (U ? card("Seam stress", `${fmtMPa(U.seam_stress_median)}`,
+              `MPa median · ${fmtMPa(U.seam_stress_p10)}–${fmtMPa(U.seam_stress_p90)} p10–p90`) : "") +
+    (U ? card("Utilisation", M ? pct(M.utilisation) : "—", "nominal design") : "") +
     card("First crack", s.mean_first_crack!=null? s.mean_first_crack.toFixed(1):"—", "mean step") +
     card("Pattern", s.pattern, "");
 
@@ -769,11 +919,11 @@ function themeBar(xtitle, xrange) {
 // ---- data provenance panel --------------------------------------------------
 let LAST_PROV = null;
 $("provBtn").addEventListener("click", openProv);
-$("provClose").addEventListener("click", () => $("provPanel").classList.add("hidden"));
+$("provClose").addEventListener("click", () => closeDrawer($("provPanel")));
 function openProv() {
   try { LAST_PROV = ENGINE.provenance(cfg()); renderProv(LAST_PROV); renderProvMini(); }
   catch(e){ console.error("provenance", e); }
-  $("provPanel").classList.remove("hidden");
+  openDrawer($("provPanel"));
 }
 function renderProv(reg) {
   $("provRoadmap").innerHTML = `<b>Validation roadmap.</b> ${reg.validation_roadmap}`;
@@ -813,8 +963,11 @@ function renderProvMini() {
 // ============================================================================
 function syncToggleGroup(groupId, attr, selId) {
   const sel = $(selId), val = sel ? sel.value : null;
-  document.querySelectorAll(`#${groupId} .ptoggle`).forEach(b =>
-    b.classList.toggle("active", b.dataset[attr] === val));
+  document.querySelectorAll(`#${groupId} .ptoggle`).forEach(b => {
+    const on = b.dataset[attr] === val;
+    b.classList.toggle("active", on);
+    b.setAttribute("aria-pressed", on ? "true" : "false");   // "active" is a class; AT needs the state
+  });
 }
 function wireToggleGroup(groupId, attr, selId) {
   const sel = $(selId); if (!sel) return;
@@ -865,10 +1018,50 @@ function initSiteLoader() {
   const btn = $("siteLoad"); if (btn) btn.addEventListener("click", load);
 }
 
-function defaultCamera() {
-  const c = (BASE_LAYOUT && BASE_LAYOUT.scene && BASE_LAYOUT.scene.camera);
-  return c || baseLayout().scene.camera;
+// Plotly MUTATES the layout object it is given — as the user orbits, it writes
+// the live camera straight back into BASE_LAYOUT.scene.camera. Reading the
+// "default" back out of there therefore just returns wherever the user already
+// is, which made Reset View a no-op. Keep our own frozen copy instead.
+const DEFAULT_CAMERA = JSON.parse(JSON.stringify(baseLayout().scene.camera));
+function defaultCamera() { return JSON.parse(JSON.stringify(DEFAULT_CAMERA)); }
+// ---- drawers & popovers -----------------------------------------------------
+// One place that knows how a drawer opens and closes, so Escape, the close
+// button and the backdrop all behave the same and focus goes somewhere sane.
+let LAST_FOCUS = null;
+function openDrawer(panel) {
+  if (!panel) return;
+  document.querySelectorAll(".provpanel:not(.hidden)").forEach(p => { if (p !== panel) p.classList.add("hidden"); });
+  LAST_FOCUS = document.activeElement;
+  panel.classList.remove("hidden");
+  const close = panel.querySelector(".provtop .ghost, .provtop button");
+  if (close) close.focus();
 }
+function closeDrawer(panel) {
+  if (!panel || panel.classList.contains("hidden")) return;
+  panel.classList.add("hidden");
+  if (LAST_FOCUS && document.contains(LAST_FOCUS)) { LAST_FOCUS.focus(); LAST_FOCUS = null; }
+}
+function closeSettingsPop() {
+  const pop = $("settingsPop"), btn = $("settingsBtn");
+  if (pop && !pop.classList.contains("hidden")) { pop.classList.add("hidden"); if (btn) btn.classList.remove("active"); }
+}
+function wireOverlayDismissal() {
+  // Escape closes the topmost open surface
+  document.addEventListener("keydown", e => {
+    if (e.key !== "Escape") return;
+    const open = document.querySelector(".provpanel:not(.hidden)");
+    if (open) { closeDrawer(open); return; }
+    closeSettingsPop();
+  });
+  // clicking outside the settings popover closes it
+  document.addEventListener("pointerdown", e => {
+    const pop = $("settingsPop"), btn = $("settingsBtn");
+    if (!pop || pop.classList.contains("hidden")) return;
+    if (pop.contains(e.target) || (btn && btn.contains(e.target))) return;
+    closeSettingsPop();
+  });
+}
+
 function wireViewerChrome() {
   const shot = $("shotBtn");
   if (shot) shot.addEventListener("click", () => {
@@ -887,13 +1080,10 @@ function wireViewerChrome() {
     setBtn.classList.toggle("active", !isHidden);
   });
   // advanced drawer open/close (mirrors the provenance/crack drawers)
-  const openAdv = () => {
-    const p = $("advPanel"); if (p) p.classList.remove("hidden");
-    if (pop) { pop.classList.add("hidden"); if (setBtn) setBtn.classList.remove("active"); }
-  };
-  document.querySelectorAll(".adv-open").forEach(b => b.addEventListener("click", openAdv));
+  document.querySelectorAll(".adv-open").forEach(b =>
+    b.addEventListener("click", () => { closeSettingsPop(); openDrawer($("advPanel")); }));
   const advClose = $("advClose");
-  if (advClose) advClose.addEventListener("click", () => { const p = $("advPanel"); if (p) p.classList.add("hidden"); });
+  if (advClose) advClose.addEventListener("click", () => closeDrawer($("advPanel")));
   // panel collapse / expand
   document.querySelectorAll(".minbtn").forEach(b => b.addEventListener("click", () => {
     const panel = b.closest(".glasspanel"); if (!panel) return;
@@ -937,7 +1127,7 @@ async function init() {
       `${f.n_slots} break slots · ${f.n_feet} feet · scanned from the physical pod geometry`;
     document.querySelectorAll("#viewSeg .segbtn").forEach(b =>
       b.addEventListener("click", () => setView(b.dataset.view)));
-    ["show_roots","show_prop","show_stress","show_ground"].forEach(id => { const el = $(id); if (el) el.addEventListener("change", render); });
+    ["show_roots","show_stress","show_ground"].forEach(id => { const el = $(id); if (el) el.addEventListener("change", render); });
     $("material").addEventListener("change", render);   // repaint pod in the new material finish
     if ($("root_stage")) $("root_stage").addEventListener("input", () => { rebuildRoots(); render(); });
     // growth-animation + report wiring
@@ -946,16 +1136,17 @@ async function init() {
     document.querySelectorAll("#speedSeg .segbtn").forEach(b => b.addEventListener("click", () => setSpeed(+b.dataset.speed)));
     if ($("crackBtn")) $("crackBtn").addEventListener("click", openCrackReport);
     if ($("crackClose")) $("crackClose").addEventListener("click", () => $("crackPanel").classList.add("hidden"));
-    // any change to the design/species/material controls invalidates a cached animation
-    // (controls now live across the top-right panel + Advanced drawer, so listen globally)
-    document.addEventListener("input", () => { animDirty = true; });
-    document.addEventListener("change", () => { animDirty = true; });
+    // Any change to a control the SIMULATION reads invalidates the cached
+    // animation. Listening on every input (as this used to) meant scrubbing the
+    // timeline, nudging the run count or toggling a layer silently threw the
+    // cached frames away and re-ran the whole growth sweep on the next Play.
+    document.addEventListener("input", e => { if (affectsSim(e.target)) animDirty = true; });
+    document.addEventListener("change", e => { if (affectsSim(e.target)) animDirty = true; });
     BASE_MESH = ENGINE.baseMesh();
     VIZ_MESH = ENGINE.vizPod();     // high-res visual pod (render-only); null if not loaded
     BASE_LAYOUT = baseLayout();
     BOUNDS_TRACE = buildBounds();   // stable camera frame (pod + eventual ground/roots)
     SEAM_TRACE = buildSeamTrace(ENGINE.seams());
-    PROP_TRACE = buildPropTrace(ENGINE.propagule());
     LANDINGS = ENGINE.rootLandings();   // root-contact points for the mud mounds/AO + cast shadow
     GROUND_TRACE = buildGroundTrace(ENGINE.ground(44, 170, 1, groundOpts()));
     WATER_TRACE = buildWaterTrace(ENGINE.water(26, 120, 1, groundOpts()));
@@ -967,6 +1158,8 @@ async function init() {
     wireToggleGroup("speciesToggles", "species", "species");
     initSiteLoader();
     wireViewerChrome();
+    wireOverlayDismissal();   // Escape / click-away closes drawers and the layers popover
+    updateLegend();
     initPhoneControlsCollapse();   // on phones, start with Controls collapsed so the scene leads
     $("boot").classList.add("hidden");
   } catch (e) {

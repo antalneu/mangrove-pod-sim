@@ -5,8 +5,8 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Mangrove Pod — Design Tool</title>
 <script src="https://cdn.plot.ly/plotly-2.35.2.min.js" charset="utf-8"></script>
-<link rel="stylesheet" href="static/base.css?v=38">
-<link rel="stylesheet" href="static/style.css?v=38">
+<link rel="stylesheet" href="static/base.css?v=39">
+<link rel="stylesheet" href="static/style.css?v=39">
 </head>
 <body class="tool-body">
 <div id="boot"><div class="boot-mark"></div><div id="bootmsg">Loading the pod &amp; booting the in-browser engine…</div></div>
@@ -14,7 +14,7 @@
 <!-- ===== FULL-BLEED 3-D SCENE (background) ============================== -->
 <div id="viewpane">
   <div id="plot"></div>
-  <div id="overlay" class="hidden"><div class="spinner"></div><span id="overlayMsg">simulating…</span></div>
+  <div id="overlay" class="hidden" role="status" aria-live="polite"><div class="spinner"></div><span id="overlayMsg">simulating…</span></div>
   <div id="animBar" class="animbar hidden">
     <button id="animPlay" class="abtn" onclick="document.getElementById('playBtn').click()" title="play / pause" aria-label="play / pause"></button>
     <div class="seg small" id="speedSeg">
@@ -34,18 +34,14 @@
     <button id="panel-results-min" class="minbtn" title="collapse" aria-label="collapse">–</button>
   </div>
   <div class="panel-scroll" id="resultsScroll">
-    <div class="viewpane-legend" id="legend">
-      <span><i style="background:#e9c46a"></i>rising stress</span>
-      <span><i style="background:#c1121f"></i>peak stress</span>
-      <span><i style="background:#6b4525"></i>roots</span>
-    </div>
-    <div id="verdict" class="verdict idle">Run a simulation to see where and when the pod breaks.</div>
+    <div class="viewpane-legend" id="legend"></div>
+    <div id="verdict" class="verdict idle" role="status" aria-live="polite">Run a simulation to see whether — and when — root pressure releases the pod.</div>
     <div id="timeline" class="timeline hidden"></div>
     <div id="statcards"></div>
     <h3>Break sites</h3>
     <div id="siteChart"></div>
     <div id="stressChartWrap" class="hidden">
-      <h3>Wall stress over time <span class="subnote">live during Play growth</span></h3>
+      <h3>Seam stress vs. remaining strength <span class="subnote">MPa over the growth window</span></h3>
       <div id="stressChart"></div>
     </div>
     <div id="detail"></div>
@@ -120,7 +116,7 @@
     <div class="ctl-group site-loader">
       <div class="ctl-label">Real-world site</div>
       <div class="site-row">
-        <select id="siteSelect"></select>
+        <select id="siteSelect" aria-label="Real-world coastal site"></select>
         <button id="siteLoad" class="ghost small">Load</button>
       </div>
       <p class="hint" id="siteNote">Loads a real coastal location's typical salinity &amp; likely
@@ -131,7 +127,8 @@
     <div class="ctl-group secondary-actions">
       <div class="mcrow">
         <button id="mcBtn">Monte Carlo</button>
-        <input type="number" id="n_runs" value="24" min="2" max="120" title="number of runs">
+        <input type="number" id="n_runs" value="24" min="2" max="120"
+               title="number of randomized pods to sample" aria-label="Monte Carlo sample count">
       </div>
       <button id="crackBtn" class="ghost wide">Crack analysis — current material</button>
       <button id="advBtn" class="ghost wide adv-open">Advanced simulation controls ▸</button>
@@ -198,6 +195,9 @@
       <label>Design preset
         <select id="preset">
           <option value="as-drawn">As drawn (detected geometry)</option>
+          <option value="unscored-seams">As moulded — no seam scoring</option>
+          <option value="shallow-seams">Shallow seam scoring (60%)</option>
+          <option value="deep-seams">Deep seam scoring (92%)</option>
           <option value="shorter-slots">Shorter slots</option>
           <option value="longer-slots">Longer slots</option>
           <option value="slots-higher">Slots higher</option>
@@ -207,7 +207,6 @@
           <option value="8-slots">Eight slots</option>
           <option value="slots-over-splits">Slots over splits</option>
           <option value="deep-base-score">Deep base score</option>
-          <option value="deep-seams">Deep quarter-piece seams</option>
           <option value="custom">Custom…</option>
         </select>
       </label>
@@ -226,10 +225,13 @@
           <input type="range" id="split_score" min="0" max="0.9" step="0.05" value="0.35"></label>
       </div>
       <div class="subhead">Quarter-piece seams <span class="subnote">rim → slot → foot</span></div>
-      <label>Seam depth / scoring <output id="o_seam_score">0.0</output>
-        <input type="range" id="seam_score" min="0" max="0.9" step="0.05" value="0.0"></label>
-      <label>Seam width <span class="unit">degrees</span> <output id="o_seam_width_deg">40</output>
-        <input type="range" id="seam_width_deg" min="10" max="80" step="2" value="40"></label>
+      <label>Seam depth / scoring <output id="o_seam_score">0.85</output>
+        <input type="range" id="seam_score" min="0" max="0.95" step="0.01" value="0.85"></label>
+      <p class="hint" id="seamThicknessNote">Scoring is the strongest lever in the model: wall stress
+        rises as 1/t for hoop tension and 1/t² for bending, so the net wall left at the seam decides
+        whether a root can release the pod at all.</p>
+      <label>Seam width <span class="unit">degrees</span> <output id="o_seam_width_deg">50</output>
+        <input type="range" id="seam_width_deg" min="10" max="80" step="2" value="50"></label>
       <label>Seam rotation <span class="unit">degrees</span> <output id="o_theta_offset_deg">0</output>
         <input type="range" id="theta_offset_deg" min="-45" max="45" step="1" value="0"></label>
     </section>
@@ -287,8 +289,10 @@
         <input type="range" id="contact_stiffness" min="5" max="40" step="1" value="20"></label>
       <label>Simulation length <span class="unit">steps</span> <output id="o_n_time_steps">120</output>
         <input type="range" id="n_time_steps" min="60" max="160" step="5" value="120"></label>
-      <label>Planting-team pull assist <output id="o_pull_assist">0</output>
-        <input type="range" id="pull_assist" min="0" max="4" step="0.2" value="0"></label>
+      <label>Planting-team pull assist <span class="unit">MPa</span> <output id="o_pull_assist">0</output>
+        <input type="range" id="pull_assist" min="0" max="1" step="0.05" value="0"></label>
+      <p class="hint">An extra bearing pressure applied below the waist, standing in for a
+        planting team helping the pod open at outplanting.</p>
     </section>
   </div>
 </div>
@@ -317,10 +321,10 @@
   </div>
 </div>
 
-<script src="data/pod.js?v=38"></script>
-<script src="data/pieces.js?v=38"></script>
-<script src="data/podviz.js?v=38"></script>
-<script src="static/engine.js?v=38"></script>
-<script src="static/app.js?v=38"></script>
+<script src="data/pod.js?v=39"></script>
+<script src="data/pieces.js?v=39"></script>
+<script src="data/podviz.js?v=39"></script>
+<script src="static/engine.js?v=39"></script>
+<script src="static/app.js?v=39"></script>
 </body>
 </html>

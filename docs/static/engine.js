@@ -158,27 +158,60 @@ const G_DEFAULT = {
 const S_DEFAULT = {
   n_time_steps: 120, growth_fraction: 0.6, maturation: 30, swell_rate: 0.012,
   max_swell: 2.6, contact_stiffness: 20, base_wedge: 0.6, contact_patch_factor: 1.6,
-  min_patch_radius: 7, dt: 1, span_frac: 0.6, hoop_factor: 0.9,
+  min_patch_radius: 7, dt: 1, span_frac: 0.6,
   breakthrough_frac: 0.75, pull_assist: 0,
 };
 const MAT_PARAMS = {
-  yield_stress: 1, slot_tip_scf: 3, split_scf: 1.8, tip_zone: 22,
+  slot_tip_scf: 3, split_scf: 1.8, tip_zone: 22,
   ligament_halfwidth_deg: 26,
 };
 
 // ---------------------------------------------------------------------------
+//  PHYSICAL SCALE + WALL MECHANICS
+// ---------------------------------------------------------------------------
+//  The Rhino model is authored in MILLIMETRES: the pod is 333.7 units tall
+//  (334 mm), its bore is ⌀25.6 mm at the waist (a Rhizophora propagule is
+//  ~15-25 mm across) and the feet span ⌀210 mm. Every pressure and stress below
+//  is therefore a real MPa (N/mm²) — not a surrogate unit.
+//
+//  Wall stress under a locally-bearing root, per inner face:
+//
+//      σ = SCF · p · [  r_bore / t_eff        <- membrane hoop (thin shell)
+//                     + β · (L_b / t_eff)² ]  <- transverse plate bending
+//
+//  where t_eff is the NET section left after scoring, and L_b is the span the
+//  bending reacts over. An unscored shell is continuous, so local bending decays
+//  over the shell boundary layer √(r·t); scoring vertical seams turns the wall
+//  into panels hinged at the scores, and the whole sector width then reacts at
+//  the hinge. L_b blends between the two with scoring depth. This is what gives
+//  scoring its real, dominant t⁻² leverage.
+// ---------------------------------------------------------------------------
+const MM_PER_UNIT = 1.0;
+// Clamped rectangular plate, peak bending stress σ = β·p·(L/t)² (Roark, clamped
+// edges, a/b ≈ 1 → β ≈ 0.308).
+const PLATE_BETA = 0.31;
+// Static fatigue / subcritical crack growth: at σ = σ_f the section ruptures in
+// T_REF_MONTHS; below that, time-to-rupture scales as (σ_f/σ)^n.
+const T_REF_MONTHS = 0.5;
+const MIN_T_EFF_MM = 0.15;          // a score cannot thin the wall below this
+const NET_SECTION_FLOOR = 0.12;     // cap on net-section amplification (≈8×)
+// Indentation at which a swelling root develops its full bearing pressure. Tied
+// to the "contact stiffness" control so that slider keeps its meaning: a stiffer
+// contact reaches full pressure after a smaller indentation.
+function contactRefMm(stiffness) { return clip(10 / Math.max(stiffness, 1e-3), 0.12, 4); }
+
+// ---------------------------------------------------------------------------
 //  materials / species / provenance  (data + coupling)
 // ---------------------------------------------------------------------------
-const REF_FRACTURE_MPA = 55, REF_ROOT_PRESSURE_MPA = 0.75, STRENGTH_SENSITIVITY = 0.9;
+const REF_ROOT_PRESSURE_MPA = 0.75;
 
 const MATERIALS = {
   // PHA / PHBV — genuinely marine-biodegradable; the calibration reference
-  // material (fracture strength == REF_FRACTURE_MPA, so it reproduces the
-  // original calibration and its mechanical behaviour is unchanged from the old
-  // combined "bioplastic" preset).
+  // material — the design-intent baseline this whole project is built around.
   pha: {
     key: "pha", name: "PHA / PHBV (marine-degradable)",
     fracture_strength_mpa: 55, fracture_range_mpa: [40, 75], stiffness_mpa: 2800,
+    fatigue_exponent: 12,   // ductile-ish polymer: slow crack growth, forgiving
     wet_strength_loss_per_month: 0.05, biodegradable: true,
     biodegradability: "Marine-biodegradable — months to ~1 yr",
     biodegradability_note: "PHA (incl. PHBV) genuinely biodegrades in seawater — field studies show full marine degradation on the order of months to a few years (within ~1 yr for some formulations), depending on thickness, formulation and site. This is the design-intent baseline that holds shape, then dissolves to release the seedling. Estimate — verify with immersion testing.",
@@ -190,6 +223,7 @@ const MATERIALS = {
   pla: {
     key: "pla", name: "PLA (industrial-compost only)",
     fracture_strength_mpa: 90, fracture_range_mpa: [70, 110], stiffness_mpa: 3500,
+    fatigue_exponent: 14,   // stiffer, more brittle polymer than PHA
     wet_strength_loss_per_month: 0.006, biodegradable: false,
     biodegradability: "NOT marine-degradable — industrial composting only",
     biodegradability_note: "PLA does NOT reliably biodegrade in ambient marine or soil conditions — it needs the elevated heat of industrial composting. In side-by-side testing PLA did not meet standard marine-biodegradation thresholds where PHA did. It persists in seawater over the establishment window. Estimate.",
@@ -200,6 +234,7 @@ const MATERIALS = {
   clay: {
     key: "clay", name: "Clay (low-fired earthenware)",
     fracture_strength_mpa: 6, fracture_range_mpa: [1, 25], stiffness_mpa: 8000,
+    fatigue_exponent: 30,   // ceramic static fatigue — very sharp threshold
     strength_note: "Flexural strength across fired-clay studies spans roughly 1–25 MPa; true low-fired earthenware sits toward the LOW/weak end (intentionally more porous and less vitrified than higher-fired stoneware), so ~6 MPa is more representative than the mid-range. Treat the low end as the working value; verify by testing notched samples.",
     wet_strength_loss_per_month: 0.03, biodegradable: true,
     biodegradability: "Inert mineral — environmentally benign",
@@ -210,6 +245,7 @@ const MATERIALS = {
   concrete: {
     key: "concrete", name: "Concrete (unreinforced, thin-wall)",
     fracture_strength_mpa: 4, fracture_range_mpa: [3, 6], stiffness_mpa: 25000,
+    fatigue_exponent: 24,   // concrete static fatigue
     wet_strength_loss_per_month: 0.004, biodegradable: false,
     biodegradability: "Not biodegradable — persistent",
     biodegradability_note: "LEAST biodegradable option. Persists in the marine environment for decades; alkaline leachate can locally raise pH. Cracks in tension at a scored seam, but the fragments remain. Not recommended for leave-in-place / dissolving pod designs. Estimate.",
@@ -218,13 +254,9 @@ const MATERIALS = {
     blurb: "Durable and cheap, but persistent. Weak in tension so a thin scored seam still cracks.",
   },
 };
-function matStrengthScale(m) { return Math.pow(m.fracture_strength_mpa / REF_FRACTURE_MPA, STRENGTH_SENSITIVITY); }
 function matDegrade(m, months) { return Math.max(0.05, 1 - m.wet_strength_loss_per_month * Math.max(months, 0)); }
 function materialCard(m) {
-  return Object.assign({}, m, {
-    strength_scale: Math.round(matStrengthScale(m) * 1000) / 1000,
-    estimate_disclaimer: "Engineering estimate — requires lab verification.",
-  });
+  return Object.assign({}, m, { estimate_disclaimer: "Engineering estimate — requires lab verification." });
 }
 
 const SPECIES = {
@@ -249,6 +281,10 @@ function spForceRamp(sp, frac) {
   frac = clip(frac, 0, 1);
   return sp.ramp_base + (sp.ramp_peak - sp.ramp_base) * Math.pow(frac, sp.ramp_exp);
 }
+// Same concave slow-start shape, normalised to 1.0 at maturity, so the root
+// pressure the user sets IS the peak turgor-limited pressure a root can exert
+// rather than something the ramp overshoots.
+function spForceRampNorm(sp, frac) { return spForceRamp(sp, frac) / sp.ramp_peak; }
 function spGrowthMod(sp, sal) {
   if (sal === null || sal === undefined) return 1;
   const [lo, hi] = sp.salinity_optimum_ppt;
@@ -278,17 +314,26 @@ function physFromCfg(cfg) {
   const a = (cfg.calibration_area_mm2 === "" || cfg.calibration_area_mm2 == null) ? null : +cfg.calibration_area_mm2;
   let active = !!cfg.calibration_active && !!(f && a);
   if (active) p = f / Math.max(a, 1e-6);
-  return { material, species, root_pressure_mpa: p, salinity_ppt: sal, calibration_active: active };
+  // sigma_f_mpa / thickness_factor let Monte Carlo sample the published strength
+  // range and a wall-thickness tolerance without disturbing the nominal run.
+  return {
+    material, species, root_pressure_mpa: p, salinity_ppt: sal, calibration_active: active,
+    sigma_f_mpa: cfg.sigma_f_mpa != null ? +cfg.sigma_f_mpa : material.fracture_strength_mpa,
+    thickness_factor: cfg.thickness_factor != null ? +cfg.thickness_factor : 1,
+    fatigue_n: material.fatigue_exponent || 15,
+  };
 }
 function physLoadFactor(ph) { return ph.root_pressure_mpa / REF_ROOT_PRESSURE_MPA; }
+// Per-step drive (MPa of available root bearing pressure) and capacity (MPa of
+// remaining fracture strength after wet degradation), plus the real elapsed
+// months each step lands on.
 function physPerStep(ph, T) {
   const drive = new Float64Array(T), cap = new Float64Array(T), months = new Float64Array(T);
-  const lf = physLoadFactor(ph), ss = matStrengthScale(ph.material);
   for (let t = 1; t <= T; t++) {
     const fr = t / T;
-    drive[t - 1] = lf * spForceRamp(ph.species, fr);
+    drive[t - 1] = ph.root_pressure_mpa * spForceRampNorm(ph.species, fr);
     months[t - 1] = spElapsedMonths(ph.species, fr, ph.salinity_ppt);
-    cap[t - 1] = ss * matDegrade(ph.material, months[t - 1]);
+    cap[t - 1] = Math.max(ph.sigma_f_mpa * matDegrade(ph.material, months[t - 1]), 1e-6);
   }
   return { drive, cap, months };
 }
@@ -298,7 +343,8 @@ function physSummary(ph) {
     species: ph.species.key, species_name: ph.species.name,
     root_pressure_mpa: +ph.root_pressure_mpa.toFixed(3), salinity_ppt: ph.salinity_ppt,
     calibration_active: ph.calibration_active, window_months: ph.species.window_months,
-    load_factor: +physLoadFactor(ph).toFixed(3), strength_scale: +matStrengthScale(ph.material).toFixed(3),
+    load_factor: +physLoadFactor(ph).toFixed(3),
+    sigma_f_mpa: +ph.sigma_f_mpa.toFixed(2), fatigue_n: ph.fatigue_n,
   };
 }
 
@@ -320,19 +366,24 @@ function C(key, label, value, unit, level, citation, note, group) {
 function buildRegistry(cfg) {
   const ph = physFromCfg(cfg || {});
   const f = POD.features, cs = [];
-  cs.push(C("model_type", "Failure model", "Reduced-order engineering surrogate (not FEA)", "", "calibrated", "This project's own transparent model.", "Calibrated for RELATIVE comparison of designs/materials and to locate failure hot-spots - not for absolute load numbers. An FEA cross-check is recommended before trusting absolute margins.", "model"));
-  cs.push(C("root_pressure_working_range", "Root-pressure working range (default)", "0.5 - 1.0", "MPa", "estimate", "General plant/tree root biomechanics literature (NOT mangrove-specific).", "Grounded proxy: general max axial root growth pressure ~0.1-1.0 MPa (turgor-limited), with ~0.5-0.6 MPa commonly cited for fully impeded roots; tree-specific values reach ~0.91 MPa radial / ~1.45 MPa axial. Treat as a STARTING POINT pending physical validation.", "root force"));
-  cs.push(C("contact_stiffness", "Root contact stiffness", "20 (surrogate units)", "", "calibrated", "Chosen for sensible relative behaviour.", "Pressure per unit radial penetration of the swelling root into the wall. Scaled by (root pressure / reference) so the physical slider drives it; the base number itself is not a measured quantity.", "root force"));
+  cs.push(C("model_type", "Failure model", "Reduced-order shell mechanics (not FEA)", "", "calibrated", "This project's own transparent model.", "Wall stress is computed from thin-shell hoop tension plus transverse plate bending on the NET section left after scoring, then compared with the material's remaining fracture strength both instantaneously and through a static-fatigue damage integral. Real MPa throughout, but a reduced-order surrogate: an FEA cross-check is recommended before trusting absolute margins.", "model"));
+  cs.push(C("unit_scale", "Model unit scale", `1 unit = ${MM_PER_UNIT} mm`, "", "geometry", "Read off the Rhino model's own dimensions.", `The pod measures ${f.height.toFixed(0)} units tall with a ${(2 * f.inner_r_waist).toFixed(0)}-unit bore — i.e. a ${(f.height * MM_PER_UNIT).toFixed(0)} mm pod around a ⌀${(2 * f.inner_r_waist * MM_PER_UNIT).toFixed(0)} mm propagule. THE SINGLE MOST LOAD-BEARING ASSUMPTION IN THE TOOL: every stress below scales with it. Confirm it against the physical prototype.`, "model"));
+  cs.push(C("stress_formula", "Wall stress relation", "σ = SCF · p · [ r/t + β·(L/t)² ]", "MPa", "calibrated", "Standard thin-shell + flat-plate relations, combined by this project.", "Membrane hoop stress on a pressurised shell superposed with the transverse bending of the wall panel. Superposition of the two is the modelling choice; each term on its own is textbook.", "model"));
+  cs.push(C("plate_beta", "Plate bending coefficient β", String(PLATE_BETA), "", "literature", "Roark's Formulas for Stress and Strain — clamped rectangular plate, a/b ≈ 1.", "Peak bending stress under uniform pressure, σ = β·q·b²/t².", "model"));
+  cs.push(C("bending_span", "Bending span L", "√(r·t) unscored → sector width when scored", "mm", "calibrated", "Shell boundary-layer length vs. hinged-panel width; blend is this project's choice.", "A continuous shell localises bending to its boundary layer √(r·t). Once the vertical seams are scored the wall hinges there and the whole sector between two seams reacts at the score, which is why scoring dominates the result.", "model"));
+  cs.push(C("root_pressure_working_range", "Root-pressure working range (default)", "0.5 - 1.0", "MPa", "estimate", "General plant/tree root biomechanics literature (NOT mangrove-specific).", "Grounded proxy: general max axial root growth pressure ~0.1-1.0 MPa (turgor-limited), with ~0.5-0.6 MPa commonly cited for fully impeded roots; tree-specific values reach ~0.91 MPa radial / ~1.45 MPa axial. This is now a HARD CAP in the model: however far a root swells, it can never bear harder than this. Treat as a STARTING POINT pending physical validation.", "root force"));
+  cs.push(C("contact_stiffness", "Contact engagement depth δ₀", contactRefMm(20).toFixed(2), "mm", "calibrated", "Chosen for sensible relative behaviour.", "Indentation at which a swelling root reaches its full bearing pressure, p = p_root·(1 − e^(−δ/δ₀)). Driven by the 'wall contact stiffness' control. Not a measured quantity.", "root force"));
   cs.push(C("slot_tip_scf", "Stress-concentration factor at slot tips", "3.0", "x", "estimate", "Order-of-magnitude fracture-mechanics estimate for a rounded notch.", "Real value depends on tip radius and material; verify with FEA / a notched-sample test.", "failure"));
+  cs.push(C("fatigue_exponent", `Static-fatigue exponent n (${ph.material.name})`, String(ph.fatigue_n), "", "estimate", "Subcritical crack-growth exponents for the material class.", "Time to rupture scales as (σ_f/σ)^n, so a wall held just under strength still fails eventually and one held well under it never does. Ceramics/concrete sit high (20-40, very sharp threshold); polymers lower (8-15). Class-level estimate — verify with sustained-load testing.", "failure"));
+  cs.push(C("t_ref_months", "Static-fatigue reference time", String(T_REF_MONTHS), "months", "calibrated", "Modelling choice.", "Time to rupture when stress exactly equals the remaining fracture strength. Sets the absolute pace of the delayed-failure branch.", "failure"));
+  cs.push(C("net_section", "Net-section amplification", `1 / (1 − φ), capped at ${(1 / NET_SECTION_FLOOR).toFixed(0)}×`, "", "calibrated", "Net-section stress principle.", "Once a fraction φ of a seam's bands have cracked, the survivors carry the whole section. This is what makes a crack initiate at the slot-tip hot spot and then RUN across the ligament rather than stalling.", "failure"));
   cs.push(C("span_frac", "Seam tear criterion (crack span)", "0.6", "fraction", "calibrated", "Chosen so a taller bridge is genuinely harder to sever.", "A slot->foot seam/ligament 'tears' once failed faces span this fraction of its stacked z-bands.", "failure"));
   cs.push(C("breakthrough_frac", "Breakthrough criterion", "0.75", "fraction", "calibrated", "Design choice.", "Pod 'breaks through' once this fraction of the 4 seams have torn - the point it can release into petals.", "failure"));
-  cs.push(C("geom_height", "Pod height", f.height.toFixed(1), "model units (~11x a 30 cm propagule)", "geometry", "Measured off mangrovepod.3dm.", "", "geometry"));
-  cs.push(C("geom_wall", "Median wall thickness", f.wall_thickness_median.toFixed(1), "model units", "geometry", "Measured off mangrovepod.3dm.", "Local thickness sets each face's baseline capacity.", "geometry"));
+  cs.push(C("geom_height", "Pod height", (f.height * MM_PER_UNIT).toFixed(0), "mm", "geometry", "Measured off mangrovepod.3dm.", "", "geometry"));
+  cs.push(C("geom_wall", "Median wall thickness", (f.wall_thickness_median * MM_PER_UNIT).toFixed(1), "mm", "geometry", "Measured off mangrovepod.3dm.", "Local thickness sets the net section that carries the root load — the single most sensitive geometric input.", "geometry"));
+  cs.push(C("geom_bore", "Bore diameter at the waist", (2 * f.inner_r_waist * MM_PER_UNIT).toFixed(1), "mm", "geometry", "Measured off mangrovepod.3dm.", "The lever arm for hoop stress, and the space the propagule has to thicken into.", "geometry"));
   cs.push(C("geom_slots", "Detected waist slots", String(f.slots.length), "count", "geometry", "Auto-detected from the mesh.", "", "geometry"));
   cs.push(C("geom_feet", "Detected base feet", String(f.feet.length), "count", "geometry", "Auto-detected from the mesh.", "", "geometry"));
-  cs.push(C("ref_root_pressure", "Reference root pressure (surrogate anchor)", String(REF_ROOT_PRESSURE_MPA), "MPa", "calibrated", "Mid-point of the grounded working range.", "Root pressure enters the surrogate only as pressure/this-reference; at this value the drive equals the original calibration.", "coupling"));
-  cs.push(C("ref_fracture", "Reference fracture strength (surrogate anchor)", String(REF_FRACTURE_MPA), "MPa", "calibrated", "PHA flexural-strength estimate (see materials).", `Seam capacity scales as (material strength / this reference) ^ ${STRENGTH_SENSITIVITY}; PHA reproduces the original calibration.`, "coupling"));
-  cs.push(C("strength_sensitivity", "Strength-to-capacity sensitivity", String(STRENGTH_SENSITIVITY), "exponent", "calibrated", "Modelling choice.", "Compresses the between-material capacity spread in this reduced-order surrogate. A tunable modelling knob, not a physical constant.", "coupling"));
   // material entries
   const m = ph.material, lo = m.fracture_range_mpa[0], hi = m.fracture_range_mpa[1];
   const strengthNote = m.strength_note || "NOT a datasheet value and NOT measured on a pod. Sets seam capacity relative to the reference material. Verify by testing notched samples.";
@@ -395,6 +446,24 @@ function grow(gp, seed) {
   // cell = influence_radius so any node within influence of an attractor is found
   // in a single 3x3x3 ring scan (capped) — avoids pathological ring expansion.
   const cell = gp.influence_radius;
+  // Attractors never move, so index them ONCE. The kill pass then only has to
+  // ask "which attractors are near each NEW node" instead of rebuilding a node
+  // grid and running a nearest-neighbour query for every surviving attractor
+  // every step. Identical results — an attractor that survived the previous
+  // step can only be killed by a node added since.
+  const apos = new Float64Array(attr.n * 3);
+  for (let a = 0; a < attr.n; a++) { apos[3 * a] = attr.x[a]; apos[3 * a + 1] = attr.y[a]; apos[3 * a + 2] = attr.z[a]; }
+  const attrGrid = new Grid(apos, attr.n, Math.max(gp.kill_radius, 1));
+  // Cursor over nodes not yet used for a kill test. On the first pass this
+  // covers the seed nodes too, so the pass happens at exactly the same point in
+  // the sequence as the original whole-grid rebuild did.
+  let killCursor = 0;
+  const killPass = () => {
+    for (; killCursor < nx.length; killCursor++) {
+      const near = attrGrid.ball(nx[killCursor], ny[killCursor], nz[killCursor], gp.kill_radius);
+      for (let t = 0; t < near.length; t++) { const a = near[t]; if (aAlive[a]) { aAlive[a] = 0; remaining--; } }
+    }
+  };
   for (let step = 1; step <= gp.max_steps; step++) {
     if (remaining === 0) break;
     const npos = new Float64Array(nx.length * 3);
@@ -446,14 +515,7 @@ function grow(gp, seed) {
     }
     if (!newNodes.length) break;
     for (const [ni, px, py, pz] of newNodes) add(px, py, pz, ni, step);
-    const npos2 = new Float64Array(nx.length * 3);
-    for (let i = 0; i < nx.length; i++) { npos2[3 * i] = nx[i]; npos2[3 * i + 1] = ny[i]; npos2[3 * i + 2] = nz[i]; }
-    const grid2 = new Grid(npos2, nx.length, cell);
-    for (let a = 0; a < attr.n; a++) {
-      if (!aAlive[a]) continue;
-      const q = grid2.nearest(attr.x[a], attr.y[a], attr.z[a], 1);
-      if (q.dist <= gp.kill_radius) { aAlive[a] = 0; remaining--; }
-    }
+    killPass();
   }
   // pipe-model radii
   const n = nx.length, rad = new Float64Array(n).fill(gp.tip_radius);
@@ -520,7 +582,7 @@ function buildFields(pat) {
   const inner = POD.innerMask, thickness = POD.thickness;
   const z_base_top = POD.features.z_base_top;
   const open_frac = new Float64Array(nF), scf = new Float64Array(nF).fill(1);
-  const ligament = new Int32Array(nF).fill(-1), ligScale = new Float64Array(nF).fill(1);
+  const ligament = new Int32Array(nF).fill(-1);
   const thd = new Float64Array(nF);
   for (let i = 0; i < nF; i++) thd[i] = th[i] * 180 / Math.PI;
   for (let si = 0; si < pat.slots.length; si++) {
@@ -539,11 +601,9 @@ function buildFields(pat) {
     }
     let halfw = Math.max(m.ligament_halfwidth_deg, s.width_deg * 0.8);
     if (pat.seam_width_deg > 0) halfw = Math.max(halfw, pat.seam_width_deg / 2);
-    const lw = 1 - 0.4 * clip(s.width_deg / 90, 0, 0.6);
     for (let i = 0; i < nF; i++) {
-      if (inner[i] && angdiff(thd[i], s.theta_deg) < halfw && z[i] < s.z_lo && z[i] > z_base_top) {
-        ligament[i] = si; ligScale[i] = lw;
-      }
+      if (inner[i] && angdiff(thd[i], s.theta_deg) < halfw && z[i] < s.z_lo && z[i] > z_base_top)
+        ligament[i] = si;
     }
   }
   for (const sp of pat.split_lines) {
@@ -564,12 +624,25 @@ function buildFields(pat) {
       for (let i = 0; i < nF; i++)
         if (inner[i] && angdiff(thd[i], s.theta_deg) < shw) weaken[i] = Math.max(weaken[i], pat.seam_score);
   }
-  const strength = new Float64Array(nF);
+  // ---- section geometry, in millimetres -----------------------------------
+  //  t_eff  net wall left after scoring — this is what carries the load
+  //  r_bore local inner radius (the lever arm for membrane hoop stress)
+  //  span   the length the transverse bending reacts over: a continuous shell
+  //         localises bending to its boundary layer √(r·t), but once the
+  //         vertical seams are scored the wall hinges there and the whole
+  //         sector between two seams reacts at the score.
+  const t_eff = new Float64Array(nF), span = new Float64Array(nF), r_bore = new Float64Array(nF);
+  const nPieces = Math.max(pat.slots.length, 2), sectorRad = 2 * Math.PI / nPieces;
   for (let i = 0; i < nF; i++) {
-    let v = thickness[i] * m.yield_stress * (1 - open_frac[i]) * (1 - weaken[i]) * ligScale[i];
-    if (!inner[i]) v = Infinity;
-    if (open_frac[i] > 0.5) v = 1e-6;
-    strength[i] = v;
+    const t0 = Math.max(thickness[i] * MM_PER_UNIT, MIN_T_EFF_MM);
+    const rb = Math.max(rInnerAt(z[i]) * MM_PER_UNIT, 1);
+    const score = clip(weaken[i], 0, 0.98);
+    const te = Math.max(t0 * (1 - score), MIN_T_EFF_MM);
+    const hinge = _sstep(score / 0.6);
+    const lShell = Math.sqrt(rb * t0);              // shell bending boundary layer
+    const lSector = sectorRad * (rb + 0.5 * t0);    // hinged-panel width at mid-wall
+    t_eff[i] = te; r_bore[i] = rb;
+    span[i] = _lerp(lShell, lSector, hinge);
   }
   const split_site = new Int32Array(nF).fill(-1);
   for (let spi = 0; spi < pat.split_lines.length; spi++) {
@@ -580,7 +653,8 @@ function buildFields(pat) {
   }
   const labels = pat.slots.map(s => `slot@${s.theta_deg.toFixed(0)}°`)
     .concat(pat.split_lines.map(s => `split@${s.theta_deg.toFixed(0)}°`));
-  return { open_frac, strength, scf, ligament, split_site, n_slots: pat.slots.length, n_splits: pat.split_lines.length, labels, pattern: pat };
+  return { open_frac, t_eff, span, r_bore, weaken, scf, ligament, split_site,
+    n_slots: pat.slots.length, n_splits: pat.split_lines.length, labels, pattern: pat };
 }
 
 // ---------------------------------------------------------------------------
@@ -589,12 +663,16 @@ function buildFields(pat) {
 function buildWallModel(wall) {
   const innerIdx = POD.innerIdx, nIn = innerIdx.length;
   const Cin = new Float64Array(nIn * 3);
-  const strength_in = new Float64Array(nIn), scf_in = new Float64Array(nIn), z_in = new Float64Array(nIn), r_in = new Float64Array(nIn);
+  const scf_in = new Float64Array(nIn), z_in = new Float64Array(nIn), r_in = new Float64Array(nIn);
+  const t_in = new Float64Array(nIn), span_in = new Float64Array(nIn), rb_in = new Float64Array(nIn);
+  const open_in = new Float64Array(nIn), score_in = new Float64Array(nIn);
   const lig = new Int32Array(nIn), split = new Int32Array(nIn);
   for (let l = 0; l < nIn; l++) {
     const g = innerIdx[l];
     Cin[3 * l] = POD.cx[g]; Cin[3 * l + 1] = POD.cy[g]; Cin[3 * l + 2] = POD.cz[g];
-    strength_in[l] = wall.strength[g]; scf_in[l] = wall.scf[g];
+    scf_in[l] = wall.scf[g];
+    t_in[l] = wall.t_eff[g]; span_in[l] = wall.span[g]; rb_in[l] = wall.r_bore[g];
+    open_in[l] = wall.open_frac[g]; score_in[l] = wall.weaken[g];
     z_in[l] = POD.zFace[g]; r_in[l] = POD.rFace[g];
     lig[l] = wall.ligament[g]; split[l] = wall.split_site[g];
   }
@@ -603,23 +681,35 @@ function buildWallModel(wall) {
   const site_faces = [], is_lig = [];
   for (let si = 0; si < n_slots; si++) { const fs = []; for (let l = 0; l < nIn; l++) if (lig[l] === si) fs.push(l); site_faces.push(fs); is_lig.push(true); }
   for (let spi = 0; spi < n_splits; spi++) { const fs = []; for (let l = 0; l < nIn; l++) if (split[l] === spi) fs.push(l); site_faces.push(fs); is_lig.push(false); }
+  // Every site (slot ligament AND base split) is banded up its height, so both
+  // fail by the same physical rule: a crack has to run across the section, not
+  // just nick it somewhere.
   const band_h = 12, site_band = new Array(n_sites).fill(null), site_nbands = new Int32Array(n_sites).fill(1);
   for (let si = 0; si < n_sites; si++) {
-    const fs = site_faces[si]; if (!is_lig[si] || !fs.length) continue;
+    const fs = site_faces[si]; if (!fs.length) continue;
     let zlo = Infinity, zhi = -Infinity; for (const l of fs) { if (z_in[l] < zlo) zlo = z_in[l]; if (z_in[l] > zhi) zhi = z_in[l]; }
     const K = Math.max(3, Math.round((zhi - zlo) / band_h));
     const b = new Int32Array(fs.length);
     for (let t = 0; t < fs.length; t++) b[t] = clip(Math.floor((z_in[fs[t]] - zlo) / Math.max(zhi - zlo, 1e-6) * K), 0, K - 1);
     site_band[si] = b; site_nbands[si] = K;
   }
-  const split_capacity = new Float64Array(n_sites).fill(Infinity);
-  for (let si = 0; si < n_sites; si++) {
-    if (is_lig[si]) continue;
-    const fs = site_faces[si]; if (!fs.length) continue;
-    let cap = 0; for (const l of fs) if (isFinite(strength_in[l])) cap += strength_in[l];
-    split_capacity[si] = cap > 0 ? cap : Infinity;
-  }
-  return { innerIdx, nIn, Cin, grid, strength_in, scf_in, z_in, r_in, n_slots, n_splits, n_sites, labels: wall.labels, site_faces, is_lig, site_band, site_nbands, split_capacity };
+  // reverse index: which site (if any) each inner face belongs to, so the
+  // net-section amplification can be looked up per face in the time loop
+  const face_site = new Int32Array(nIn).fill(-1);
+  for (let si = 0; si < n_sites; si++) for (const l of site_faces[si]) face_site[l] = si;
+  return { innerIdx, nIn, Cin, grid, scf_in, z_in, r_in, t_in, span_in, rb_in, open_in, score_in,
+    n_slots, n_splits, n_sites, labels: wall.labels, site_faces, is_lig, site_band, site_nbands, face_site };
+}
+// Wall stress (MPa) at one inner face under bearing pressure p (MPa): membrane
+// hoop on the net section + transverse plate bending over its reacting span,
+// amplified by the local stress-concentration factor and by the net-section
+// loss where part of the site has already cracked. `tf` is a wall-thickness
+// tolerance factor (1 = nominal) used by the Monte Carlo sweep.
+function wallStress(wm, l, p, amp, tf) {
+  if (p <= 0 || wm.open_in[l] > 0.5) return 0;
+  const te = Math.max(wm.t_in[l] * (tf || 1), MIN_T_EFF_MM);
+  const sl = wm.span_in[l] / te;
+  return wm.scf_in[l] * amp * p * (wm.rb_in[l] / te + PLATE_BETA * sl * sl);
 }
 
 function nodeRadius(pipe, age, sp) {
@@ -628,11 +718,25 @@ function nodeRadius(pipe, age, sp) {
   return pipe * mature * swell;
 }
 
+// ---------------------------------------------------------------------------
+//  The wall simulation.
+//
+//  Each step: every live root node develops a turgor-BOUNDED bearing pressure
+//  (a root physically cannot push harder than its growth pressure, however far
+//  it swells), that pressure is summed over the faces it bears on, converted to
+//  a real MPa wall stress by hoop + plate bending on the net scored section,
+//  and then compared with the material's remaining fracture strength — both
+//  instantaneously (brittle overload) and through a power-law static-fatigue
+//  damage integral in REAL months, so a wall held just under its strength still
+//  fails eventually and one held well under it never does.
+//
+//  As bands of a seam crack, the surviving bands carry the whole section, so
+//  their stress is amplified by 1/(1-φ). That is what makes a crack initiate at
+//  the slot-tip hot spot and then RUN across the ligament.
+// ---------------------------------------------------------------------------
 function runSimulation(wm, roots, sp, ph, capFrames) {
   const T = sp.n_time_steps;
-  let drive, cap;
-  if (ph) { const ps = physPerStep(ph, T); drive = ps.drive; cap = ps.cap; }
-  else { drive = new Float64Array(T).fill(1); cap = new Float64Array(T).fill(1); }
+  const ps = physPerStep(ph, T), drive = ps.drive, cap = ps.cap, months = ps.months;
   const N = roots.n, Px = roots.nx, Py = roots.ny, Pz = roots.nz, pipe = roots.radius, birth = roots.birth;
   let maxBirth = 1; for (let i = 0; i < N; i++) if (birth[i] > maxBirth) maxBirth = birth[i];
   const birthTime = new Float64Array(N);
@@ -640,77 +744,213 @@ function runSimulation(wm, roots, sp, ph, capFrames) {
   const rNode = new Float64Array(N), rInnerHere = new Float64Array(N), baseNode = new Uint8Array(N);
   const zBase = POD.features.z_base_top;
   for (let i = 0; i < N; i++) { rNode[i] = Math.hypot(Px[i], Py[i]); rInnerHere[i] = rInnerAt(Pz[i]); baseNode[i] = Pz[i] < zBase * 1.25 ? 1 : 0; }
-  // contact matrix: per inner-face contributions [nodeIdx, weight]
+  // Contact kernel: a spatial falloff, NOT normalised to 1. Pressure is not
+  // divided between the faces a root bears on — it acts across all of them.
   const contrib = Array.from({ length: wm.nIn }, () => []);
   for (let j = 0; j < N; j++) {
     const pr = Math.max(sp.contact_patch_factor * pipe[j], sp.min_patch_radius);
     let fs = wm.grid.ball(Px[j], Py[j], Pz[j], pr);
     if (!fs.length) fs = [wm.grid.nearest(Px[j], Py[j], Pz[j]).idx];
-    const w = new Float64Array(fs.length); let wsum = 0;
     for (let t = 0; t < fs.length; t++) {
       const l = fs[t], dx = wm.Cin[3 * l] - Px[j], dy = wm.Cin[3 * l + 1] - Py[j], dz = wm.Cin[3 * l + 2] - Pz[j];
       const d = Math.hypot(dx, dy, dz);
-      w[t] = Math.max(1 - d / Math.max(pr, 1e-6), 0.05); wsum += w[t];
+      contrib[l].push([j, clip(1 - d / Math.max(pr, 1e-6), 0.05, 1)]);
     }
-    for (let t = 0; t < fs.length; t++) contrib[fs[t]].push([j, w[t] / wsum]);
   }
-  const cum = new Float64Array(wm.nIn), peak = new Float64Array(wm.nIn);
-  const ratioHist = []; // not needed for UI beyond final; keep light
-  const activation = new Float64Array(wm.n_sites).fill(Infinity), order = [];
-  let baseWedgeCum = 0;
+  const delta0 = contactRefMm(sp.contact_stiffness);          // mm of indentation for full bearing
+  const pullMPa = Math.max(sp.pull_assist, 0);                // planting-team assist, MPa-equivalent
+  const nExp = ph.fatigue_n, tf = ph.thickness_factor;
   const z_waist_hi = POD.features.z_waist_hi;
+  const sigma = new Float64Array(wm.nIn), sigmaPeak = new Float64Array(wm.nIn), dmg = new Float64Array(wm.nIn);
+  const pPeak = new Float64Array(wm.nIn);   // peak bearing pressure per face — feeds the design guidance
+  const pressNode = new Float64Array(N);
+  const bandFailed = [], sitePhi = new Float64Array(wm.n_sites);
+  for (let si = 0; si < wm.n_sites; si++) bandFailed.push(new Uint8Array(wm.site_nbands[si]));
+  const activation = new Float64Array(wm.n_sites).fill(Infinity), order = [];
   const nLig = wm.n_slots, needed = Math.max(1, Math.ceil(nLig * sp.breakthrough_frac));
   let breakthrough = Infinity;
-  const pressNode = new Float64Array(N), stepPress = new Float64Array(wm.nIn);
+  // per-step traces for the results panel: peak wall stress and the remaining
+  // strength it is racing against, both in MPa
+  const sigSeries = new Float64Array(T), capSeries = new Float64Array(T);
+
   for (let t = 1; t <= T; t++) {
-    const dmult = drive[t - 1], cmult = cap[t - 1];
-    let wedgeSum = 0;
+    const pMax = drive[t - 1], sigF = cap[t - 1];
+    const dMonths = Math.max(months[t - 1] - (t > 1 ? months[t - 2] : 0), 0);
+    // --- 1. bearing pressure per root node (MPa, turgor-bounded) ---
     for (let i = 0; i < N; i++) {
-      const alive = birthTime[i] <= t;
-      if (!alive) { pressNode[i] = 0; continue; }
+      if (birthTime[i] > t) { pressNode[i] = 0; continue; }
       const age = t - birthTime[i], rad = nodeRadius(pipe[i], age, sp);
       const pen = (rNode[i] + rad) - rInnerHere[i];
-      const radial = sp.contact_stiffness * Math.max(pen, 0);
-      const wedge = baseNode[i] ? sp.base_wedge * rad : 0;
-      pressNode[i] = (radial + wedge) * dmult;
-      wedgeSum += wedge;
+      if (pen <= 0) { pressNode[i] = 0; continue; }
+      // engagement saturates: once the root has indented the bore by a few
+      // δ₀ it is bearing at its full growth pressure and can push no harder
+      const engage = 1 - Math.exp(-pen * MM_PER_UNIT / delta0);
+      pressNode[i] = pMax * engage * (baseNode[i] ? 1 + sp.base_wedge : 1);
     }
-    baseWedgeCum += wedgeSum * dmult * sp.dt;
+    // --- 2. face pressure → stress → damage ---
+    let peakThisStep = 0;
     for (let l = 0; l < wm.nIn; l++) {
-      let s = 0; const cc = contrib[l];
-      for (let t2 = 0; t2 < cc.length; t2++) s += cc[t2][1] * pressNode[cc[t2][0]];
-      if (sp.pull_assist > 0 && wm.z_in[l] < z_waist_hi) s += sp.pull_assist;
-      stepPress[l] = s;
-      if (s > peak[l]) peak[l] = s;
-      cum[l] += s * sp.dt;
+      let p = 0; const cc = contrib[l];
+      for (let q = 0; q < cc.length; q++) p += cc[q][1] * pressNode[cc[q][0]];
+      if (pullMPa > 0 && wm.z_in[l] < z_waist_hi) p += pullMPa;
+      if (p > pMax + pullMPa) p = pMax + pullMPa;   // overlapping roots still cannot exceed turgor
+      if (p > pPeak[l]) pPeak[l] = p;
+      const si = wm.face_site[l];
+      // NOMINAL stress on the intact section — this is the design demand, and
+      // what the heatmap and the reported numbers show.
+      const s = wallStress(wm, l, p, 1, tf);
+      sigma[l] = s;
+      if (s > sigmaPeak[l]) sigmaPeak[l] = s;
+      if (s > peakThisStep) peakThisStep = s;
+      // Damage sees the net-section amplification instead: once bands of this
+      // seam have cracked, the survivors carry the whole section.
+      const amp = si >= 0 ? 1 / Math.max(1 - sitePhi[si], NET_SECTION_FLOOR) : 1;
+      const sAmp = s * amp;
+      if (sAmp > 0 && dmg[l] < 1) {
+        // brittle overload, then power-law subcritical crack growth
+        if (sAmp >= sigF) dmg[l] = 1;
+        else if (dMonths > 0) dmg[l] += Math.pow(sAmp / sigF, nExp) * dMonths / T_REF_MONTHS;
+      }
     }
-    // per-site failure
+    capSeries[t - 1] = sigF;
+    // --- 3. site state: which bands have cracked, and has the seam torn? ---
+    let govNow = Infinity;
     for (let si = 0; si < wm.n_sites; si++) {
       const fs = wm.site_faces[si]; if (!fs.length) continue;
-      let ratio;
+      const bands = wm.site_band[si], bf = bandFailed[si];
+      // the stress that decides this seam: the span_frac-th highest band stress
       if (wm.is_lig[si]) {
-        const bands = wm.site_band[si], seen = new Set();
-        for (let t2 = 0; t2 < fs.length; t2++) {
-          const l = fs[t2];
-          if (cum[l] * wm.scf_in[l] >= wm.strength_in[l] * cmult) seen.add(bands[t2]);
-        }
-        ratio = seen.size / wm.site_nbands[si];
-      } else {
-        ratio = (sp.hoop_factor * baseWedgeCum) / (wm.split_capacity[si] * cmult);
+        const nb = wm.site_nbands[si], bandMax = new Float64Array(nb);
+        for (let q = 0; q < fs.length; q++) { const b = bands[q]; if (sigma[fs[q]] > bandMax[b]) bandMax[b] = sigma[fs[q]]; }
+        const sorted = Array.from(bandMax).sort((a, b) => b - a);
+        const gi = clip(Math.ceil(sp.span_frac * nb) - 1, 0, nb - 1);
+        if (sorted[gi] < govNow) govNow = sorted[gi];
       }
-      const thresh = wm.is_lig[si] ? sp.span_frac : 1;
-      if (ratio >= thresh && !isFinite(activation[si])) { activation[si] = t; order.push(si); }
+      for (let q = 0; q < fs.length; q++) if (dmg[fs[q]] >= 1) bf[bands[q]] = 1;
+      let nf = 0; for (let b = 0; b < bf.length; b++) if (bf[b]) nf++;
+      sitePhi[si] = nf / wm.site_nbands[si];
+      if (sitePhi[si] >= sp.span_frac && !isFinite(activation[si])) { activation[si] = t; order.push(si); }
     }
+    sigSeries[t - 1] = isFinite(govNow) ? govNow : peakThisStep;
     let nActive = 0; for (let si = 0; si < nLig; si++) if (isFinite(activation[si])) nActive++;
     if (nActive >= needed && !isFinite(breakthrough)) breakthrough = t;
-    if (capFrames) capFrames.push(Float32Array.from(cum));   // per-step snapshot for playback
+    if (capFrames) capFrames.push(Float32Array.from(sigma));   // per-step MPa snapshot for playback
   }
   let firstSite = -1, firstStep = Infinity;
   for (let si = 0; si < wm.n_sites; si++) if (isFinite(activation[si]) && activation[si] < firstStep) { firstStep = activation[si]; firstSite = si; }
-  // scatter cum to full-face field
   const faceField = new Float64Array(POD.nF);
-  for (let l = 0; l < wm.nIn; l++) faceField[wm.innerIdx[l]] = cum[l];
-  return { faceField, activation, order, firstStep, firstSite, breakthrough, nNodes: N };
+  for (let l = 0; l < wm.nIn; l++) faceField[wm.innerIdx[l]] = sigma[l];
+  // headline engineering numbers: worst stress anywhere on a release seam, and
+  // how much of the material's remaining strength that uses up
+  let seamPeak = 0;
+  for (let si = 0; si < wm.n_sites; si++)
+    for (const l of wm.site_faces[si]) if (sigmaPeak[l] > seamPeak) seamPeak = sigmaPeak[l];
+  const sigFEnd = cap[T - 1];
+  return { faceField, sigmaPeak, pPeak, activation, order, firstStep, firstSite, breakthrough, nNodes: N,
+    sigSeries, capSeries, months, seam_peak_mpa: seamPeak, sigma_f_end_mpa: sigFEnd,
+    utilisation: seamPeak / Math.max(sigFEnd, 1e-9) };
+}
+
+// ---------------------------------------------------------------------------
+//  design guidance: how deep would the seams have to be scored?
+// ---------------------------------------------------------------------------
+//  Stress scales as 1/t for hoop and 1/t² for bending, so scoring is by far the
+//  strongest lever the designer has. Using the bearing pressure the run actually
+//  delivered to each ligament face, re-evaluate the section analytically for a
+//  sweep of candidate scoring depths and report the shallowest one at which a
+//  seam would tear across span_frac of its bands. Cheap — no extra simulation.
+// ---------------------------------------------------------------------------
+function seamScoreSweep(wm, res, ph, sp, pat) {
+  const sigF = res.sigma_f_end_mpa, nPieces = Math.max(pat.slots.length, 2);
+  const sectorRad = 2 * Math.PI / nPieces, out = [];
+  for (let s = 0; s <= 0.95001; s += 0.05) {
+    let torn = 0;
+    for (let si = 0; si < wm.n_sites; si++) {
+      if (!wm.is_lig[si]) continue;
+      const fs = wm.site_faces[si], bands = wm.site_band[si];
+      if (!fs.length) continue;
+      const bf = new Uint8Array(wm.site_nbands[si]);
+      for (let q = 0; q < fs.length; q++) {
+        const l = fs[q], p = res.pPeak[l];
+        if (p <= 0) continue;
+        const t0 = wm.t_in[l] / Math.max(1 - wm.score_in[l], 0.02);   // gross wall before scoring
+        const te = Math.max(t0 * (1 - s), MIN_T_EFF_MM);
+        const L = _lerp(Math.sqrt(wm.rb_in[l] * t0), sectorRad * (wm.rb_in[l] + 0.5 * t0), _sstep(s / 0.6));
+        const sl = L / te;
+        if (wm.scf_in[l] * p * (wm.rb_in[l] / te + PLATE_BETA * sl * sl) >= sigF) bf[bands[q]] = 1;
+      }
+      let nf = 0; for (let b = 0; b < bf.length; b++) if (bf[b]) nf++;
+      if (nf / wm.site_nbands[si] >= sp.span_frac) torn++;
+    }
+    out.push({ score: +s.toFixed(2), seams_torn: torn });
+  }
+  const needed = Math.max(1, Math.ceil(wm.n_slots * sp.breakthrough_frac));
+  const hit = out.find(o => o.seams_torn >= needed);
+  return { sweep: out, required_score: hit ? hit.score : null, seams_needed: needed };
+}
+// The stress that GOVERNS release, as opposed to the peak at the slot-tip
+// stress raiser. A seam only tears once cracking spans span_frac of its bands,
+// so the deciding stress is the span_frac-th highest band stress — and the pod
+// releases on whichever seam reaches that first. This is the number to compare
+// against material strength when asking "will it open?".
+function governingSeamStress(wm, res, sp) {
+  let out = Infinity;
+  for (let si = 0; si < wm.n_sites; si++) {
+    if (!wm.is_lig[si]) continue;
+    const fs = wm.site_faces[si], bands = wm.site_band[si], nb = wm.site_nbands[si];
+    if (!fs.length) continue;
+    const bandMax = new Float64Array(nb);
+    for (let q = 0; q < fs.length; q++) { const b = bands[q], v = res.sigmaPeak[fs[q]]; if (v > bandMax[b]) bandMax[b] = v; }
+    const sorted = Array.from(bandMax).sort((a, b) => b - a);
+    const idx = clip(Math.ceil(sp.span_frac * nb) - 1, 0, nb - 1);
+    if (sorted[idx] < out) out = sorted[idx];
+  }
+  return isFinite(out) ? out : 0;
+}
+// Net wall left at the seam for a given scoring depth, in mm — the number a
+// designer actually has to draw.
+function seamThicknessAt(wm, score) {
+  let sum = 0, n = 0;
+  for (let si = 0; si < wm.n_sites; si++) {
+    if (!wm.is_lig[si]) continue;
+    for (const l of wm.site_faces[si]) { sum += wm.t_in[l] / Math.max(1 - wm.score_in[l], 0.02); n++; }
+  }
+  return n ? (sum / n) * (1 - score) : null;
+}
+
+// Headline engineering numbers for the results panel.
+function mechanicsSummary(res, wm, ph, pat, sp) {
+  // net section left at the release seams, in mm
+  let tMin = Infinity, tSum = 0, nT = 0;
+  for (let si = 0; si < wm.n_sites; si++) {
+    if (!wm.is_lig[si]) continue;
+    for (const l of wm.site_faces[si]) { const t = wm.t_in[l] * ph.thickness_factor; if (t < tMin) tMin = t; tSum += t; nT++; }
+  }
+  const guide = sp ? seamScoreSweep(wm, res, ph, sp, pat) : null;
+  const gov = sp ? governingSeamStress(wm, res, sp) : res.seam_peak_mpa;
+  const util = gov / Math.max(res.sigma_f_end_mpa, 1e-9);
+  const sf = gov > 0 ? res.sigma_f_end_mpa / gov : Infinity;
+  return {
+    unit_mm: MM_PER_UNIT,
+    seam_stress_mpa: +gov.toFixed(2),        // governs whether the seam tears
+    peak_stress_mpa: +res.seam_peak_mpa.toFixed(2),   // local peak at the slot tip
+    tip_utilisation: +res.utilisation.toFixed(3),
+    strength_start_mpa: +ph.sigma_f_mpa.toFixed(2),
+    strength_end_mpa: +res.sigma_f_end_mpa.toFixed(2),
+    utilisation: +util.toFixed(3),
+    safety_factor: isFinite(sf) ? +sf.toFixed(2) : null,
+    seam_thickness_mm: nT ? +(tSum / nT).toFixed(2) : null,
+    seam_thickness_min_mm: isFinite(tMin) ? +tMin.toFixed(2) : null,
+    seam_score: pat.seam_score || 0,
+    fatigue_n: ph.fatigue_n,
+    required_score: guide ? guide.required_score : null,
+    required_seam_thickness_mm: (guide && guide.required_score != null)
+      ? +seamThicknessAt(wm, guide.required_score).toFixed(2) : null,
+    seams_needed: guide ? guide.seams_needed : null,
+    stress_series: Array.from(res.sigSeries, v => +v.toFixed(3)),
+    strength_series: Array.from(res.capSeries, v => +v.toFixed(3)),
+    months_series: Array.from(res.months, v => +v.toFixed(2)),
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -762,15 +1002,19 @@ function smoothVertexField(vv, iters, w) {
   }
   return cur;
 }
-function vertexIntensity(field, projectOuter) {
+// Per-vertex wall stress in MPa. cmaxAbs anchors the colour scale to a physical
+// quantity (the material's remaining fracture strength), so the top of the ramp
+// literally means "at fracture" and switching material visibly recolours the
+// pod. Falls back to the old 99th-percentile auto-scale when no anchor is given.
+function vertexIntensity(field, projectOuter, cmaxAbs) {
   let f = field;
   if (projectOuter) f = projectInnerToOuter(field);
   let vv = faceFieldToVertex(f);
   vv = smoothVertexField(vv, 2, 0.55);   // blend the heatmap so it radiates, not blobs
-  const vmax = percentile(vv, 99);
   const out = new Array(vv.length);
-  for (let i = 0; i < vv.length; i++) out[i] = Math.round(vv[i] * 100) / 100;
-  return { intensity: out, cmax: Math.max(vmax, 1e-9) };
+  for (let i = 0; i < vv.length; i++) out[i] = Math.round(vv[i] * 1000) / 1000;
+  const cmax = cmaxAbs != null ? cmaxAbs : percentile(vv, 99);
+  return { intensity: out, cmax: Math.max(cmax, 1e-9) };
 }
 
 // ---------------------------------------------------------------------------
@@ -1546,7 +1790,7 @@ function simulate(cfg) {
   const wall = buildFields(pat), wm = buildWallModel(wall);
   const roots = grow(gp, +(cfg.seed || 1));
   const res = runSimulation(wm, roots, sp, ph);
-  const { intensity, cmax } = vertexIntensity(res.faceField, !!cfg.project_outer);
+  const { intensity, cmax } = vertexIntensity(res.faceField, !!cfg.project_outer, res.sigma_f_end_mpa);
   const roots_payload = rootTubeMesh(roots);
   const T = sp.n_time_steps;
   const sites = wm.labels.map((lab, i) => ({
@@ -1555,6 +1799,7 @@ function simulate(cfg) {
   }));
   const stats = {
     n_nodes: roots.n,
+    mechanics: mechanicsSummary(res, wm, ph, pat, sp),
     first_crack_step: isFinite(res.firstStep) ? res.firstStep : null,
     first_crack_site: res.firstSite >= 0 ? wm.labels[res.firstSite] : null,
     breakthrough_step: isFinite(res.breakthrough) ? res.breakthrough : null,
@@ -1571,28 +1816,69 @@ function simulate(cfg) {
   return { intensity, cmax, roots: roots_payload, stats };
 }
 
-function montecarlo(cfg, nRuns) {
-  const pat = patternFromCfg(cfg), gp = growthFromCfg(cfg), sp = simFromCfg(cfg), ph = physFromCfg(cfg);
+// Triangular distribution from a published (min, best-estimate, max) — the
+// standard choice when a range and a nominal are all the literature gives you.
+function triangular(rng, lo, mode, hi) {
+  lo = Math.min(lo, mode); hi = Math.max(hi, mode);
+  const w = hi - lo; if (w < 1e-9) return mode;
+  const u = rng(), c = (mode - lo) / w;
+  return u < c ? lo + Math.sqrt(u * w * (mode - lo)) : hi - Math.sqrt((1 - u) * w * (hi - mode));
+}
+// ---------------------------------------------------------------------------
+//  Monte Carlo — propagates the uncertainties that actually matter.
+//  Every run resamples: the root architecture (seed + growth bias), the material
+//  fracture strength across its PUBLISHED range, the root growth pressure across
+//  its 0.5-1.0 MPa working range (unless you measured it in Calibration Mode),
+//  and a wall-thickness moulding tolerance. "Reliability" is then a real
+//  probability of release, not an artefact of one deterministic run.
+// ---------------------------------------------------------------------------
+// Runs as a GENERATOR so the caller can yield to the browser between draws —
+// a 24-run sweep is seconds of work and must not freeze the tab.
+function* montecarloIter(cfg, nRuns) {
+  const pat = patternFromCfg(cfg), gp = growthFromCfg(cfg), sp = simFromCfg(cfg), ph0 = physFromCfg(cfg);
   const wall = buildFields(pat), wm = buildWallModel(wall);
   const n = clip(Math.round(nRuns || 24), 2, 120), T = sp.n_time_steps;
   const jitterRng = mulberry32(12345), jNorm = makeNormal(jitterRng);
+  const mat = ph0.material, range = mat.fracture_range_mpa || [mat.fracture_strength_mpa, mat.fracture_strength_mpa];
   const first = [], brk = [], firstSite = [], orders = [], actSteps = [];
+  const seamStress = [], safety = [], sampledStrength = [], sampledPressure = [];
   const cumAccum = new Float64Array(POD.nF);
+  // Root architecture is by far the most expensive part of a draw and is
+  // INDEPENDENT of the material properties, so cross a modest pool of grown
+  // architectures against every property draw rather than regrowing each time.
+  const nArch = Math.min(n, 12), archPool = [];
+  // The reported mechanics must be the NOMINAL design, not whichever random
+  // draw happened to be first.
+  archPool[0] = grow(gp, +(cfg.seed || 1));
+  const nomRes = runSimulation(wm, archPool[0], sp, ph0);
+  yield { done: 0, total: n, phase: "nominal design" };
   for (let kk = 0; kk < n; kk++) {
-    let g = gp;
-    { // growth jitter (scale 0.5, like the Flask MC)
-      g = Object.assign({}, gp);
+    const ai = kk % nArch;
+    if (!archPool[ai]) {
+      const g = Object.assign({}, gp);
       g.slot_bias = Math.max(0.2, gp.slot_bias * (1 + 0.5 * jNorm() * 0.3));
       g.down_bias = clip(gp.down_bias * (1 + 0.5 * jNorm() * 0.3), 0.1, 1);
+      archPool[ai] = grow(g, kk);
     }
-    const roots = grow(g, kk);
-    const res = runSimulation(wm, roots, sp, ph);
+    // physical uncertainty for this draw
+    const ph = Object.assign({}, ph0);
+    ph.sigma_f_mpa = triangular(jitterRng, range[0], mat.fracture_strength_mpa, range[1]);
+    if (!ph0.calibration_active) ph.root_pressure_mpa = triangular(jitterRng, 0.5, ph0.root_pressure_mpa, 1.0);
+    ph.thickness_factor = clip(1 + 0.05 * jNorm(), 0.85, 1.15);
+    sampledStrength.push(+ph.sigma_f_mpa.toFixed(2));
+    sampledPressure.push(+ph.root_pressure_mpa.toFixed(3));
+    const res = runSimulation(wm, archPool[ai], sp, ph);
     first.push(isFinite(res.firstStep) ? res.firstStep : Infinity);
     brk.push(isFinite(res.breakthrough) ? res.breakthrough : Infinity);
     firstSite.push(res.firstSite);
     orders.push(res.order.slice());
     actSteps.push(res.activation.slice());
+    // same metric the single-run panel reports, so the two agree
+    const gov = governingSeamStress(wm, res, sp);
+    seamStress.push(gov);
+    safety.push(gov > 0 ? res.sigma_f_end_mpa / gov : Infinity);
     for (let f = 0; f < POD.nF; f++) cumAccum[f] += res.faceField[f];
+    yield { done: kk + 1, total: n };
   }
   for (let f = 0; f < POD.nF; f++) cumAccum[f] /= n;
   const finite = a => a.filter(v => isFinite(v));
@@ -1615,8 +1901,9 @@ function montecarlo(cfg, nRuns) {
   const oc = {};
   for (const o of orders) if (o.length) { const key = o.slice(0, 3).map(s => wm.labels[s]).join(" → "); oc[key] = (oc[key] || 0) + 1; }
   const topOrders = Object.entries(oc).sort((a, b) => b[1] - a[1]).slice(0, 5);
-  const { intensity, cmax } = vertexIntensity(cumAccum, !!cfg.project_outer);
+  const { intensity, cmax } = vertexIntensity(cumAccum, !!cfg.project_outer, nomRes.sigma_f_end_mpa);
   const rep = grow(gp, 7), roots_payload = rootTubeMesh(rep);
+  const pct = (a, p) => { const s = a.filter(isFinite).sort((x, y) => x - y); return s.length ? +s[clip(Math.round((p / 100) * (s.length - 1)), 0, s.length - 1)].toFixed(2) : null; };
   const stats = {
     pattern: pat.name, n_runs: n, reliability,
     mean_breakthrough: isFinite(meanBrk) ? meanBrk : null,
@@ -1627,12 +1914,28 @@ function montecarlo(cfg, nRuns) {
     mean_site_activation_step: meanStep, top_orders: topOrders,
     breakthrough_samples: brk.map(v => isFinite(v) ? v : null),
     first_crack_samples: first.map(v => isFinite(v) ? v : null),
-    physical: physSummary(ph),
-    breakthrough_time: spTimeContext(ph.species, isFinite(meanBrk) ? meanBrk : null, T, ph.salinity_ppt),
-    window_time: spTimeContext(ph.species, T, T, ph.salinity_ppt),
-    material_card: materialCard(ph.material),
+    physical: physSummary(ph0),
+    // what was actually varied, and the spread it produced
+    uncertainty: {
+      strength_range_mpa: range, strength_p10: pct(sampledStrength, 10), strength_p90: pct(sampledStrength, 90),
+      pressure_varied: !ph0.calibration_active,
+      pressure_p10: pct(sampledPressure, 10), pressure_p90: pct(sampledPressure, 90),
+      thickness_tolerance_pct: 5, n_architectures: nArch,
+      seam_stress_p10: pct(seamStress, 10), seam_stress_median: pct(seamStress, 50), seam_stress_p90: pct(seamStress, 90),
+      safety_median: pct(safety, 50), safety_p10: pct(safety, 10),
+    },
+    mechanics: mechanicsSummary(nomRes, wm, ph0, pat, sp),
+    breakthrough_time: spTimeContext(ph0.species, isFinite(meanBrk) ? meanBrk : null, T, ph0.salinity_ppt),
+    window_time: spTimeContext(ph0.species, T, T, ph0.salinity_ppt),
+    material_card: materialCard(ph0.material),
   };
   return { intensity, cmax, roots: roots_payload, stats };
+}
+// Drain the generator in one go — for callers that don't need progress.
+function montecarlo(cfg, nRuns) {
+  const it = montecarloIter(cfg, nRuns);
+  let r = it.next(); while (!r.done) r = it.next();
+  return r.value;
 }
 
 // ---------------------------------------------------------------------------
@@ -1653,17 +1956,20 @@ function simulateFrames(cfg) {
     const field = projectOuter ? projectInnerToOuter(ff) : ff;
     return smoothVertexField(faceFieldToVertex(field), 2, 0.55);
   };
-  const nF2 = capFrames.length, finalVv = toVert(capFrames[nF2 - 1]);
-  const cmax = Math.max(percentile(finalVv, 99), 1e-9);
+  const nF2 = capFrames.length;
+  // colour scale anchored to the material's remaining strength: the top of the
+  // ramp is fracture, so the pod visibly recolours when you change material
+  const cmax = Math.max(res.sigma_f_end_mpa, 1e-9);
   const frames = new Array(nF2);
   for (let t = 0; t < nF2; t++) {
-    const vv = (t === nF2 - 1) ? finalVv : toVert(capFrames[t]);
+    const vv = toVert(capFrames[t]);
     const arr = new Float32Array(vv.length); for (let i = 0; i < vv.length; i++) arr[i] = vv[i];
     frames[t] = arr;
   }
   const sites = wm.labels.map((lab, i) => ({ label: lab, is_ligament: !!wm.is_lig[i], activation_step: isFinite(res.activation[i]) ? res.activation[i] : null }));
   const stats = {
     n_nodes: roots.n,
+    mechanics: mechanicsSummary(res, wm, ph, pat, sp),
     first_crack_step: isFinite(res.firstStep) ? res.firstStep : null,
     first_crack_site: res.firstSite >= 0 ? wm.labels[res.firstSite] : null,
     breakthrough_step: isFinite(res.breakthrough) ? res.breakthrough : null,
@@ -1686,7 +1992,10 @@ function simulateFrames(cfg) {
   return {
     frames, cmax, n_time_steps: T,
     breakthrough_step: isFinite(res.breakthrough) ? res.breakthrough : null,
-    activation: res.activation.map(a => isFinite(a) ? a : null),
+    // Array.from, NOT .map: res.activation is a Float64Array, and a typed
+    // array's map coerces the returned null back to 0 — which made every site
+    // that never cracked look like it cracked at step 0.
+    activation: Array.from(res.activation, a => isFinite(a) ? a : null),
     site_labels: wm.labels, is_lig: Array.from(wm.is_lig),
     timeline, stats, window_months: ph.species.window_months, species_name: ph.species.name,
   };
@@ -1841,26 +2150,33 @@ function _seamPosWords(deg) {
     Math.abs(d + 90) < 25 ? "right (−Y)" : Math.abs(Math.abs(d) - 180) < 25 ? "back (−X)" : "";
   return dir ? `${d}° (${dir})` : `${d}°`;
 }
-function crackReport(cfg, nRuns) {
+function* crackReportIter(cfg, nRuns) {
   const n = clip(Math.round(nRuns || 20), 4, 60);
   const cur = MATERIALS[cfg.material] ? cfg.material : "clay";
   const gp = growthFromCfg(cfg), sp = simFromCfg(cfg), pat = patternFromCfg(cfg);
   const wall = buildFields(pat), wm = buildWallModel(wall), T = sp.n_time_steps;
-  // grow the n root systems ONCE (growth is material-independent) and reuse them
+  // Grow the root systems ONCE (growth is material-independent) and reuse them
+  // across all four materials. Growth dominates the cost, so cap the pool and
+  // cycle it — the same crossed design the Monte Carlo sweep uses.
   const jitterRng = mulberry32(12345), jNorm = makeNormal(jitterRng), rootSys = [];
-  for (let kk = 0; kk < n; kk++) {
+  const nArch = Math.min(n, 12);
+  for (let kk = 0; kk < nArch; kk++) {
     const g = Object.assign({}, gp);
     g.slot_bias = Math.max(0.2, gp.slot_bias * (1 + 0.5 * jNorm() * 0.3));
     g.down_bias = clip(gp.down_bias * (1 + 0.5 * jNorm() * 0.3), 0.1, 1);
     rootSys.push(grow(g, kk));
+    yield { done: kk + 1, total: nArch + 4, phase: "growing roots" };
   }
+  // the nominal architecture, for the headline mechanics numbers — reporting
+  // whichever random draw happened to be last would swing them wildly
+  const nomRoots = grow(gp, +(cfg.seed || 1));
   const mats = ["pha", "pla", "clay", "concrete"], byMat = {};
   const finite = a => a.filter(v => isFinite(v)), mean = a => a.length ? a.reduce((s, x) => s + x, 0) / a.length : Infinity;
   for (const mk of mats) {
     const ph = physFromCfg(Object.assign({}, cfg, { material: mk }));
     const first = [], brk = [], firstSite = [];
     for (let kk = 0; kk < n; kk++) {
-      const res = runSimulation(wm, rootSys[kk], sp, ph);
+      const res = runSimulation(wm, rootSys[kk % nArch], sp, ph);
       first.push(isFinite(res.firstStep) ? res.firstStep : Infinity);
       brk.push(isFinite(res.breakthrough) ? res.breakthrough : Infinity);
       firstSite.push(res.firstSite);
@@ -1868,13 +2184,15 @@ function crackReport(cfg, nRuns) {
     const fsc = {}; for (const si of firstSite) if (si >= 0) { const lab = wm.labels[si]; fsc[lab] = (fsc[lab] || 0) + 1; }
     const fscSorted = Object.fromEntries(Object.entries(fsc).sort((a, b) => b[1] - a[1]));
     const mFirst = mean(finite(first)), mBrk = mean(finite(brk));
+    const mech = mechanicsSummary(runSimulation(wm, nomRoots, sp, ph), wm, ph, pat, sp);
     byMat[mk] = {
       first_site_counts: fscSorted, reliability: finite(brk).length / n,
       mean_first_crack: isFinite(mFirst) ? mFirst : null, mean_breakthrough: isFinite(mBrk) ? mBrk : null,
       first_crack_months: spTimeContext(ph.species, isFinite(mFirst) ? mFirst : null, T, ph.salinity_ppt).months,
       breakthrough_months: spTimeContext(ph.species, isFinite(mBrk) ? mBrk : null, T, ph.salinity_ppt).months,
-      strength: MATERIALS[mk].fracture_strength_mpa,
+      strength: MATERIALS[mk].fracture_strength_mpa, mech,
     };
+    yield { done: nArch + mats.indexOf(mk) + 1, total: nArch + 4, phase: MATERIALS[mk].name };
   }
   const s = byMat[cur], ph = physFromCfg(Object.assign({}, cfg, { material: cur }));
   const entries = Object.entries(s.first_site_counts);
@@ -1892,7 +2210,8 @@ function crackReport(cfg, nRuns) {
   const where = topSite
     ? `In ${matName} pods, cracking initiates at the ${isLig ? "upper-waist slot → foot ligament" : "base split-line"} seam at ${posWords}${consistency >= 60 ? ", consistently" : ", though the location varies"} — this seam is the first to fail in ${consistency}% of ${n} randomized runs.`
     : `No consistent first-crack site emerged in ${n} runs (the wall rarely reaches threshold for ${matName}).`;
-  const why = `That seam overlaps the peak root-pressure band in the upper waist, where the thickening propagule presses hardest against the narrow inner bore. ${matName}'s flexural strength (~${strengthCur} MPa, versus the PHA reference's ~${strengthRef} MPa) sets when it reaches its failure threshold there relative to the other seams — the weaker the material, the earlier and more predictably it fails at the highest-stress ligament.`;
+  const M = s.mech;
+  const why = `The roots bear hardest against the narrow inner bore in the upper waist, and that band overlaps the seam. On the ${M.seam_thickness_mm} mm of wall left there after scoring, the bearing pressure works out at a peak of <b>${M.peak_stress_mpa} MPa</b> — hoop tension plus transverse bending, concentrated at the slot tip. ${matName} starts at ${strengthCur} MPa and is down to ${M.strength_end_mpa} MPa by the end of the window after wet degradation, so the seam is running at <b>${Math.round(M.utilisation * 100)}%</b> of its remaining strength. Bending scales as 1/t², which is why the scoring depth — not the material — dominates whether it releases at all.`;
   const when = `Timing (${matName}): first crack at ~${nm(fcMonths)}, full 4-piece breakthrough at ~${nm(brkMonths)} of a ~${win}-month growth window (${rel}% of runs break within the window). By comparison — first crack: PHA ~${nm(byMat.pha.first_crack_months)}, PLA ~${nm(byMat.pla.first_crack_months)}, clay ~${nm(byMat.clay.first_crack_months)}, concrete ~${nm(byMat.concrete.first_crack_months)}.`;
   const consistencyText = consistency >= 80
     ? `This is a reliable, repeatable failure point: ${consistency}% of runs crack at the same seam.`
@@ -1906,19 +2225,31 @@ function crackReport(cfg, nRuns) {
   const timingClause = early
     ? ` That is well before the seedling's roots are self-supporting (~month ${outplant}) — the current seam design releases the pod too early for ${matName}, and may need reinforced or deeper seam scoring for this material.`
     : ` This lands within the ~${outplant}-month establishment window, so the seam timing is broadly appropriate for ${matName}.${consistency < 55 ? ` Tuning the 4 seams so one releases first would give a more predictable, controlled split.` : ""}`;
-  const summary = topSite ? base + varyClause + timingClause
-    : `${matName} rarely cracks within the growth window under the current design — the seams may be too strong / too shallow for this material to release reliably.`;
+  // If nothing releases, the useful answer is what to change — not a shrug.
+  const noRelease = M.required_score != null
+    ? `${matName} does not release under the current design: the seam runs at ${Math.round(M.utilisation * 100)}% of its remaining strength, short of fracture. Scoring the four seams to <b>${Math.round(M.required_score * 100)}%</b> depth — leaving about <b>${M.required_seam_thickness_mm} mm</b> of wall instead of ${M.seam_thickness_mm} mm — would bring ${M.seams_needed} of them to tearing inside the window.`
+    : `${matName} does not release under the current design, and scoring alone will not get it there — even a 95%-deep seam leaves it short. This wall is too thick, or this material too strong, for root pressure to open. Thin the wall, widen the bore, or move to a weaker/faster-degrading material.`;
+  const summary = topSite ? base + varyClause + timingClause : noRelease;
   return {
     material: cur, material_name: matName, n_runs: n,
     first_site: topSite, first_site_pos: posWords, consistency,
     first_crack_months: fcMonths, breakthrough_months: brkMonths,
     window_months: win, outplant_months: outplant, reliability: rel,
+    mechanics: M,
     compare: mats.map(mk => ({ key: mk, name: MATERIALS[mk].name, strength: byMat[mk].strength,
       first_crack_months: byMat[mk].first_crack_months, breakthrough_months: byMat[mk].breakthrough_months,
-      reliability: Math.round(100 * byMat[mk].reliability) })),
+      reliability: Math.round(100 * byMat[mk].reliability),
+      peak_stress_mpa: byMat[mk].mech.peak_stress_mpa,
+      utilisation: byMat[mk].mech.utilisation,
+      required_score: byMat[mk].mech.required_score })),
     text: { where, why, when, consistency: consistencyText, summary },
     first_site_counts: s.first_site_counts,
   };
+}
+function crackReport(cfg, nRuns) {
+  const it = crackReportIter(cfg, nRuns);
+  let r = it.next(); while (!r.done) r = it.next();
+  return r.value;
 }
 
 function features() {
@@ -2007,4 +2338,7 @@ window.ENGINE = {
   baseMesh, vizPod, seams: seamTubeMesh, exploded: explodedSectors, assetPieces, propagule: propaguleMesh,
   stageRoots: stageRootMesh, ground: groundMesh, water: waterMesh, debris: debrisMesh, rootLandings, rootParams, contactShadow,
   simulateFrames, shoot: shootMesh, crackReport,
+  // generator forms — let the UI yield to the browser between runs
+  montecarloIter, crackReportIter,
+  unitMm: () => MM_PER_UNIT,
 };

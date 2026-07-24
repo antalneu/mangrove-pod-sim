@@ -36,9 +36,11 @@ gentle pull from a planting team).
 3. **Simulate root growth.** Space-colonization branching from the top opening,
    growing down through the waist and out into the feet, with configurable growth
    rate, branching, and bias toward the slots/feet.
-4. **Compute wall pressure over time.** Roots swell each time-step; where a root
-   body reaches the inner wall it presses outward. Pressure is mapped onto the
-   real inner-wall faces and integrated into a cumulative-stress field.
+4. **Compute wall stress over time.** Roots swell each time-step; where a root
+   body reaches the inner wall it bears outward at its turgor-limited growth
+   pressure. That pressure is mapped onto the real inner-wall faces and turned
+   into a **wall stress in MPa** (hoop + plate bending on the net scored
+   section) — see *How the failure model works*.
 5. **Visualize as a heatmap** on the actual mesh (static PNG + interactive HTML).
 6. **Test perforation variations** (slot length/width/spacing/placement, number
    of slots, base split scoring) and rank which breaks earliest and most cleanly.
@@ -106,13 +108,14 @@ or just double-click **`start_web.bat`**, then open **http://127.0.0.1:5000**.
   quarter-pieces so the intended split is clear before running anything.
   "▶ Run simulation" grows one root system — rendered as **tapered woody tubes**
   (thick at the base, tapering to the tips) rather than wireframe lines — and paints
-  the cumulative wall-stress heatmap on a clear **calm → warning → critical** colour
-  scale; toggles switch the seams/roots on/off and project the stress onto the outer
-  surface.
-- **Right panel** — the verdict (breaks at step N / no breakthrough), stat cards,
-  the per-break-site bar chart, and the activation order. "📊 Monte Carlo" runs
-  many randomized growths and reports reliability, mean ± std breakthrough time,
-  which site cracks first, and the most common activation orders.
+  the wall-stress heatmap in MPa. The colour scale is **anchored to the material's
+  remaining fracture strength**, so the top of the ramp literally means "at
+  fracture" and switching material visibly recolours the pod.
+- **Right panel** — the verdict (releases at month N, or *why not and what to
+  change*), stat cards in MPa (seam stress, strength left, utilisation, net seam
+  wall), the seam-stress-vs-remaining-strength chart, the per-break-site bar
+  chart, and the activation order. "📊 Monte Carlo" samples randomized pods and
+  reports a real release probability with the stress spread it came from.
 
 The pod mesh loads once at startup; each run takes a fraction of a second, a
 Monte-Carlo batch a few seconds.
@@ -247,22 +250,72 @@ outputs/          all generated figures, interactive HTML, and pod_features.json
 
 ## How the failure model works (so you can trust / tune it)
 
-- **Pressure.** Each root node has a pipe-model radius that matures then keeps
-  swelling. Radial penetration `= (r_node + radius) − r_inner(z)`; contact
-  pressure `= contact_stiffness × penetration`, spread over the wall patch the
-  root touches (a sparse node→face matrix). Base roots add a **wedging** term that
-  splays the feet.
-- **Stress.** Per inner face, pressure is integrated over time into a cumulative
-  stress. A face "fails" when `cumulative_stress × scf ≥ strength`, where
-  `strength ∝ local wall thickness` (zero inside a slot) and `scf` is a
-  stress-concentration factor that peaks at slot tips and along scored splits.
-- **Break sites.** A **slot→foot ligament** (the intact bridge below each slot)
-  *tears through* when a crack spans it — i.e. failed faces appear across
-  `span_frac` of its stacked z-bands (so a taller/lower-stress bridge is genuinely
-  harder to sever). A **split-line** activates when feet-splaying hoop tension
-  exceeds its (optionally scored) capacity.
+> **Two engines, and they are no longer the same model.** The live browser tool
+> (`docs/static/engine.js`) runs the **shell-mechanics model (v2)** described
+> below, in real MPa. The Python package under `mangrovesim/` still runs the
+> original cumulative-impulse surrogate and is kept for the offline render
+> pipeline (`run_01`..`run_05`) — it has **not** been ported to v2, so its
+> numbers will not match the website. Trust the browser tool for mechanics.
+
+### Why v2 replaced the original surrogate
+
+The original model integrated contact pressure over time (`cum += p·dt`) and
+failed a face when `cum × scf ≥ thickness`. Because `cum` grows explosively once
+roots reach the ligament, break time was set almost entirely by *when roots
+arrive* — a **22× material-strength range (concrete 4 MPa → PLA 90 MPa) produced
+only a 25% difference in break time**, and Monte-Carlo reliability was 100% for
+everything. The comparison the tool exists to make was not actually working.
+
+### v2 — real units
+
+The Rhino model is authored in millimetres (334 mm pod, ⌀26 mm bore, ~24 mm
+wall), so every quantity below is a real MPa. The unit scale is surfaced in the
+provenance panel as the tool's single most load-bearing assumption.
+
+- **Pressure.** A root node's bearing pressure saturates at its **turgor-limited
+  growth pressure**: `p = p_root · (1 − e^(−δ/δ₀))`, where δ is radial
+  indentation into the bore. However far a root swells it can never bear harder
+  than ~1 MPa — the original `k × penetration` was unbounded. Base roots add a
+  wedging term that splays the feet.
+- **Stress.** Per inner face,
+  `σ = SCF · p · [ r_bore/t_eff + β·(L/t_eff)² ]` — membrane hoop on a
+  pressurised shell plus transverse plate bending (β ≈ 0.31, clamped plate).
+  `t_eff` is the **net section left after scoring**, so a score is a real notch
+  rather than a strength multiplier. `L` is the span the bending reacts over: a
+  continuous shell localises it to the boundary layer `√(r·t)`, but once the
+  vertical seams are scored the wall hinges there and the whole sector reacts at
+  the score. This is why **scoring depth, not material, dominates** whether the
+  pod opens at all.
+- **Failure.** Two paths: brittle overload (`σ ≥ σ_f`) and **static fatigue** —
+  `D += (σ/σ_f)^n · dt/t_ref` integrated in real months, with `n` ≈ 12 for
+  polymers and 24–30 for ceramics. A wall held just under strength still fails
+  eventually; one held well under it never does. `σ_f` decays over the window
+  with wet degradation, so a biodegradable pod releases because **the wall
+  weakens into the root load** — the actual design mechanism.
+- **Crack propagation.** Once a fraction φ of a seam's z-bands have cracked, the
+  survivors carry the whole section (`σ ×= 1/(1−φ)`, capped at 8×). A crack
+  initiates at the slot-tip stress raiser and then *runs* across the ligament.
+- **Break sites.** A **slot→foot ligament** tears when cracking spans
+  `span_frac` of its stacked z-bands. Base **split-lines** are banded and judged
+  by the same rule.
 - **Breakthrough** = when `breakthrough_frac` (default 75%) of the slot ligaments
-  have torn — the point at which the pod can split into petals / fall away.
+  have torn.
+- **Monte Carlo** resamples fracture strength across the material's published
+  range (triangular), root pressure over 0.5–1.0 MPa (skipped when Calibration
+  Mode supplies a measured value), a ±5% wall-thickness tolerance, and the root
+  architecture — so "release rate" is a probability rather than a restatement of
+  one deterministic run.
+- **Design guidance.** When a design does not release, the tool back-solves the
+  **seam scoring depth** that would release it and reports the net wall in mm.
+
+### What v2 concludes
+
+As moulded, the ~24 mm wall sees only ~0.2 MPa at the seam against 22 MPa of
+remaining strength — **no material releases without deep scoring**. Required
+scoring depth: concrete/clay ≈ 55%, PHA ≈ 85% (3.6 mm of wall), PLA ≈ 95%. At
+the 85% default, PHA releases at ~month 9 while PLA never does and clay/concrete
+release around month 6–7, early enough to flag against the ~12-month
+outplant-readiness window.
 
 ### Main tunable knobs
 
@@ -271,8 +324,14 @@ outputs/          all generated figures, interactive HTML, and pod_features.json
 `radius_gain`.
 
 `SimParams`: `n_time_steps`, `maturation`, `swell_rate`, `max_swell`,
-`contact_stiffness`, `base_wedge`, `span_frac`, `hoop_factor`, `breakthrough_frac`,
-`pull_assist` (steady external stress to model a planting team pulling the pod).
+`contact_stiffness` (in the browser engine this sets the indentation δ₀ at which
+a root reaches full bearing pressure), `base_wedge`, `span_frac`,
+`breakthrough_frac`, `pull_assist` (an extra bearing pressure in MPa below the
+waist, modelling a planting team helping the pod open).
+
+Browser-engine mechanics constants: `MM_PER_UNIT` (unit scale), `PLATE_BETA`,
+`T_REF_MONTHS` (static-fatigue reference), `NET_SECTION_FLOOR`, and each
+material's `fatigue_exponent`.
 
 `PerforationPattern.parametric(...)`: `n_slots`, `slot_length_frac`,
 `slot_width_deg`, `slot_z_center_frac`, `theta_offset_deg`, `align` ("feet" or
@@ -282,8 +341,11 @@ outputs/          all generated figures, interactive HTML, and pod_features.json
 
 ## Caveats
 
-- Units are the model's own (~11× life size); the physics is scale-relative, so
-  breakthrough is reported in **time-steps**, not seconds.
+- The browser engine reads the model's units as **millimetres** (334 mm pod,
+  ⌀26 mm bore, ~24 mm wall). Every stress it reports is a real MPa and every
+  one of them scales with that assumption, so confirm it against the physical
+  prototype before quoting a number. Breakthrough is reported both as a
+  time-step and as real elapsed months of the species growth window.
 - The extracted mesh is Rhino's render tessellation and is not watertight at the
   slot cuts; this is fine for wall-contact pressure but means volumes/normals near
   slot edges are approximate.

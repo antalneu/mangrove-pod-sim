@@ -466,3 +466,43 @@ button.wide{width:100%}
   .animreadout{min-width:0;white-space:normal;text-align:center;font-size:11px}
   .animrange{min-width:120px}
 }
+
+/* ============================================================================
+   ENGINEERING READOUT + ACCESSIBILITY
+   ============================================================================ */
+
+/* Actionable design guidance under a verdict: what to change, not just what
+   happened. Sits inside .verdict, so it must stay legible on both variants. */
+.guidance{margin-top:10px;padding-top:9px;border-top:1px solid rgba(255,255,255,.14);
+  font-size:12.5px;font-weight:400;line-height:1.55;color:var(--ink-2)}
+.guidance b{color:var(--ink);font-weight:700;font-variant-numeric:tabular-nums}
+.guidance.bad{color:#f0a99d}
+.guidance .subnote{display:block;margin-top:4px;font-size:10.5px}
+
+/* Compact mechanics strip at the top of the crack report */
+.crackmech{display:flex;flex-wrap:wrap;gap:8px;margin:12px 0 4px}
+.crackmech span{display:flex;flex-direction:column;gap:2px;padding:8px 12px;
+  background:var(--sink-2);border:1px solid var(--edge);border-radius:10px;min-width:104px}
+.crackmech i{font-style:normal;font-size:10px;text-transform:uppercase;letter-spacing:.05em;
+  color:var(--ink-3)}
+.crackmech b{font-size:15px;color:var(--ink);font-variant-numeric:tabular-nums}
+
+/* ---- keyboard focus -------------------------------------------------------
+   Inputs had `outline:none` with no replacement, so keyboard users had no
+   visible focus at all on buttons, toggles or the icon cluster. :focus-visible
+   only fires for keyboard/AT navigation, so pointer users see no change. */
+:focus-visible{outline:2px solid var(--clay-lite);outline-offset:2px;border-radius:8px}
+button:focus-visible,.ptoggle:focus-visible,.segbtn:focus-visible,
+.iconbtn:focus-visible,.minbtn:focus-visible,a:focus-visible,summary:focus-visible{
+  outline:2px solid var(--clay-lite);outline-offset:2px}
+select:focus-visible,input:focus-visible{outline:2px solid var(--clay-lite);outline-offset:1px}
+input[type=range]:focus-visible{outline:2px solid var(--clay-lite);outline-offset:4px}
+
+/* Respect a reduced-motion preference for the panel/drawer transitions */
+@media (prefers-reduced-motion: reduce){
+  .provpanel,.glasspanel,.settings-pop,.ptoggle,.segbtn,button{transition:none !important}
+  .spinner{animation-duration:2s}
+}
+
+/* The results panel is a live region during a run — announce the verdict */
+.verdict{scroll-margin-top:12px}

@@ -89,9 +89,9 @@
       <div class="stats">
         <span class="stat"><b>20,830</b> triangles</span>
         <span class="stat"><b>4</b> quarter-piece seams</span>
-        <span class="stat"><b>3</b> materials</span>
+        <span class="stat"><b>4</b> materials</span>
         <span class="stat"><b>2</b> species</span>
-        <span class="stat"><b>100%</b> break reliability</span>
+        <span class="stat"><b>MPa</b> wall stress</span>
         <span class="stat"><b>provenance</b>-tagged constants</span>
       </div>
     </div>
@@ -130,9 +130,9 @@
     <h2><span class="num">03 · model</span>How it works</h2>
     <div class="cards">
       <div class="card"><h3>🌿 Root growth</h3><p>A branching root system grows by space-colonization from the top opening, down through the waist and out into the feet.</p></div>
-      <div class="card"><h3>⬈ Wall pressure</h3><p>Roots swell over time; where a root reaches the inner wall it presses outward. Pressure is integrated into a per-face cumulative-stress field.</p></div>
-      <div class="card"><h3>✂ Crack &amp; tear</h3><p>A slot→foot ligament tears when a crack spans it; the pod "breaks through" once most ligaments have torn.</p></div>
-      <div class="card"><h3>🎲 Monte Carlo</h3><p>Many randomized growths give the mean breakthrough time, which site cracks first, and run-to-run consistency.</p></div>
+      <div class="card"><h3>⬈ Wall stress</h3><p>A swelling root bears on the bore at its growth pressure — turgor-limited, so it can never push harder than about 1 MPa. That pressure becomes a real wall stress: membrane hoop <i>p·r/t</i> plus plate bending <i>β·p·(L/t)²</i> on the net section left after scoring.</p></div>
+      <div class="card"><h3>✂ Crack &amp; tear</h3><p>A face fails on brittle overload or through a power-law static-fatigue integral in real months. Surviving bands of a cracked seam carry the whole section, so a crack that starts at the slot tip runs across the ligament.</p></div>
+      <div class="card"><h3>🎲 Monte Carlo</h3><p>Every sampled pod redraws its fracture strength across the published range, its root pressure, and a wall-thickness tolerance — so "release rate" is a real probability, not one deterministic run.</p></div>
     </div>
   </div>
 </section>

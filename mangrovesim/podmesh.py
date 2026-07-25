@@ -20,8 +20,9 @@ Detected features
 - per-inner-face wall-thickness field (ray-cast outward to the outer wall)
 
 Everything downstream (growth, pressure, perforation variants) is expressed in
-model units (this file is in centimetres per the Rhino header, though the model
-is drawn ~11x larger than a real ~30 cm propagule - see PodMesh.summary()).
+model units, which the mechanics read as MILLIMETRES (provenance.MM_PER_UNIT):
+a 334 mm pod around a ~26 mm bore with a ~21 mm wall. That unit scale is the
+single most load-bearing assumption in the tool - every stress scales with it.
 """
 from __future__ import annotations
 
@@ -512,7 +513,8 @@ class PodMesh:
         lines.append(f"Source                 : {os.path.basename(self.source)}")
         lines.append(f"Triangles / vertices   : {len(self.F)} / {len(self.V)}")
         lines.append(f"Height (model units)   : {f.height:.1f}")
-        lines.append(f"  (real propagule ~30 cm -> model is ~{f.height/30:.0f}x scale)")
+        lines.append(f"  (read as millimetres -> a {f.height:.0f} mm pod around a "
+                     f"{2*f.inner_r_waist:.0f} mm propagule)")
         lines.append(f"Waist outer / inner R  : {f.outer_r_waist:.1f} / {f.inner_r_waist:.1f}")
         lines.append(f"Waist z-band           : {f.z_waist_lo:.0f} .. {f.z_waist_hi:.0f} (mid {f.z_waist_mid:.0f})")
         lines.append(f"Base/feet below z      : {f.z_base_top:.0f}")

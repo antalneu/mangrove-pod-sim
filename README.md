@@ -7,17 +7,18 @@ tears apart** at its perforations — so you can tune the slot/split pattern for
 pod that reliably breaks away as the sapling establishes (naturally or with a
 gentle pull from a planting team).
 
-> **Model status:** this is a transparent *reduced-order* engineering surrogate,
-> not finite-element analysis. It is calibrated to be physically sensible and to
-> respond correctly to design changes, and every assumption is exposed as a
-> tunable parameter. Use it for *relative* comparison of perforation/material/
-> species designs and for locating failure hot-spots — not for absolute load
-> numbers.
+> **Model status:** this is a transparent *reduced-order* shell-mechanics model,
+> not finite-element analysis. It works in real MPa (hoop + plate bending on the
+> net scored section), but those absolute numbers rest on the model's unit scale
+> and on estimated material constants, and every assumption is exposed as a
+> tunable parameter. Trust it for comparing perforation/material/species designs
+> and locating failure hot-spots; confirm absolute margins with FEA and physical
+> testing before a production decision.
 >
 > **Honesty first (industry design tool).** Every physical constant is tagged in a
 > permanent **Data-provenance panel** as *Literature-sourced*, *Estimated — needs
-> lab validation*, *Measured off the 3-D model*, or *Calibrated (relative
-> surrogate)*. Nothing assumed is presented as verified fact. In particular, there
+> lab validation*, *Measured off the 3-D model*, or *Calibrated (modelling
+> choice)*. Nothing assumed is presented as verified fact. In particular, there
 > is **no mangrove-specific root-force data in the literature**, so the root
 > pressure default (0.5–1.0 MPa) is an estimate borrowed from general tree-root
 > biomechanics — see the **Validation roadmap** below.
@@ -132,17 +133,21 @@ adjustable **seam depth / width / rotational offset**.
 
 ### 1 · Material presets — *all values are engineering estimates, lab-verification required*
 
-| material | fracture strength (flexural) | stiffness | wet/tidal loss | biodegradable |
-|---|---|---|---|---|
-| **Bioplastic** (marine-degradable PHA/PLA) | ~55 MPa (40–75) | ~2 800 MPa | ~5 %/mo | ✅ marine-biodegradable |
-| **Clay** (low-fired earthenware) | ~15 MPa (8–25) | ~8 000 MPa | ~3 %/mo | ✅ inert mineral, benign |
-| **Concrete** (unreinforced, thin-wall) | ~4 MPa (3–6) | ~25 000 MPa | ~0.4 %/mo | ⚠️ **not biodegradable — persistent** |
+| material | fracture strength (flexural) | stiffness | fatigue *n* | wet/tidal loss | biodegradable |
+|---|---|---|---|---|---|
+| **PHA / PHBV** (marine-degradable) | ~55 MPa (40–75) | ~2 800 MPa | 12 | ~5 %/mo | ✅ marine-biodegradable |
+| **PLA** (industrial-compost only) | ~90 MPa (70–110) | ~3 500 MPa | 14 | ~0.6 %/mo | ⚠️ **not marine-degradable** |
+| **Clay** (low-fired earthenware) | ~6 MPa (1–25) | ~8 000 MPa | 30 | ~3 %/mo | ✅ inert mineral, benign |
+| **Concrete** (unreinforced, thin-wall) | ~4 MPa (3–6) | ~25 000 MPa | 24 | ~0.4 %/mo | ⚠️ **not biodegradable — persistent** |
 
-Concrete carries a visible **UI warning**: it is the least biodegradable option,
-persists in the marine environment, and can leach alkalinity — it may crack at a
-scored seam, but the fragments stay behind. A material acts on the physics through
-two *relative* multipliers (capacity ∝ strength, and a wet-degradation term over
-elapsed time), anchored so **bioplastic reproduces the original calibration**.
+PHA and PLA are **separate presets with separate claims**: PHA genuinely
+biodegrades in seawater, PLA needs industrial-composting heat and persists over
+the establishment window. Both PLA and concrete carry a visible **UI warning**.
+A material enters the physics directly, in real units: its fracture strength *is*
+the wall capacity the computed stress is compared against, decaying over elapsed
+time with wet degradation, and its fatigue exponent *n* decides whether a wall
+held just under strength eventually fails (low *n*, polymers) or effectively never
+does (high *n*, ceramics).
 
 ### 2 · Species growth calibration (real time, slow-start roots)
 
@@ -190,7 +195,7 @@ this relative design explorer into a quantitatively validated predictor.
 
 ## Detected geometry (from your model)
 
-| feature | value (model units, ~11× a real 30 cm propagule) |
+| feature | value (model units, read as **millimetres**) |
 |---|---|
 | height | 333.7 |
 | waist outer / inner radius | 35.3 / 12.8 |
@@ -233,13 +238,13 @@ See `outputs/04_perforation_comparison.png` and `outputs/03_results_analysis.png
 mangrovesim/
   podmesh.py      load .3dm -> mesh, detect waist/slots/feet/thickness, region masks
   growth.py       space-colonization root growth (GrowthParams)
-  perforation.py  parametric slots + base split-lines + quarter-piece seams -> strength field
-  pressure.py     inflate roots over time -> wall stress -> failure (SimParams, optional phys)
-  montecarlo.py   many randomized runs -> aggregated statistics; compare_patterns
-  materials.py    Clay / Concrete / Bioplastic presets (all engineering estimates)
+  perforation.py  parametric slots + base split-lines + quarter-piece seams -> net scored section
+  pressure.py     inflate roots over time -> wall stress in MPa -> failure (SimParams, phys)
+  montecarlo.py   many randomized runs (architecture + strength + pressure + wall tolerance)
+  materials.py    PHA / PLA / Clay / Concrete presets (all engineering estimates)
   species.py      Rhizophora / Avicennia growth calibration (real-time, slow-start ramp)
-  physical.py     material/species/root-pressure -> per-step drive & capacity multipliers; Calibration Mode
-  provenance.py   registry of every constant tagged proven vs. estimated; validation roadmap
+  physical.py     material/species/root-pressure -> per-step drive & capacity in MPa; Calibration Mode
+  provenance.py   mechanics constants + registry of every constant tagged proven vs. estimated
   viz.py          matplotlib renders + Plotly interactive heatmaps
 run_01..run_05    scripts for the pipeline stages (05 = per-material/species report)
 webapp/           Flask web app (app.py) + static/ + templates/
@@ -250,12 +255,16 @@ outputs/          all generated figures, interactive HTML, and pod_features.json
 
 ## How the failure model works (so you can trust / tune it)
 
-> **Two engines, and they are no longer the same model.** The live browser tool
-> (`docs/static/engine.js`) runs the **shell-mechanics model (v2)** described
-> below, in real MPa. The Python package under `mangrovesim/` still runs the
-> original cumulative-impulse surrogate and is kept for the offline render
-> pipeline (`run_01`..`run_05`) — it has **not** been ported to v2, so its
-> numbers will not match the website. Trust the browser tool for mechanics.
+> **Two engines, one model.** The live browser tool (`docs/static/engine.js`) and
+> the Python package under `mangrovesim/` both run the **shell-mechanics model
+> (v2)** described below, in real MPa. They are independent implementations of
+> the same equations, so the offline render pipeline (`run_01`..`run_05`) and the
+> website agree. Root growth uses each language's own RNG, so a given seed grows a
+> different root system in each — compare *distributions*, not single runs. Across
+> 30 seeds on the default design the two agree on mean first crack (82 vs 82
+> steps), mean breakthrough (100 vs 103), release rate (87% vs 83%) and peak wall
+> stress (106 vs 107 MPa); the governing seam stress is dispersed enough
+> (sd ≈ 7 MPa on a mean of ~12) that only its distribution is meaningful.
 
 ### Why v2 replaced the original surrogate
 
@@ -324,34 +333,42 @@ outplant-readiness window.
 `radius_gain`.
 
 `SimParams`: `n_time_steps`, `maturation`, `swell_rate`, `max_swell`,
-`contact_stiffness` (in the browser engine this sets the indentation δ₀ at which
-a root reaches full bearing pressure), `base_wedge`, `span_frac`,
-`breakthrough_frac`, `pull_assist` (an extra bearing pressure in MPa below the
-waist, modelling a planting team helping the pod open).
+`contact_stiffness` (sets the indentation δ₀ at which a root reaches full bearing
+pressure), `base_wedge`, `span_frac`, `breakthrough_frac`, `pull_assist` (an extra
+bearing pressure in MPa below the waist, modelling a planting team helping the pod
+open).
 
-Browser-engine mechanics constants: `MM_PER_UNIT` (unit scale), `PLATE_BETA`,
-`T_REF_MONTHS` (static-fatigue reference), `NET_SECTION_FLOOR`, and each
+Mechanics constants (`mangrovesim/provenance.py`, mirrored at the top of
+`engine.js`): `MM_PER_UNIT` (unit scale), `PLATE_BETA`, `T_REF_MONTHS`
+(static-fatigue reference), `MIN_T_EFF_MM`, `NET_SECTION_FLOOR`, and each
 material's `fatigue_exponent`.
 
 `PerforationPattern.parametric(...)`: `n_slots`, `slot_length_frac`,
 `slot_width_deg`, `slot_z_center_frac`, `theta_offset_deg`, `align` ("feet" or
-"split"), `split_depth_frac`, `split_score`.
+"split"), `split_depth_frac`, `split_score`, `seam_score`, `seam_width_deg`.
+
+**Scoring dominates.** Because stress goes as 1/t for hoop and 1/t² for bending,
+`seam_score` is by far the strongest lever — and once a wide seam band is scored
+it, not the slot, sets the ligament, so `slot_width_deg` and `split_score` stop
+moving the release at all. Both engines behave this way; `run_04` includes
+`shallow-seam` / `deeper-seam` variants to show the effect that does matter.
 
 ---
 
 ## Caveats
 
-- The browser engine reads the model's units as **millimetres** (334 mm pod,
-  ⌀26 mm bore, ~24 mm wall). Every stress it reports is a real MPa and every
-  one of them scales with that assumption, so confirm it against the physical
-  prototype before quoting a number. Breakthrough is reported both as a
-  time-step and as real elapsed months of the species growth window.
+- Both engines read the model's units as **millimetres** (334 mm pod, ⌀26 mm
+  bore, ~21 mm wall). Every stress they report is a real MPa and every one of
+  them scales with that assumption, so confirm it against the physical prototype
+  before quoting a number. Breakthrough is reported both as a time-step and as
+  real elapsed months of the species growth window.
 - The extracted mesh is Rhino's render tessellation and is not watertight at the
   slot cuts; this is fine for wall-contact pressure but means volumes/normals near
   slot edges are approximate.
-- Absolute stiffness/strength constants are calibrated for sensible *relative*
-  behaviour, not measured material properties. Plug in real values (and ideally a
-  real FEA cross-check) before trusting absolute margins.
+- Material strengths, the root pressure and the fatigue exponents are engineering
+  estimates for a material *class*, not measured properties of your formulation.
+  Plug in real values (and ideally an FEA cross-check) before trusting absolute
+  margins.
 - The **material and species constants are engineering estimates**, not datasheet
   or pod-measured values; the material→physics coupling is a *relative* mapping,
   not calibrated absolute physics. The Data-provenance panel tags each constant,

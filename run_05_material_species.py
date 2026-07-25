@@ -43,9 +43,15 @@ def main():
     print(pod.summary())
 
     pattern = perf.PerforationPattern.detected(pod, name="as-drawn")
-    print(f"\nPattern: {pattern.name}   |   {N_RUNS} runs per combination\n")
+    # As moulded the ~21 mm wall never releases, whatever the material — the pod
+    # only opens once the seams are scored. Use the browser tool's default design
+    # (85% deep over a 50-degree band) so the two reports agree.
+    pattern.seam_score, pattern.seam_width_deg = 0.85, 50.0
+    print(f"\nPattern: {pattern.name} (seam score {pattern.seam_score:g} over "
+          f"{pattern.seam_width_deg:g} deg)   |   {N_RUNS} runs per combination\n")
 
-    header = f"{'species':<20}{'material':<26}{'reliab.':>8}{'break(step)':>13}{'break(time)':>14}{'first seam':>16}"
+    header = (f"{'species':<20}{'material':<26}{'reliab.':>8}{'break(step)':>13}"
+              f"{'break(time)':>14}{'seam MPa':>10}{'strength':>10}{'first seam':>16}")
     print(header)
     print("-" * len(header))
 
@@ -62,13 +68,20 @@ def main():
             first = (next(iter(fs), "-") if fs else "-").replace("°", "deg")
             tlabel = (f"~{tctx['months']:.1f} mo" if np.isfinite(bt) else "-")
             btlabel = f"{bt:.1f}" if np.isfinite(bt) else "-"
-            print(f"{sp.name:<20}{mat.name[:24]:<26}{rel:>7.0f}%{btlabel:>13}{tlabel:>14}{first:>16}")
+            seam = float(r.seam_stress.mean())
+            # remaining strength at the end of the window, after wet degradation
+            strength = float(phys.per_step(120)[1][-1])
+            print(f"{sp.name:<20}{mat.name[:24]:<26}{rel:>7.0f}%{btlabel:>13}"
+                  f"{tlabel:>14}{seam:>10.2f}{strength:>10.1f}{first:>16}")
             rows.append({"species": sk, "material": mk, "reliability": rel,
                          "mean_breakthrough_step": None if not np.isfinite(bt) else bt,
-                         "mean_breakthrough_time": tctx["label"], "first_seam": first})
+                         "mean_breakthrough_time": tctx["label"],
+                         "mean_seam_stress_mpa": round(seam, 2),
+                         "strength_end_mpa": round(strength, 2),
+                         "first_seam": first})
 
     # ---- provenance summary in the same report ----
-    reg = provenance.build_registry(pod, material=MATERIALS["bioplastic"],
+    reg = provenance.build_registry(pod, material=MATERIALS["pha"],
                                     species=SPECIES["rhizophora"])
     print("\nData provenance (constants used):")
     for lvl, n in reg["counts"].items():

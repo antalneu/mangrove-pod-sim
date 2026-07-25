@@ -14,24 +14,25 @@ Calibration Mode and material testing) before any production decision.
 
 How a material enters the physics
 ---------------------------------
-The reduced-order surrogate is dimensionless. A material acts through two
-*relative* multipliers, anchored so bioplastic reproduces the original
-calibration (see provenance.REF_FRACTURE_MPA):
+The wall model works in real MPa, so a material enters it directly rather than
+as a relative multiplier:
 
-    capacity  x= (fracture_strength / REF_FRACTURE) ** STRENGTH_SENSITIVITY
-    capacity  x= degradation(t)      # wet/tidal strength loss over elapsed time
+    capacity(t) = fracture_strength_mpa * degradation(t)   # remaining strength
+    damage     += (sigma / capacity) ** fatigue_exponent * dt / T_REF_MONTHS
 
-Nothing else in the engine changes. A stronger material resists longer; a
-faster-degrading material weakens over the establishment window; a non-degrading
-material (concrete) essentially never gives way on its own.
+`fracture_strength_mpa` is the wall's capacity in MPa; `degradation` is the
+wet/tidal strength loss over elapsed time; `fatigue_exponent` is the
+subcritical-crack-growth exponent that decides whether a wall held *just under*
+strength eventually fails (low n, polymers) or effectively never does (high n,
+ceramics). A biodegradable pod releases because the wall weakens into the root
+load - the actual design mechanism.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import List
 
-from .provenance import (Constant, LITERATURE, ESTIMATE, CALIBRATED,
-                         REF_FRACTURE_MPA, STRENGTH_SENSITIVITY)
+from .provenance import Constant, LITERATURE, ESTIMATE, CALIBRATED
 
 
 @dataclass
@@ -42,21 +43,22 @@ class Material:
     fracture_strength_mpa: float          # best estimate
     fracture_range_mpa: tuple             # (lo, hi) plausible spread
     stiffness_mpa: float                  # elastic modulus estimate
+    # Static-fatigue (subcritical crack-growth) exponent n: time to rupture
+    # scales as (sigma_f/sigma)^n. Ceramics/concrete sit high (20-40, very sharp
+    # threshold); polymers lower (8-15).
+    fatigue_exponent: float
     # --- durability ---
     wet_strength_loss_per_month: float    # fraction of strength lost per month wet
     # --- environment ---
     biodegradable: bool
     biodegradability: str                 # short human label
     biodegradability_note: str
+    strength_note: str = ""               # caveat on the strength estimate
     warn: bool = False                    # show a visible UI warning
     warn_text: str = ""
     blurb: str = ""
 
     # ---- physics coupling ----
-    def strength_scale(self) -> float:
-        """Static capacity multiplier vs the reference material."""
-        return (self.fracture_strength_mpa / REF_FRACTURE_MPA) ** STRENGTH_SENSITIVITY
-
     def degradation_multiplier(self, elapsed_months: float) -> float:
         """Remaining strength fraction after `elapsed_months` of tidal wetting.
         Linear loss, floored so a wall never becomes literally zero-strength."""
@@ -72,10 +74,20 @@ class Material:
                 f"{self.name}: fracture strength (flexural)",
                 f"{self.fracture_strength_mpa:g}  (range {lo:g}-{hi:g})", "MPa",
                 ESTIMATE, "Engineering estimate for a thin scored wall of this class.",
-                "NOT a datasheet value and NOT measured on a pod. Sets seam "
-                "capacity relative to the reference material. Verify by testing "
-                "notched samples of the actual formulation.",
+                (self.strength_note or
+                 "NOT a datasheet value and NOT measured on a pod. This IS the "
+                 "seam capacity the computed wall stress is compared against, so "
+                 "it sets the margin directly. Verify by testing notched samples "
+                 "of the actual formulation."),
                 group="material"),
+            Constant(
+                f"mat_{self.key}_fatigue", f"{self.name}: static-fatigue exponent n",
+                f"{self.fatigue_exponent:g}", "", ESTIMATE,
+                "Subcritical crack-growth exponents for the material class.",
+                "Time to rupture scales as (sigma_f/sigma)^n, so a wall held just "
+                "under strength still fails eventually and one held well under it "
+                "never does. Class-level estimate - verify with sustained-load "
+                "testing.", group="material"),
             Constant(
                 f"mat_{self.key}_stiffness", f"{self.name}: stiffness (elastic modulus)",
                 f"~{self.stiffness_mpa:g}", "MPa", ESTIMATE,
@@ -101,12 +113,13 @@ class Material:
             "key": self.key, "name": self.name,
             "fracture_strength_mpa": self.fracture_strength_mpa,
             "fracture_range_mpa": [lo, hi], "stiffness_mpa": self.stiffness_mpa,
+            "fatigue_exponent": self.fatigue_exponent,
             "wet_strength_loss_per_month": self.wet_strength_loss_per_month,
             "biodegradable": self.biodegradable,
             "biodegradability": self.biodegradability,
             "biodegradability_note": self.biodegradability_note,
+            "strength_note": self.strength_note,
             "warn": self.warn, "warn_text": self.warn_text, "blurb": self.blurb,
-            "strength_scale": round(self.strength_scale(), 3),
             "estimate_disclaimer": "Engineering estimate — requires lab verification.",
         }
 
@@ -115,22 +128,70 @@ class Material:
 #  presets  (ALL VALUES ARE ENGINEERING ESTIMATES - lab verification required)
 # ----------------------------------------------------------------------------- #
 MATERIALS = {
+    # PHA / PHBV — genuinely marine-biodegradable; the design-intent baseline
+    # this whole project is built around.
+    "pha": Material(
+        key="pha", name="PHA / PHBV (marine-degradable)",
+        fracture_strength_mpa=55.0, fracture_range_mpa=(40.0, 75.0),
+        stiffness_mpa=2800.0,
+        fatigue_exponent=12,   # ductile-ish polymer: slow crack growth, forgiving
+        wet_strength_loss_per_month=0.05,
+        biodegradable=True, biodegradability="Marine-biodegradable — months to ~1 yr",
+        biodegradability_note=(
+            "PHA (incl. PHBV) genuinely biodegrades in seawater — field studies show "
+            "full marine degradation on the order of months to a few years (within "
+            "~1 yr for some formulations), depending on thickness, formulation and "
+            "site. This is the design-intent baseline that holds shape, then "
+            "dissolves to release the seedling. Estimate — verify with immersion "
+            "testing."),
+        blurb="Strong at first, then genuinely biodegrades in seawater to release the seedling. The design-intent baseline."),
+
+    # PLA — mechanically stronger/stiffer, but NOT reliably marine-degradable:
+    # needs the heat of industrial composting. Distinct preset, distinct claim.
+    "pla": Material(
+        key="pla", name="PLA (industrial-compost only)",
+        fracture_strength_mpa=90.0, fracture_range_mpa=(70.0, 110.0),
+        stiffness_mpa=3500.0,
+        fatigue_exponent=14,   # stiffer, more brittle polymer than PHA
+        wet_strength_loss_per_month=0.006,
+        biodegradable=False,
+        biodegradability="NOT marine-degradable — industrial composting only",
+        biodegradability_note=(
+            "PLA does NOT reliably biodegrade in ambient marine or soil conditions — "
+            "it needs the elevated heat of industrial composting. In side-by-side "
+            "testing PLA did not meet standard marine-biodegradation thresholds "
+            "where PHA did. It persists in seawater over the establishment window. "
+            "Estimate."),
+        warn=True, warn_text=(
+            "⚠ PLA is NOT marine-degradable: it requires industrial composting heat "
+            "and does not reliably break down in ambient seawater or soil. For a "
+            "leave-in-place ocean pod, choose PHA instead."),
+        blurb="Stiffer and stronger than PHA — but it only composts industrially, so it won't dissolve at sea."),
+
     "clay": Material(
         key="clay", name="Clay (low-fired earthenware)",
-        fracture_strength_mpa=15.0, fracture_range_mpa=(8.0, 25.0),
+        fracture_strength_mpa=6.0, fracture_range_mpa=(1.0, 25.0),
         stiffness_mpa=8000.0,
+        fatigue_exponent=30,   # ceramic static fatigue — very sharp threshold
         wet_strength_loss_per_month=0.03,
         biodegradable=True, biodegradability="Inert mineral — environmentally benign",
         biodegradability_note=(
             "Fired clay is not 'biodegradable' in the polymer sense, but it is an "
             "inert, non-toxic mineral that breaks down to sediment. Unfired/low-fired "
             "clay slakes faster in water (higher degradation). Estimate."),
-        blurb="Brittle ceramic; cracks readily at a scored seam. Benign if it stays behind."),
+        strength_note=(
+            "Flexural strength across fired-clay studies spans roughly 1–25 MPa; true "
+            "low-fired earthenware sits toward the LOW/weak end (intentionally more "
+            "porous and less vitrified than higher-fired stoneware), so ~6 MPa is "
+            "more representative than the mid-range. Treat the low end as the working "
+            "value; verify by testing notched samples."),
+        blurb="Brittle, porous low-fired ceramic; cracks readily at a scored seam. Benign if it stays behind."),
 
     "concrete": Material(
         key="concrete", name="Concrete (unreinforced, thin-wall)",
         fracture_strength_mpa=4.0, fracture_range_mpa=(3.0, 6.0),
         stiffness_mpa=25000.0,
+        fatigue_exponent=24,   # concrete static fatigue
         wet_strength_loss_per_month=0.004,
         biodegradable=False, biodegradability="Not biodegradable — persistent",
         biodegradability_note=(
@@ -143,22 +204,9 @@ MATERIALS = {
             "marine environment and can leach alkalinity. It may crack at the seam, "
             "but fragments stay behind — avoid for leave-in-place pods."),
         blurb="Durable and cheap, but persistent. Weak in tension so a thin scored seam still cracks."),
-
-    "bioplastic": Material(
-        key="bioplastic", name="Bioplastic (marine-degradable PHA/PLA)",
-        fracture_strength_mpa=55.0, fracture_range_mpa=(40.0, 75.0),
-        stiffness_mpa=2800.0,
-        wet_strength_loss_per_month=0.05,
-        biodegradable=True, biodegradability="Marine-biodegradable (formulation-dependent)",
-        biodegradability_note=(
-            "Designed to hold shape initially, then weaken and biodegrade over the "
-            "establishment window. Real degradation rate is highly "
-            "formulation/site-dependent (PHA degrades faster than PLA in seawater). "
-            "Estimate — verify with immersion testing."),
-        blurb="Strong at first, then degrades to release the seedling cleanly. The design-intent baseline."),
 }
 
-DEFAULT_MATERIAL = "bioplastic"
+DEFAULT_MATERIAL = "pha"
 
 
 def get_material(key: str) -> Material:

@@ -147,20 +147,28 @@ def project_inner_to_outer(pod, face_field):
 
 
 def render_pressure_outer(pod, inner_field, path, title="wall stress (outer view)",
-                          cmap="inferno", views=((16, -60), (16, 60), (16, 180))):
+                          cmap="inferno", views=((16, -60), (16, 60), (16, 180)),
+                          vmax=None):
     """Opaque outer-surface heatmap of an inner-wall scalar field."""
     proj = project_inner_to_outer(pod, inner_field)
-    return render_pressure_png(pod, proj, path, title=title, cmap=cmap, views=views)
+    return render_pressure_png(pod, proj, path, title=title, cmap=cmap,
+                               views=views, vmax=vmax)
 
 
-def render_pressure_png(pod, face_values, path, title="wall pressure",
+def render_pressure_png(pod, face_values, path, title="wall stress",
                         cmap="inferno", views=((18, -65), (18, 115)),
-                        roots=None, log=False):
-    """Render the pod coloured by a per-face scalar (e.g. cumulative stress)."""
+                        roots=None, log=False, vmax=None):
+    """Render the pod coloured by a per-face scalar (wall stress in MPa).
+
+    Pass `vmax` (normally the material's remaining fracture strength) to anchor
+    the colour ramp so the top of the scale literally means "at fracture" — this
+    is what the browser tool does, so the two read the same way."""
     v = np.asarray(face_values, float).copy()
     if log:
         v = np.log1p(np.maximum(v, 0))
-    vmax = np.percentile(v[v > 0], 99) if np.any(v > 0) else 1.0
+        vmax = np.log1p(vmax) if vmax is not None else None
+    if vmax is None:
+        vmax = np.percentile(v[v > 0], 99) if np.any(v > 0) else 1.0
     vmax = max(vmax, 1e-9)
     norm = matplotlib.colors.Normalize(0, vmax)
     cm = matplotlib.colormaps[cmap]
@@ -179,7 +187,7 @@ def render_pressure_png(pod, face_values, path, title="wall pressure",
     sm = plt.cm.ScalarMappable(norm=norm, cmap=cm)
     sm.set_array([])
     cbar = fig.colorbar(sm, ax=fig.axes, shrink=0.55, pad=0.02)
-    cbar.set_label(("log " if log else "") + "cumulative stress")
+    cbar.set_label(("log " if log else "") + "wall stress (MPa)")
     fig.suptitle(title, fontsize=13)
     fig.savefig(path, dpi=120, bbox_inches="tight")
     plt.close(fig)
@@ -216,7 +224,7 @@ def render_results_analysis(pod, mcresult, pattern, path,
     """4-panel results figure for one Monte-Carlo batch:
     outer heatmap, unwrapped stress with slot boxes, per-site activation, and a
     breakthrough-time histogram."""
-    field = mcresult.mean_cum_stress_faces
+    field = mcresult.mean_stress_faces
     proj = project_inner_to_outer(pod, field)
 
     fig = plt.figure(figsize=(16, 9))
@@ -232,7 +240,7 @@ def render_results_analysis(pod, mcresult, pattern, path,
     _add_mesh(axA, pod, fcolors, alpha=1.0)
     _set_equal_pod_axes(axA, pod)
     axA.view_init(elev=16, azim=-60)
-    axA.set_title("mean cumulative wall stress (outer surface)", fontsize=10)
+    axA.set_title("mean wall stress, MPa (outer surface)", fontsize=10)
 
     # B: unwrapped inner-wall stress with slot + ligament overlay
     axB = fig.add_subplot(2, 2, 2)
@@ -251,7 +259,7 @@ def render_results_analysis(pod, mcresult, pattern, path,
     axB.set_xlabel("theta (deg)")
     axB.set_ylabel("z")
     axB.set_title("unwrapped inner-wall stress (slots cyan)", fontsize=10)
-    fig.colorbar(sc, ax=axB, shrink=0.8, label="cum. stress")
+    fig.colorbar(sc, ax=axB, shrink=0.8, label="wall stress (MPa)")
 
     # C: per-site activation rate + mean activation step
     axC = fig.add_subplot(2, 2, 3)
@@ -310,17 +318,25 @@ def face_field_to_vertex(pod, face_values, log=False):
 
 
 def build_pressure_figure(pod, face_values, title="Mangrove pod wall stress",
-                          roots=None, log=False, project_to_outer=False):
+                          roots=None, log=False, project_to_outer=False,
+                          vmax=None):
     """Return a Plotly Figure of the pod coloured by a per-face scalar field
     (optionally with the root network overlaid). Reused by the HTML export and
-    the web app."""
+    the web app.
+
+    `vmax` anchors the colour ramp — pass the material's remaining fracture
+    strength so the top of the scale means "at fracture", as the browser tool
+    does. Left None, it falls back to the 99th percentile of the field."""
     import plotly.graph_objects as go
 
     field = face_values
     if project_to_outer:
         field = project_inner_to_outer(pod, np.asarray(face_values, float))
     vert_val = face_field_to_vertex(pod, field, log=log)
-    vmax = np.percentile(vert_val[vert_val > 0], 99) if np.any(vert_val > 0) else 1.0
+    if vmax is None:
+        vmax = np.percentile(vert_val[vert_val > 0], 99) if np.any(vert_val > 0) else 1.0
+    elif log:
+        vmax = np.log1p(vmax)
 
     # 4-stop calm -> warning -> critical scale (reads clearly at a glance)
     stress_scale = [[0.0, "#2f6f5e"], [0.35, "#e9c46a"],
@@ -330,7 +346,7 @@ def build_pressure_figure(pod, face_values, title="Mangrove pod wall stress",
         i=pod.F[:, 0], j=pod.F[:, 1], k=pod.F[:, 2],
         intensity=vert_val, colorscale=stress_scale, cmin=0, cmax=max(vmax, 1e-9),
         showscale=True, opacity=1.0,
-        colorbar=dict(title=("log stress" if log else "stress")),
+        colorbar=dict(title=("log stress" if log else "stress (MPa)")),
         lighting=dict(ambient=0.42, diffuse=0.9, specular=0.18,
                       roughness=0.55, fresnel=0.15),
         lightposition=dict(x=180, y=260, z=520),
@@ -354,8 +370,9 @@ def build_pressure_figure(pod, face_values, title="Mangrove pod wall stress",
 
 
 def pressure_heatmap_html(pod, face_values, path, title="Mangrove pod wall stress",
-                          roots=None, log=False):
+                          roots=None, log=False, vmax=None):
     """Self-contained interactive Plotly 3-D heatmap written to `path`."""
-    fig = build_pressure_figure(pod, face_values, title=title, roots=roots, log=log)
+    fig = build_pressure_figure(pod, face_values, title=title, roots=roots,
+                                log=log, vmax=vmax)
     fig.write_html(path, include_plotlyjs=True, full_html=True)
     return path

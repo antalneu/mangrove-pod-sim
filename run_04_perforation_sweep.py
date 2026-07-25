@@ -22,26 +22,39 @@ pod = PodMesh.from_ply("pod_mesh.ply")
 Hf = pod.features.height
 
 # ---- define the variants to test (edit these to explore your own designs) ----
+# Every variant carries the browser tool's default seam scoring; as moulded the
+# ~21 mm wall never releases, so an unscored sweep would rank nothing against
+# nothing. "shallow-seam"/"deeper-seam" isolate scoring depth itself, which is
+# by far the strongest lever the designer has (stress goes as 1/t^2 in bending).
+SEAM = dict(seam_score=0.85, seam_width_deg=50.0)
+
+as_drawn = perf.PerforationPattern.detected(pod, name="as-drawn")
+as_drawn.seam_score, as_drawn.seam_width_deg = SEAM["seam_score"], SEAM["seam_width_deg"]
+
 variants = [
-    perf.PerforationPattern.detected(pod, name="as-drawn"),
+    as_drawn,
     perf.PerforationPattern.parametric(pod, name="longer-slots",
-                                       slot_length_frac=0.34),
+                                       slot_length_frac=0.34, **SEAM),
     perf.PerforationPattern.parametric(pod, name="shorter-slots",
-                                       slot_length_frac=0.12),
+                                       slot_length_frac=0.12, **SEAM),
     perf.PerforationPattern.parametric(pod, name="wider-slots",
-                                       slot_width_deg=26),
+                                       slot_width_deg=26, **SEAM),
     perf.PerforationPattern.parametric(pod, name="narrower-slots",
-                                       slot_width_deg=8),
+                                       slot_width_deg=8, **SEAM),
     perf.PerforationPattern.parametric(pod, name="8-slots",
-                                       n_slots=8),
+                                       n_slots=8, **SEAM),
     perf.PerforationPattern.parametric(pod, name="slots-higher",
-                                       slot_z_center_frac=0.62),
+                                       slot_z_center_frac=0.62, **SEAM),
     perf.PerforationPattern.parametric(pod, name="slots-lower",
-                                       slot_z_center_frac=0.42),
+                                       slot_z_center_frac=0.42, **SEAM),
     perf.PerforationPattern.parametric(pod, name="slots-over-splits",
-                                       align="split"),
+                                       align="split", **SEAM),
     perf.PerforationPattern.parametric(pod, name="deep-base-score",
-                                       split_score=0.7, split_depth_frac=1.8),
+                                       split_score=0.7, split_depth_frac=1.8, **SEAM),
+    perf.PerforationPattern.parametric(pod, name="shallow-seam",
+                                       seam_score=0.70, seam_width_deg=50.0),
+    perf.PerforationPattern.parametric(pod, name="deeper-seam",
+                                       seam_score=0.92, seam_width_deg=50.0),
 ]
 
 print(f"Sweeping {len(variants)} perforation patterns x {n_runs} runs each...\n")

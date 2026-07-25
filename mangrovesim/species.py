@@ -63,6 +63,12 @@ class Species:
         r = self.ramp_base + (self.ramp_peak - self.ramp_base) * frac ** self.ramp_exp
         return r
 
+    def force_ramp_norm(self, frac) -> np.ndarray:
+        """The same concave slow-start shape, normalised to 1.0 at maturity, so
+        the root pressure the user sets IS the peak turgor-limited pressure a
+        root can exert rather than something the ramp overshoots."""
+        return self.force_ramp(frac) / self.ramp_peak
+
     # ---- salinity modifies growth RATE (optional environmental input) ----
     def growth_rate_modifier(self, salinity_ppt: Optional[float]) -> float:
         """1.0 within the optimal salinity band, tapering outside it."""

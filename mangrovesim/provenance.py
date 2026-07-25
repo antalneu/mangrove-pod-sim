@@ -19,8 +19,8 @@ ESTIMATE     engineering estimate, or a proxy borrowed from adjacent literature
              mangrove-specific data). **Needs lab validation.**
 GEOMETRY     measured directly off the user's 3-D model - a shape fact, not a
              physical material/biology property.
-CALIBRATED   chosen so the reduced-order surrogate behaves sensibly for
-             *relative* comparison. Not a measured physical quantity.
+CALIBRATED   a modelling choice: chosen so the wall-mechanics model behaves
+             sensibly. Not a measured physical quantity.
 MEASURED     supplied by the user from physical prototype testing via Calibration
              Mode (a load cell pressing a real propagule root against a scored
              pod sample). Overrides the estimate once real data exists.
@@ -51,8 +51,8 @@ LEVELS = {
                  "blurb": "Engineering estimate or adjacent-field proxy. Validate physically."},
     GEOMETRY:   {"label": "Measured off the 3-D model", "color": "#5a8fce",
                  "blurb": "A shape fact from your Rhino model, not a material property."},
-    CALIBRATED: {"label": "Calibrated (relative surrogate)", "color": "#8a7bd8",
-                 "blurb": "Chosen for sensible relative behaviour; not a measured quantity."},
+    CALIBRATED: {"label": "Calibrated (modelling choice)", "color": "#8a7bd8",
+                 "blurb": "Chosen for sensible behaviour; not a measured quantity."},
     MEASURED:   {"label": "Measured (your prototype)", "color": "#48c9b0",
                  "blurb": "From your physical Calibration-Mode input; overrides the estimate."},
 }
@@ -81,42 +81,79 @@ class Constant:
 
 
 # ----------------------------------------------------------------------------- #
-#  coupling reference constants (the physical <-> surrogate bridge)
+#  physical scale + wall-mechanics constants
 # ----------------------------------------------------------------------------- #
-# The reduced-order engine is dimensionless. Physical inputs enter only as
-# *relative* multipliers, anchored to this reference pair so the existing
-# calibration is exactly reproduced at (bioplastic, 0.75 MPa).
-REF_FRACTURE_MPA = 55.0        # bioplastic flexural strength = capacity baseline
+# The Rhino model is authored in MILLIMETRES: the pod is 333.7 units tall
+# (334 mm), its bore is ~25.6 mm across at the waist and the wall is ~21 mm.
+# Every pressure and stress in pressure.py is therefore a real MPa (N/mm^2).
+# THIS IS THE SINGLE MOST LOAD-BEARING ASSUMPTION IN THE TOOL: every stress
+# scales with it, so confirm it against the physical prototype.
+MM_PER_UNIT = 1.0
+# Clamped rectangular plate, peak bending stress sigma = beta*p*(L/t)^2
+# (Roark's Formulas for Stress and Strain, clamped edges, a/b ~ 1 -> beta ~ 0.308).
+PLATE_BETA = 0.31
+# Static fatigue / subcritical crack growth: at sigma = sigma_f the section
+# ruptures in T_REF_MONTHS; below that, time-to-rupture scales as (sigma_f/sigma)^n.
+T_REF_MONTHS = 0.5
+MIN_T_EFF_MM = 0.15            # a score cannot thin the wall below this
+NET_SECTION_FLOOR = 0.12       # cap on net-section amplification (~8x)
+
 REF_ROOT_PRESSURE_MPA = 0.75   # mid of the grounded 0.5-1.0 MPa working range
-# How strongly the *relative* fracture-strength estimate scales seam capacity in
-# this surrogate. <1 compresses the spread between materials (a modelling choice,
-# not physics). Documented in the panel so it is never mistaken for a measurement.
-STRENGTH_SENSITIVITY = 0.9
+
+
+def contact_ref_mm(contact_stiffness: float) -> float:
+    """Indentation delta0 (mm) at which a swelling root reaches its full bearing
+    pressure, p = p_root * (1 - exp(-delta/delta0)). Tied to the "wall contact
+    stiffness" control so that knob keeps its meaning: a stiffer contact reaches
+    full pressure after a smaller indentation."""
+    return min(max(10.0 / max(float(contact_stiffness), 1e-3), 0.12), 4.0)
 
 
 def coupling_constants() -> List[Constant]:
     return [
         Constant(
-            "ref_root_pressure", "Reference root pressure (surrogate anchor)",
+            "ref_root_pressure", "Reference root pressure (default)",
             f"{REF_ROOT_PRESSURE_MPA}", "MPa", CALIBRATED,
             "Mid-point of the grounded working range (see root_pressure_working_range).",
-            "Root pressure enters the surrogate only as pressure/this-reference; "
-            "at this value the drive equals the original calibration.",
+            "The turgor-limited bearing pressure a fully-engaged root develops. "
+            "However far a root swells it can never push harder than this.",
             group="coupling"),
         Constant(
-            "ref_fracture", "Reference fracture strength (surrogate anchor)",
-            f"{REF_FRACTURE_MPA}", "MPa", CALIBRATED,
-            "Bioplastic flexural-strength estimate (see materials).",
-            "Seam capacity scales as (material strength / this reference) ^ "
-            f"{STRENGTH_SENSITIVITY}; bioplastic reproduces the original calibration.",
-            group="coupling"),
+            "unit_scale", "Model unit scale",
+            f"1 unit = {MM_PER_UNIT:g} mm", "", GEOMETRY,
+            "Read off the Rhino model's own dimensions.",
+            "THE SINGLE MOST LOAD-BEARING ASSUMPTION IN THE TOOL: every stress "
+            "scales with it. Confirm it against the physical prototype.",
+            group="model"),
         Constant(
-            "strength_sensitivity", "Strength-to-capacity sensitivity",
-            f"{STRENGTH_SENSITIVITY}", "exponent", CALIBRATED,
+            "stress_formula", "Wall stress relation",
+            "sigma = SCF * p * [ r/t + beta*(L/t)^2 ]", "MPa", CALIBRATED,
+            "Standard thin-shell + flat-plate relations, combined by this project.",
+            "Membrane hoop stress on a pressurised shell superposed with the "
+            "transverse bending of the wall panel. Superposition of the two is the "
+            "modelling choice; each term on its own is textbook.",
+            group="model"),
+        Constant(
+            "plate_beta", "Plate bending coefficient beta",
+            f"{PLATE_BETA}", "", LITERATURE,
+            "Roark's Formulas for Stress and Strain - clamped rectangular plate, a/b ~ 1.",
+            "Peak bending stress under uniform pressure, sigma = beta*q*b^2/t^2.",
+            group="model"),
+        Constant(
+            "t_ref_months", "Static-fatigue reference time",
+            f"{T_REF_MONTHS}", "months", CALIBRATED,
             "Modelling choice.",
-            "Compresses the between-material capacity spread in this reduced-order "
-            "surrogate. A tunable modelling knob, not a physical constant.",
-            group="coupling"),
+            "Time to rupture when stress exactly equals the remaining fracture "
+            "strength. Sets the absolute pace of the delayed-failure branch.",
+            group="failure"),
+        Constant(
+            "net_section", "Net-section amplification",
+            f"1 / (1 - phi), capped at {1/NET_SECTION_FLOOR:.0f}x", "", CALIBRATED,
+            "Net-section stress principle.",
+            "Once a fraction phi of a seam's bands have cracked, the survivors "
+            "carry the whole section. This is what makes a crack initiate at the "
+            "slot-tip hot spot and then RUN across the ligament rather than stalling.",
+            group="failure"),
     ]
 
 
@@ -129,11 +166,12 @@ def core_constants(pod=None) -> List[Constant]:
     out = [
         Constant(
             "model_type", "Failure model",
-            "Reduced-order engineering surrogate (not FEA)", "", CALIBRATED,
+            "Shell mechanics in real MPa (not FEA)", "", CALIBRATED,
             "This project's own transparent model.",
-            "Calibrated for RELATIVE comparison of designs/materials and to locate "
-            "failure hot-spots - not for absolute load numbers. An FEA cross-check "
-            "is recommended before trusting absolute margins.",
+            "Hoop + plate bending on the net scored section, failed by brittle "
+            "overload and a power-law static-fatigue integral. Absolute numbers "
+            "are real MPa but rest on the unit scale and the estimated constants "
+            "below; an FEA cross-check is recommended before trusting margins.",
             group="model"),
         Constant(
             "root_pressure_working_range", "Root-pressure working range (default)",
@@ -145,12 +183,12 @@ def core_constants(pod=None) -> List[Constant]:
             "Treat as a STARTING POINT pending physical validation.",
             group="root force"),
         Constant(
-            "contact_stiffness", "Root contact stiffness",
-            "20 (surrogate units)", "", CALIBRATED,
+            "contact_stiffness", "Contact engagement depth delta0",
+            f"{contact_ref_mm(20.0):.2f}", "mm", CALIBRATED,
             "Chosen for sensible relative behaviour.",
-            "Pressure per unit radial penetration of the swelling root into the "
-            "wall. Scaled by (root pressure / reference) so the physical slider "
-            "drives it; the base number itself is not a measured quantity.",
+            "Indentation at which a swelling root reaches its full bearing "
+            "pressure, p = p_root * (1 - exp(-delta/delta0)). Driven by the 'wall "
+            "contact stiffness' control. Not a measured quantity.",
             group="root force"),
         Constant(
             "slot_tip_scf", "Stress-concentration factor at slot tips",
@@ -177,14 +215,20 @@ def core_constants(pod=None) -> List[Constant]:
     if pod is not None:
         f = pod.features
         out += [
-            Constant("geom_height", "Pod height", f"{f.height:.1f}",
-                     "model units (~11x a 30 cm propagule)", GEOMETRY,
+            Constant("geom_height", "Pod height",
+                     f"{f.height * MM_PER_UNIT:.0f}", "mm", GEOMETRY,
                      "Measured off mangrovepod.3dm.", "", group="geometry"),
             Constant("geom_wall", "Median wall thickness",
-                     f"{f.wall_thickness_median:.1f}", "model units", GEOMETRY,
+                     f"{f.wall_thickness_median * MM_PER_UNIT:.1f}", "mm", GEOMETRY,
                      "Measured off mangrovepod.3dm.",
-                     "Local thickness sets each face's baseline capacity.",
+                     "Local thickness sets the net section that carries the root "
+                     "load - the single most sensitive geometric input.",
                      group="geometry"),
+            Constant("geom_bore", "Bore diameter at the waist",
+                     f"{2 * f.inner_r_waist * MM_PER_UNIT:.1f}", "mm", GEOMETRY,
+                     "Measured off mangrovepod.3dm.",
+                     "The lever arm for hoop stress, and the space the propagule "
+                     "has to thicken into.", group="geometry"),
             Constant("geom_slots", "Detected waist slots",
                      f"{len(f.slots)}", "count", GEOMETRY,
                      "Auto-detected from the mesh.", "", group="geometry"),

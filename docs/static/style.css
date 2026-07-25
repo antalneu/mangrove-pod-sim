@@ -506,3 +506,8 @@ input[type=range]:focus-visible{outline:2px solid var(--clay-lite);outline-offse
 
 /* The results panel is a live region during a run — announce the verdict */
 .verdict{scroll-margin-top:12px}
+
+/* The run's own outcome, carried in the verdict during playback so the elapsed
+   month at the playhead can never be mistaken for the release month. */
+.run-outcome{display:block;margin-top:7px;font-weight:600;color:var(--ink-2)}
+.run-outcome b{color:var(--ink)}

@@ -166,7 +166,10 @@ function cfg(extra) {
     contact_stiffness: +$("contact_stiffness").value,
     n_time_steps: +$("n_time_steps").value,
     pull_assist: +$("pull_assist").value,
-    show_roots: $("show_roots").checked,
+    // NB: display-only toggles (show_roots / show_ground / show_stress) are
+    // deliberately NOT in here. cfg() is the simulation's input, and anything it
+    // carries must also appear in SIM_INPUT_IDS or a cached animation goes stale
+    // without anyone noticing.
     project_outer: true,   // stress always projected to the visible (outer) surface
   };
   return Object.assign(c, extra || {});
@@ -574,6 +577,9 @@ function buildAnimStats(idx) {
   }
   return Object.assign({}, A.stats, {
     mechanics: mech,
+    // the run's own outcome, kept alongside the at-this-step state so the panel
+    // can show the answer before the playhead reaches it
+    run_breakthrough_step: brk, run_breakthrough_time: A.stats.breakthrough_time,
     n_time_steps: A.T,
     breakthrough_step: broken ? brk : null,
     breakthrough_time: broken ? A.stats.breakthrough_time : { months: null, label: "—" },
@@ -604,18 +610,27 @@ function renderAnimSidebar(idx) {
   // nothing has been ruled out yet. Report the state at THIS step instead.
   if (st.breakthrough_step != null) return;
   const vd = $("verdict"); if (!vd) return;
-  const lab = A.timeline[idx] ? A.timeline[idx].label : "";
   const M = st.mechanics;
+  // The playhead's ELAPSED month is not the release month. Both used to be
+  // rendered as a bare "~N months" in this same slot, so a paused animation
+  // read as a different answer than Run simulation gave. Label the elapsed
+  // time as elapsed, and always carry this run's actual outcome alongside it.
+  const now = A.timeline[idx] ? A.timeline[idx].months : null;
+  const elapsed = now != null ? `Month <b>${now.toFixed(1)}</b> of ${A.window_months}` : "In progress";
+  const bt = A.stats.breakthrough_time, brk = A.breakthrough_step;
+  const outcome = brk != null
+    ? ` <span class="run-outcome">This run releases at <b>${bt && bt.label ? bt.label : "step " + brk}</b> · step ${brk}.</span>`
+    : ` <span class="run-outcome">This run never releases within ${A.T} steps.</span>`;
   const load = M ? ` Seam at <b>${fmtMPa(M.seam_stress_mpa)} MPa</b> of
     <b>${fmtMPa(M.strength_end_mpa)} MPa</b> remaining strength — <b>${pct(M.utilisation)}</b>.` : "";
   vd.className = "verdict idle";
   if (st.first_crack_step != null) {
     let cracked = 0, nLig = 0;
     for (let i = 0; i < A.activation.length; i++) if (A.is_lig[i]) { nLig++; if (A.activation[i] != null && A.activation[i] <= idx + 1) cracked++; }
-    vd.innerHTML = `Cracking — <b>${lab}</b>. ${cracked} of ${nLig} seams torn; the pod releases once
-      ${Math.max(1, Math.ceil(nLig * 0.75))} give way.` + load;
+    vd.innerHTML = `${elapsed} — cracking. ${cracked} of ${nLig} seams torn; the pod releases once
+      ${Math.max(1, Math.ceil(nLig * 0.75))} give way.` + load + outcome;
   } else {
-    vd.innerHTML = `Growth in progress — <b>${lab}</b>. Wall intact; root pressure building toward the seams.` + load;
+    vd.innerHTML = `${elapsed} — wall intact; root pressure building toward the seams.` + load + outcome;
   }
 }
 function animScrub() {
@@ -738,8 +753,10 @@ function updateAnimReadout(idx) {
   else if (ligCracked > 0) status = `<span class="astatus crack">● ${ligCracked}/${nLig} seams cracked</span>`;
   else status = `<span class="astatus ok">● intact, pressure building</span>`;
   const win = A.window_months, elapsed = tl.months != null ? tl.months.toFixed(1) : "–";
-  el.innerHTML = `<span class="abig">${tl.label}</span>` +
-    `<span class="amuted"> · ${elapsed} / ${win} mo · step ${idx + 1}/${A.T} · ${A.species_name}</span>` +
+  // "month 6.5 of 12", not a bare "~6.5 months" — this is the playhead position,
+  // not the run's answer, and the two must not look alike
+  el.innerHTML = `<span class="abig">month ${elapsed} / ${win}</span>` +
+    `<span class="amuted"> · step ${idx + 1}/${A.T} · ${A.species_name}</span>` +
     ` &nbsp; ${status}`;
 }
 
@@ -840,9 +857,15 @@ function renderSingle(s) {
       stressPhrase + guidanceLine(M);
   }
   timeStrip(s);
+  // Mid-playback the run's release is already known even though the playhead
+  // has not reached it — show it rather than "none", which read as a result.
+  const rb = s.run_breakthrough_step, rbt = s.run_breakthrough_time;
+  const releaseVal = bt != null ? (bm&&bm.months!=null?bm.label:`step ${bt}`)
+    : (rb != null ? (rbt&&rbt.months!=null?rbt.label:`step ${rb}`) : "none");
+  const releaseSub = bt != null ? `step ${bt} of ${N}`
+    : (rb != null ? `at step ${rb} — not yet reached` : `within ${N} steps`);
   $("statcards").innerHTML = (M
-    ? card("Release", bt!=null ? (bm&&bm.months!=null?bm.label:`step ${bt}`) : "none",
-           bt!=null ? `step ${bt} of ${N}` : `within ${N} steps`) +
+    ? card("Release", releaseVal, releaseSub) +
       card("Seam stress", fmtMPa(M.seam_stress_mpa), `MPa · ${fmtMPa(M.peak_stress_mpa)} at the slot tip`) +
       card("Strength left", fmtMPa(M.strength_end_mpa), `MPa · from ${fmtMPa(M.strength_start_mpa)} when moulded`) +
       card("Utilisation", pct(M.utilisation), M.utilisation >= 1 ? "over fracture" : "of remaining strength") +

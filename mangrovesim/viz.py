@@ -194,25 +194,72 @@ def render_pressure_png(pod, face_values, path, title="wall stress",
     return path
 
 
-def _add_roots(ax, roots, color="#f5f0d0"):
-    segs = roots.segments()
-    if len(segs):
-        lc = Line3DCollection(segs, colors=color, linewidths=0.6, alpha=0.9)
-        ax.add_collection3d(lc)
+#  Root wood ramp: pale sapwood at the fine tips -> dark bark on the thick
+#  taproot, so branch hierarchy reads at a glance.
+ROOT_WOOD = matplotlib.colors.LinearSegmentedColormap.from_list(
+    "rootwood", ["#e8d6a8", "#c89a5b", "#96602f", "#5c3618"])
 
 
-def render_root_system(pod, roots, path, title="root growth in pod"):
+def _add_roots(ax, roots, color=None, alpha=1.0, shade=True):
+    """Draw the root system as tapered, shaded woody tubes.
+
+    The browser tool has always drawn tubes (render3d.root_tube_mesh); the
+    offline figures used to draw hairlines that ignored the pipe-model radius
+    entirely, so a thick taproot looked identical to a fine feeder root. This
+    uses the same tube geometry so the two surfaces agree."""
+    from . import render3d
+    V, F, face_r = render3d.root_tube_arrays(roots)
+    if V is None:
+        segs = roots.segments()
+        if len(segs):
+            ax.add_collection3d(Line3DCollection(segs, colors=color or "#8a5a2b",
+                                                 linewidths=0.6, alpha=0.9))
+        return
+
+    tris = V[F]                                   # (nF, 3, 3)
+    if color is None:                             # colour by thickness
+        t = face_r - face_r.min()
+        t = t / max(t.max(), 1e-9)
+        rgba = ROOT_WOOD(t ** 0.65)
+    else:
+        rgba = np.tile(matplotlib.colors.to_rgba(color), (len(F), 1))
+
+    if shade:
+        # cheap lambertian shading so the tubes read as round rather than flat
+        n = np.cross(tris[:, 1] - tris[:, 0], tris[:, 2] - tris[:, 0])
+        ln = np.linalg.norm(n, axis=1, keepdims=True)
+        n = n / np.maximum(ln, 1e-12)
+        light = np.array([0.35, 0.55, 0.75])
+        light = light / np.linalg.norm(light)
+        lam = 0.55 + 0.45 * np.clip(n @ light, 0, 1)
+        rgba[:, :3] *= lam[:, None]
+    rgba[:, 3] = alpha
+
+    pc = Poly3DCollection(tris, facecolors=rgba, edgecolors="none",
+                          linewidths=0, zsort="average")
+    ax.add_collection3d(pc)
+
+
+def render_root_system(pod, roots, path, title="root growth in pod",
+                       views=((14, -65), (14, 25), (14, 115))):
+    """Root architecture inside a ghosted pod.
+
+    The pod is kept very faint: the point of this figure is the root structure —
+    the dominant taproot, the acropetal laterals spiralling off it, and the
+    basal flare into the feet — and a heavier shell hides all of it."""
     lab = pod.region_labels()
     fcolors = np.array([matplotlib.colors.to_rgba(REGION_COLORS[l]) for l in lab])
-    fcolors[:, 3] = 0.18
-    fig = plt.figure(figsize=(14, 8))
-    for i, (el, az) in enumerate([(15, -65), (15, 115)]):
-        ax = fig.add_subplot(1, 2, i + 1, projection="3d")
-        _add_mesh(ax, pod, fcolors, alpha=0.18)
-        _add_roots(ax, roots, color="#8a5a2b")
+    fcolors[:, 3] = 0.07
+    fig = plt.figure(figsize=(6 * len(views), 8))
+    for i, (el, az) in enumerate(views):
+        ax = fig.add_subplot(1, len(views), i + 1, projection="3d")
+        _add_mesh(ax, pod, fcolors, alpha=0.07)
+        _add_roots(ax, roots)
         _set_equal_pod_axes(ax, pod)
         ax.view_init(elev=el, azim=az)
-    fig.suptitle(title, fontsize=13)
+    n = len(roots.nodes)
+    rmax = float(np.max(roots.radius)) if roots.radius is not None else 0.0
+    fig.suptitle(f"{title}   ({n} nodes, taproot ⌀{2*rmax:.1f} mm)", fontsize=13)
     fig.tight_layout()
     fig.savefig(path, dpi=120, bbox_inches="tight")
     plt.close(fig)

@@ -34,9 +34,11 @@ gentle pull from a planting team).
    opening, the narrow waist, the **4 vertical slot perforations**, the **4
    splayed base feet**, the **split-lines** between the feet, and a per-face
    **wall-thickness** field.
-3. **Simulate root growth.** Space-colonization branching from the top opening,
-   growing down through the waist and out into the feet, with configurable growth
-   rate, branching, and bias toward the slots/feet.
+3. **Simulate root growth.** A rule-based *architectural* model of a young
+   *Rhizophora* root system — a dominant gravitropic taproot, laterals emerging
+   acropetally behind the tip at per-order set-point angles, and a basal root
+   ball that flares into the feet — growing down through the waist with
+   configurable growth rate, branching and bias toward the slots/feet.
 4. **Compute wall stress over time.** Roots swell each time-step; where a root
    body reaches the inner wall it bears outward at its turgor-limited growth
    pressure. That pressure is mapped onto the real inner-wall faces and turned
@@ -237,7 +239,7 @@ See `outputs/04_perforation_comparison.png` and `outputs/03_results_analysis.png
 ```
 mangrovesim/
   podmesh.py      load .3dm -> mesh, detect waist/slots/feet/thickness, region masks
-  growth.py       space-colonization root growth (GrowthParams)
+  growth.py       architectural seedling-root growth: taproot + acropetal laterals
   perforation.py  parametric slots + base split-lines + quarter-piece seams -> net scored section
   pressure.py     inflate roots over time -> wall stress in MPa -> failure (SimParams, phys)
   montecarlo.py   many randomized runs (architecture + strength + pressure + wall tolerance)
@@ -261,10 +263,9 @@ outputs/          all generated figures, interactive HTML, and pod_features.json
 > the same equations, so the offline render pipeline (`run_01`..`run_05`) and the
 > website agree. Root growth uses each language's own RNG, so a given seed grows a
 > different root system in each — compare *distributions*, not single runs. Across
-> 30 seeds on the default design the two agree on mean first crack (82 vs 82
-> steps), mean breakthrough (100 vs 103), release rate (87% vs 83%) and peak wall
-> stress (106 vs 107 MPa); the governing seam stress is dispersed enough
-> (sd ≈ 7 MPa on a mean of ~12) that only its distribution is meaningful.
+> 30 seeds on the default design the two agree on mean node count (449 vs 452),
+> mean first crack (77 vs 75 steps), mean breakthrough (86.0 vs 86.2), release
+> rate (100% vs 100%) and governing seam stress (21.0 vs 20.0 MPa).
 
 ### Why v2 replaced the original surrogate
 
@@ -317,20 +318,56 @@ provenance panel as the tool's single most load-bearing assumption.
 - **Design guidance.** When a design does not release, the tool back-solves the
   **seam scoring depth** that would release it and reports the net wall in mm.
 
+### The root system that loads the wall
+
+Where the wall gets loaded is decided by root *architecture*, so the growth model
+reproduces it explicitly rather than filling the cavity with an isotropic tangle:
+
+- **A dominant taproot.** The radicle descends the cavity, steeply gravitropic
+  and much thicker than anything else — one axis, not a spray of equals.
+- **Acropetal laterals.** Laterals emerge *behind* the advancing tip at roughly
+  regular intervals, so the oldest and longest sit highest up an axis.
+- **Gravitropic set-point angles.** Each order holds a characteristic angle to
+  the horizontal — taproot ≈ −84°, first-order laterals ≈ −32°, finer orders
+  nearly flat — and a tip *relaxes* toward it each step. That relaxation is what
+  makes roots curve instead of running straight.
+- **Golden-angle branching.** Successive laterals roll ~137.5° around the parent,
+  so they spiral around it instead of stacking in one plane.
+- **Mechanical deflection.** A root reaching the wall cannot bore through it: it
+  deflects and slides along the surface, with friction damping the sideways
+  slide. Without that friction tips spiral round the bore and braid into a rope.
+- **A basal root ball.** Once roots reach the base they flare outward into the
+  feet. That splaying is what loads the base split-lines, and it is ~13% of all
+  nodes.
+
+Relative to the space-colonization model this replaced, the structured system
+loads the release seams noticeably harder at the same node density (~20 MPa vs
+~13 MPa governing seam stress), because organised roots pressed against the bore
+cover far more of each seam's z-bands than a diffuse tangle does. Node density is
+calibrated so the `n_attractors` knob keeps its old meaning.
+
 ### What v2 concludes
 
-As moulded, the ~24 mm wall sees only ~0.2 MPa at the seam against 22 MPa of
+As moulded, the ~21 mm wall sees a negligible seam stress against 22 MPa of
 remaining strength — **no material releases without deep scoring**. Required
-scoring depth: concrete/clay ≈ 55%, PHA ≈ 85% (3.6 mm of wall), PLA ≈ 95%. At
-the 85% default, PHA releases at ~month 9 while PLA never does and clay/concrete
-release around month 6–7, early enough to flag against the ~12-month
-outplant-readiness window.
+scoring depth: concrete/clay ≈ 55%, PHA ≈ 85% (3.6 mm of wall), PLA ≈ 95%. At the
+85% default, PHA releases at **~month 9** while **PLA never does**, and
+clay/concrete release around **month 5–6**, early enough to flag against the
+~12-month outplant-readiness window.
+
+Scoring depth remains the dominant lever: in `run_04` a 92%-scored seam releases
+at step ~62 while a 70%-scored one never releases at all, a far wider spread than
+any slot-geometry variant produces.
 
 ### Main tunable knobs
 
-`GrowthParams`: `step_size`, `influence_radius`, `kill_radius`, `n_attractors`,
-`down_bias`, `slot_bias`, `wall_bias`, `tip_radius`, `pipe_exponent`,
-`radius_gain`.
+`GrowthParams`: `step_size`, `n_attractors` (overall root *density*), `n_seeds`,
+`down_bias` (gravitropism strength), `slot_bias`, `wall_bias`, `jitter`
+(tortuosity); architecture — `max_order`, `branch_angle_deg`, `lateral_spacing`,
+`length_falloff`, `apical_unbranched`; the basal anchoring zone —
+`basal_zone_frac`, `basal_flare`, `basal_branch_factor`, `basal_lateral_len`;
+wall interaction — `wall_friction`, `wall_seek_frac`; thickening — `tip_radius`,
+`pipe_exponent`, `radius_gain`, `order_radius_falloff`.
 
 `SimParams`: `n_time_steps`, `maturation`, `swell_rate`, `max_swell`,
 `contact_stiffness` (sets the indentation δ₀ at which a root reaches full bearing

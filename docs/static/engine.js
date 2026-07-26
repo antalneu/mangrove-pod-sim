@@ -150,10 +150,18 @@ function rOuterAt(z) { return interp(POD.outerProf.z, POD.outerProf.r, z); }
 //  default parameter sets (match the Python dataclasses exactly)
 // ---------------------------------------------------------------------------
 const G_DEFAULT = {
-  step_size: 7, influence_radius: 45, kill_radius: 10, n_attractors: 2600,
-  max_steps: 200, n_seeds: 3, jitter: 0.35, down_bias: 0.55, slot_bias: 2.2,
-  wall_bias: 0.75, seed_depth_frac: 0.92, tip_radius: 1.4, pipe_exponent: 2.3,
-  radius_gain: 1.7,
+  step_size: 7, n_attractors: 2600, max_steps: 200, n_seeds: 3,
+  jitter: 0.30, down_bias: 0.55, slot_bias: 2.2, wall_bias: 0.75,
+  seed_depth_frac: 0.92,
+  // architecture
+  max_order: 3, branch_angle_deg: 68, branch_angle_sd: 13,
+  lateral_spacing: 31, length_falloff: 0.42, apical_unbranched: 16,
+  // basal anchoring zone (the root ball that splays the feet)
+  basal_zone_frac: 1.7, basal_flare: 0.55, basal_branch_factor: 0.60,
+  basal_lateral_len: 46, wall_friction: 0.45, wall_seek_frac: 0.80,
+  // thickening (pipe model)
+  tip_radius: 1.4, pipe_exponent: 2.3, radius_gain: 1.7,
+  order_radius_falloff: 0.72,
 };
 const S_DEFAULT = {
   n_time_steps: 120, growth_fraction: 0.6, maturation: 30, swell_rate: 0.012,
@@ -408,129 +416,191 @@ function buildRegistry(cfg) {
 }
 
 // ---------------------------------------------------------------------------
-//  growth (space colonization) — port of growth.py
+//  growth (seedling root architecture) — port of growth.py
 // ---------------------------------------------------------------------------
-function sampleAttractors(gp, rng, nrm) {
-  const H = POD.features.height, zc = POD.innerProf.z, ri = POD.innerProf.r;
-  const slotTh = POD.features.slots.map(s => s.theta_deg * Math.PI / 180);
-  const x = [], y = [], z = []; let tries = 0; const n = gp.n_attractors;
-  while (x.length < n && tries < n * 60) {
-    tries++;
-    const zz = 0.04 * H + rng() * (0.98 * H - 0.04 * H);
-    const w = 1 - 0.7 * gp.down_bias * (zz / H);
-    if (rng() > w) continue;
-    const rIn = Math.max(interp(zc, ri, zz), 2);
-    const frac = Math.pow(rng(), 1 - 0.85 * gp.wall_bias);
-    const rad = frac * 0.95 * rIn;
-    let th;
-    if (slotTh.length && rng() < gp.slot_bias / (gp.slot_bias + 1))
-      th = slotTh[Math.floor(rng() * slotTh.length)] + nrm() * (20 * Math.PI / 180);
-    else th = -Math.PI + rng() * 2 * Math.PI;
-    x.push(rad * Math.cos(th)); y.push(rad * Math.sin(th)); z.push(zz);
-  }
-  return { x, y, z, n: x.length };
+//  A rule-based architectural model, not a space-filling tangle. Real seedling
+//  roots are strongly structured and that structure decides where the wall gets
+//  loaded, so it is reproduced explicitly: a dominant gravitropic taproot;
+//  laterals emerging acropetally BEHIND the tip; a gravitropic set-point angle
+//  per branch order (taproot near-vertical, laterals oblique, fine roots nearly
+//  horizontal) that each tip relaxes toward, which is what makes roots curve;
+//  golden-angle roll so laterals spiral around the parent instead of stacking;
+//  tortuosity as a correlated random walk; and mechanical deflection along the
+//  wall, because a root cannot bore through it.
+// ---------------------------------------------------------------------------
+const GSA_BY_ORDER_DEG = [-84, -32, -12, -6];
+const DIVERGENCE_DEG = 137.507;
+
+function _unit3(x, y, z) {
+  const n = Math.hypot(x, y, z);
+  return n > 1e-9 ? [x / n, y / n, z / n] : [0, 0, -1];
+}
+function _cross3(a, b) {
+  return [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+}
+// The direction a tip is "trying" to hold: its horizontal heading tilted to the
+// gravitropic set-point angle for its order.
+function _gsaDir(d, gsaDeg) {
+  let hx = d[0], hy = d[1], nh = Math.hypot(hx, hy);
+  if (nh < 1e-9) { hx = 1; hy = 0; nh = 1; }
+  hx /= nh; hy /= nh;
+  const a = gsaDeg * Math.PI / 180;
+  return _unit3(hx * Math.cos(a), hy * Math.cos(a), Math.sin(a));
+}
+function _perpBasis(d) {
+  const ref = Math.abs(d[2]) > 0.9 ? [1, 0, 0] : [0, 0, 1];
+  const c1 = _cross3(d, ref), u = _unit3(c1[0], c1[1], c1[2]);
+  const c2 = _cross3(d, u), v = _unit3(c2[0], c2[1], c2[2]);
+  return [u, v];
+}
+function _slotAzimuths() {
+  const f = POD.features;
+  if (f.slots && f.slots.length) return f.slots.map(s => s.theta_deg * Math.PI / 180);
+  if (f.feet && f.feet.length) return f.feet.map(ft => ft.theta_deg * Math.PI / 180);
+  return [];
 }
 
 function grow(gp, seed) {
   const rng = mulberry32(seed), nrm = makeNormal(rng);
-  const H = POD.features.height;
-  const attr = sampleAttractors(gp, rng, nrm);
-  const nx = [], ny = [], nz = [], parent = [], birth = [];
-  const add = (x, y, z, par, st) => { nx.push(x); ny.push(y); nz.push(z); parent.push(par); birth.push(st); };
-  const zSeed = gp.seed_depth_frac * H, rSeed = Math.max(rInnerAt(zSeed) * 0.4, 3);
-  for (let k = 0; k < gp.n_seeds; k++) {
-    const th = 2 * Math.PI * k / gp.n_seeds + rng();
-    add(rSeed * Math.cos(th) * 0.3, rSeed * Math.sin(th) * 0.3, zSeed, -1, 0);
-  }
-  const aAlive = new Uint8Array(attr.n).fill(1); let remaining = attr.n;
-  // cell = influence_radius so any node within influence of an attractor is found
-  // in a single 3x3x3 ring scan (capped) — avoids pathological ring expansion.
-  const cell = gp.influence_radius;
-  // Attractors never move, so index them ONCE. The kill pass then only has to
-  // ask "which attractors are near each NEW node" instead of rebuilding a node
-  // grid and running a nearest-neighbour query for every surviving attractor
-  // every step. Identical results — an attractor that survived the previous
-  // step can only be killed by a node added since.
-  const apos = new Float64Array(attr.n * 3);
-  for (let a = 0; a < attr.n; a++) { apos[3 * a] = attr.x[a]; apos[3 * a + 1] = attr.y[a]; apos[3 * a + 2] = attr.z[a]; }
-  const attrGrid = new Grid(apos, attr.n, Math.max(gp.kill_radius, 1));
-  // Cursor over nodes not yet used for a kill test. On the first pass this
-  // covers the seed nodes too, so the pass happens at exactly the same point in
-  // the sequence as the original whole-grid rebuild did.
-  let killCursor = 0;
-  const killPass = () => {
-    for (; killCursor < nx.length; killCursor++) {
-      const near = attrGrid.ball(nx[killCursor], ny[killCursor], nz[killCursor], gp.kill_radius);
-      for (let t = 0; t < near.length; t++) { const a = near[t]; if (aAlive[a]) { aAlive[a] = 0; remaining--; } }
-    }
+  const H = POD.features.height, zBase = POD.features.z_base_top;
+  const slotTh = _slotAzimuths();
+  const nx = [], ny = [], nz = [], parent = [], birth = [], order = [];
+  const add = (x, y, z, par, st, ord) => {
+    nx.push(x); ny.push(y); nz.push(z); parent.push(par); birth.push(st); order.push(ord);
+    return nx.length - 1;
   };
+  // Density knob -> lateral spacing. More density = laterals closer together.
+  const density = Math.max(gp.n_attractors, 1) / 2600;
+  const spacing0 = Math.max(gp.lateral_spacing / Math.max(density, 0.25), gp.step_size);
+
+  // primary axes from the hypocotyl base
+  const zSeed = gp.seed_depth_frac * H, rSeed = Math.max(rInnerAt(zSeed) * 0.4, 3);
+  const axisLen = 0.95 * (zSeed - 0.02 * H);
+  let tips = [];
+  const nSeeds = Math.max(1, gp.n_seeds);
+  for (let k = 0; k < nSeeds; k++) {
+    const th = 2 * Math.PI * k / nSeeds + rng();
+    const ni = add(rSeed * Math.cos(th) * 0.3, rSeed * Math.sin(th) * 0.3, zSeed, -1, 0, 0);
+    tips.push({ node: ni, dir: _unit3(Math.cos(th) * 0.12, Math.sin(th) * 0.12, -1),
+                order: 0, remaining: axisLen * (0.9 + rng() * 0.15),
+                sinceBranch: 0, roll: rng() * 2 * Math.PI });
+  }
+
   for (let step = 1; step <= gp.max_steps; step++) {
-    if (remaining === 0) break;
-    const npos = new Float64Array(nx.length * 3);
-    for (let i = 0; i < nx.length; i++) { npos[3 * i] = nx[i]; npos[3 * i + 1] = ny[i]; npos[3 * i + 2] = nz[i]; }
-    const grid = new Grid(npos, nx.length, cell);
-    const near = new Int32Array(attr.n).fill(-1), dist = new Float64Array(attr.n).fill(Infinity);
-    for (let a = 0; a < attr.n; a++) {
-      if (!aAlive[a]) continue;
-      const q = grid.nearest(attr.x[a], attr.y[a], attr.z[a], 1);
-      near[a] = q.idx; dist[a] = q.dist;
-    }
-    let within = [];
-    for (let a = 0; a < attr.n; a++) if (aAlive[a] && dist[a] < gp.influence_radius) within.push(a);
-    if (!within.length) {
-      // nothing within influence: advance the single globally-nearest tip
-      // (linear scan; only reached early on when nodes are sparse — cheap)
-      let bestA = -1, bestNi = -1, bestD = Infinity;
-      for (let a = 0; a < attr.n; a++) {
-        if (!aAlive[a]) continue;
-        const ax = attr.x[a], ay = attr.y[a], az = attr.z[a];
-        for (let i = 0; i < nx.length; i++) {
-          const dx = nx[i] - ax, dy = ny[i] - ay, dz = nz[i] - az, d = dx * dx + dy * dy + dz * dz;
-          if (d < bestD) { bestD = d; bestA = a; bestNi = i; }
+    if (!tips.length) break;
+    const spawned = [];
+    for (const tip of tips) {
+      if (tip.remaining <= 0) continue;
+      const hx = nx[tip.node], hy = ny[tip.node], hz = nz[tip.node];
+      let d = tip.dir;
+
+      // relax toward the gravitropic set-point angle for this order
+      const gsa = GSA_BY_ORDER_DEG[Math.min(tip.order, GSA_BY_ORDER_DEG.length - 1)];
+      const t = _gsaDir(d, gsa), k1 = (0.25 + 0.75 * gp.down_bias) * 0.45;
+      d = [d[0] + k1 * (t[0] - d[0]), d[1] + k1 * (t[1] - d[1]), d[2] + k1 * (t[2] - d[2])];
+      // laterals steer toward the nearest slot / foot meridian
+      if (tip.order >= 1 && slotTh.length) {
+        const az = Math.atan2(hy, hx);
+        let best = slotTh[0], bd = Infinity;
+        for (const s of slotTh) {
+          const dd = Math.abs(Math.atan2(Math.sin(s - az), Math.cos(s - az)));
+          if (dd < bd) { bd = dd; best = s; }
+        }
+        const pull = 0.12 * gp.slot_bias / (1 + gp.slot_bias);
+        d = [d[0] + pull * Math.cos(best), d[1] + pull * Math.sin(best), d[2]];
+      }
+      // outward SEEKING toward the wall; stops once the root has found it, since
+      // a root already bearing on a surface is not driven further into it
+      const rrH = Math.hypot(hx, hy);
+      if (tip.order >= 1 && rrH > 1e-6 && rrH < gp.wall_seek_frac * rInnerAt(hz)) {
+        const k2 = 0.10 * gp.wall_bias;
+        d = [d[0] + k2 * hx / rrH, d[1] + k2 * hy / rrH, d[2]];
+      }
+      // basal root ball: once roots reach the base they flare OUT into the feet,
+      // and that splaying is what loads the base split-lines
+      const inBase = hz < zBase * gp.basal_zone_frac;
+      if (inBase && rrH > 1e-6) {
+        d = [d[0] + gp.basal_flare * hx / rrH, d[1] + gp.basal_flare * hy / rrH,
+             d[2] + 0.25 * gp.basal_flare];
+      }
+      // tortuosity: a small correlated turn, not white noise
+      d = _unit3(d[0] + gp.jitter * 0.30 * nrm(),
+                 d[1] + gp.jitter * 0.30 * nrm(),
+                 d[2] + gp.jitter * 0.30 * nrm());
+
+      let px = hx + d[0] * gp.step_size, py = hy + d[1] * gp.step_size;
+      let pz = clip(hz + d[2] * gp.step_size, 0.02 * H, 0.99 * H);
+
+      // confinement + mechanical deflection along the wall
+      const rHere = rInnerAt(pz), limit = 0.985 * rHere;
+      const rr = Math.hypot(px, py);
+      if (rr > limit && rr > 1e-6) {
+        px *= limit / rr; py *= limit / rr;
+        const nn = Math.hypot(px, py);
+        if (nn > 1e-6) {
+          const ndx = px / nn, ndy = py / nn;
+          const out = d[0] * ndx + d[1] * ndy;
+          if (out > 0) d = [d[0] - out * ndx, d[1] - out * ndy, d[2]];
+          // friction: a root pinned to a surface does not slide freely sideways,
+          // which stops tips spiralling round the bore and braiding into a rope
+          const tgx = -ndy, tgy = ndx, circ = d[0] * tgx + d[1] * tgy;
+          d = _unit3(d[0] - gp.wall_friction * circ * tgx,
+                     d[1] - gp.wall_friction * circ * tgy, d[2]);
         }
       }
-      if (bestA < 0) break;
-      near[bestA] = bestNi; dist[bestA] = Math.sqrt(bestD); within = [bestA];
+
+      const ni = add(px, py, pz, tip.node, step, tip.order);
+      tip.node = ni; tip.dir = d;
+      tip.remaining -= gp.step_size;
+      tip.sinceBranch += gp.step_size;
+
+      // acropetal lateral emergence; laterals crowd in the anchoring zone
+      let spacing = spacing0 * (1 + 0.35 * tip.order);
+      if (inBase) spacing *= gp.basal_branch_factor;
+      const canBranch = (tip.remaining > gp.apical_unbranched) || (inBase && tip.order <= 1);
+      if (tip.order < gp.max_order && tip.sinceBranch >= spacing && canBranch) {
+        tip.sinceBranch = 0;
+        tip.roll += DIVERGENCE_DEG * Math.PI / 180;
+        const ang = Math.max(15, gp.branch_angle_deg + gp.branch_angle_sd * nrm()) * Math.PI / 180;
+        const ub = _perpBasis(d), u = ub[0], v = ub[1];
+        const cr = Math.cos(tip.roll), sr = Math.sin(tip.roll);
+        const side = [cr * u[0] + sr * v[0], cr * u[1] + sr * v[1], cr * u[2] + sr * v[2]];
+        const ca = Math.cos(ang), sa = Math.sin(ang);
+        const ld = _unit3(ca * d[0] + sa * side[0], ca * d[1] + sa * side[1], ca * d[2] + sa * side[2]);
+        let llen = Math.max(2 * gp.step_size,
+          gp.length_falloff * (tip.remaining + gp.step_size) * (0.75 + rng() * 0.5));
+        // only the main axes throw the long anchoring roots; letting every order
+        // do it in the base compounds into a runaway ball
+        if (inBase && tip.order <= 1) {
+          llen = Math.max(llen, gp.basal_lateral_len
+            * Math.pow(gp.length_falloff, tip.order) * (0.7 + rng() * 0.6));
+        }
+        spawned.push({ node: ni, dir: ld, order: tip.order + 1, remaining: llen,
+                       sinceBranch: 0, roll: rng() * 2 * Math.PI });
+      }
     }
-    const acc = new Map();
-    for (const a of within) {
-      const ni = near[a], dx = attr.x[a] - nx[ni], dy = attr.y[a] - ny[ni], dz = attr.z[a] - nz[ni];
-      const m = Math.hypot(dx, dy, dz); if (m < 1e-6) continue;
-      let o = acc.get(ni); if (!o) { o = { sx: 0, sy: 0, sz: 0, c: 0 }; acc.set(ni, o); }
-      o.sx += dx / m; o.sy += dy / m; o.sz += dz / m; o.c++;
-    }
-    if (!acc.size) break;
-    const newNodes = [];
-    for (const [ni, o] of acc) {
-      let vx = o.sx / o.c, vy = o.sy / o.c, vz = o.sz / o.c;
-      vz += gp.down_bias * 0.5 * -1;
-      vx += gp.jitter * nrm(); vy += gp.jitter * nrm(); vz += gp.jitter * nrm();
-      const nv = Math.hypot(vx, vy, vz); if (nv < 1e-6) continue;
-      vx /= nv; vy /= nv; vz /= nv;
-      let px = nx[ni] + vx * gp.step_size, py = ny[ni] + vy * gp.step_size, pz = nz[ni] + vz * gp.step_size;
-      const rHere = rInnerAt(pz), rr = Math.hypot(px, py);
-      if (rr > 0.98 * rHere && rr > 1e-6) { px *= 0.98 * rHere / rr; py *= 0.98 * rHere / rr; }
-      pz = clip(pz, 0.02 * H, 0.99 * H);
-      newNodes.push([ni, px, py, pz]);
-    }
-    if (!newNodes.length) break;
-    for (const [ni, px, py, pz] of newNodes) add(px, py, pz, ni, step);
-    killPass();
+    tips = tips.filter(t => t.remaining > 0).concat(spawned);
   }
-  // pipe-model radii
-  const n = nx.length, rad = new Float64Array(n).fill(gp.tip_radius);
+
+  // pipe-model radii; tip radius tapers with branch order so fine roots stay
+  // fine and the taproot ends up genuinely dominant
+  const n = nx.length, rad = new Float64Array(n), tipR = new Float64Array(n);
+  for (let i = 0; i < n; i++) {
+    tipR[i] = gp.tip_radius * Math.pow(gp.order_radius_falloff, order[i]);
+    rad[i] = tipR[i];
+  }
   const children = Array.from({ length: n }, () => []);
   for (let i = 0; i < n; i++) if (parent[i] >= 0) children[parent[i]].push(i);
-  const order = [...Array(n).keys()].sort((a, b) => birth[b] - birth[a]);
-  const p = gp.pipe_exponent;
-  for (const i of order) {
+  const ord = [...Array(n).keys()].sort((a, b) => birth[b] - birth[a]);
+  const pe = gp.pipe_exponent;
+  for (const i of ord) {
     if (children[i].length) {
-      let s = 0; for (const c of children[i]) s += Math.pow(rad[c], p);
-      rad[i] = Math.max(gp.tip_radius, Math.pow(s, 1 / p));
+      let s = 0; for (const c of children[i]) s += Math.pow(rad[c], pe);
+      rad[i] = Math.max(tipR[i], Math.pow(s, 1 / pe));
     }
   }
   for (let i = 0; i < n; i++) rad[i] *= gp.radius_gain;
-  return { nx, ny, nz, parent, birth, radius: rad, n };
+  return { nx, ny, nz, parent, birth, order, radius: rad, n };
 }
 
 // ---------------------------------------------------------------------------

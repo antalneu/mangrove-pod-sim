@@ -164,10 +164,9 @@ def run_montecarlo(pod, pattern: PerforationPattern, n_runs=40,
         drawn_strength[k] = ph.sigma_f_mpa
         drawn_pressure[k] = ph.root_pressure_mpa
 
-        # Resample the prop-root cage itself: root count, azimuths and reach all
-        # differ run to run. Whether the cage happens to line up with the scored
-        # seams is the dominant architectural risk, so it has to be sampled.
-        rs = proproots.grow_prop_roots(pod, seed=base_seed * 1000 + k)
+        # Year-one seedling roots: the prop-root cage is a 3-5 year structure and
+        # cannot load a pod inside a 12-month window.
+        rs = growth.grow(pod, gp, seed=base_seed * 1000 + k)
         res = run_simulation(pod, wm, rs, sparams, phys=ph)
         first_crack[k] = res.first_crack_step
         breakthrough[k] = res.breakthrough_step

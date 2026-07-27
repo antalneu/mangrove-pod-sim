@@ -154,6 +154,9 @@ const G_DEFAULT = {
   jitter: 0.30, down_bias: 0.55, slot_bias: 2.2, wall_bias: 0.75,
   seed_depth_frac: 0.92,
   // architecture
+  // 0-1 yr the PRIMARY root develops; 1-2 yr laterals BEGIN; 2-3 yr numerous;
+  // 3-5 yr prop roots. Branch order is gated by the plant's real age.
+  window_months: 12, order_onset_months: [0, 12, 24, 36],
   max_order: 3, branch_angle_deg: 68, branch_angle_sd: 13,
   lateral_spacing: 31, length_falloff: 0.42, apical_unbranched: 16,
   // basal anchoring zone (the root ball that splays the feet)
@@ -289,7 +292,7 @@ const SPECIES = {
     window_months: 12, outplant_months: 12, mature_growth_m_yr: [1.0, 1.5],
     salinity_optimum_ppt: [5, 25], node_interval_days: null,
     early_root_note: "Early root growth very slow (~0.1 mm at 4 weeks, R. mucronata).",
-    ramp_base: 0.20, ramp_exp: 1.5, ramp_peak: 1.15,
+    root_emergence_days: 40, ramp_base: 0.20, ramp_exp: 1.5, ramp_peak: 1.15,
     blurb: "Red mangrove; the tall propagule this pod is shaped for. Slow-start roots.",
   },
   avicennia: {
@@ -297,7 +300,7 @@ const SPECIES = {
     window_months: 11, outplant_months: 10, mature_growth_m_yr: [0.6, 1.0],
     salinity_optimum_ppt: [5, 15], node_interval_days: 37.5,
     early_root_note: "Node-paced growth; ~37-38 day node interval as a biological clock.",
-    ramp_base: 0.30, ramp_exp: 1.2, ramp_peak: 1.12,
+    root_emergence_days: 40, ramp_base: 0.30, ramp_exp: 1.2, ramp_peak: 1.12,
     blurb: "Grey mangrove; steady node-paced growth, salinity-sensitive early on.",
   },
 };
@@ -308,7 +311,18 @@ function spForceRamp(sp, frac) {
 // Same concave slow-start shape, normalised to 1.0 at maturity, so the root
 // pressure the user sets IS the peak turgor-limited pressure a root can exert
 // rather than something the ramp overshoots.
-function spForceRampNorm(sp, frac) { return spForceRamp(sp, frac) / sp.ramp_peak; }
+// Roots emerge 19-68 days after stranding (Kandelia candel field data); before
+// that the pod carries NO root load. Re-base the ramp on EMERGENCE, not on
+// stranding, so nothing presses on the wall before roots exist.
+function spEmergenceFrac(sp) {
+  return (sp.root_emergence_days || 0) / 30.437 / Math.max(sp.window_months, 1e-6);
+}
+function spForceRampNorm(sp, frac) {
+  const e = spEmergenceFrac(sp);
+  if (frac < e) return 0;
+  const f = clip((frac - e) / Math.max(1 - e, 1e-6), 0, 1);
+  return spForceRamp(sp, f) / sp.ramp_peak;
+}
 function spGrowthMod(sp, sal) {
   if (sal === null || sal === undefined) return 1;
   const [lo, hi] = sp.salinity_optimum_ppt;
@@ -480,6 +494,11 @@ function grow(gp, seed) {
   const rng = mulberry32(seed), nrm = makeNormal(rng);
   const H = POD.features.height, zBase = POD.features.z_base_top;
   const slotTh = _slotAzimuths();
+  // only the orders whose developmental onset falls inside the window exist
+  const onsets = gp.order_onset_months || [0, 12, 24, 36];
+  const wMonths = gp.window_months || 12;
+  const allowedOrder = Math.max(0, onsets.filter(m => m <= wMonths).length - 1);
+  const maxOrder = Math.min(gp.max_order, allowedOrder);
   const nx = [], ny = [], nz = [], parent = [], birth = [], order = [];
   const add = (x, y, z, par, st, ord) => {
     nx.push(x); ny.push(y); nz.push(z); parent.push(par); birth.push(st); order.push(ord);
@@ -573,8 +592,12 @@ function grow(gp, seed) {
       // acropetal lateral emergence; laterals crowd in the anchoring zone
       let spacing = spacing0 * (1 + 0.35 * tip.order);
       if (inBase) spacing *= gp.basal_branch_factor;
-      const canBranch = (tip.remaining > gp.apical_unbranched) || (inBase && tip.order <= 1);
-      if (tip.order < gp.max_order && tip.sinceBranch >= spacing && canBranch) {
+      // laterals are only just BEGINNING at the end of year one
+      const onset = onsets[Math.min(tip.order + 1, onsets.length - 1)];
+      const matureEnough = (step / Math.max(gp.max_steps, 1)) >= Math.min(onset / Math.max(wMonths, 1e-6), 1);
+      const canBranch = matureEnough &&
+        ((tip.remaining > gp.apical_unbranched) || (inBase && tip.order <= 1));
+      if (tip.order < maxOrder && tip.sinceBranch >= spacing && canBranch) {
         tip.sinceBranch = 0;
         tip.roll += DIVERGENCE_DEG * Math.PI / 180;
         const ang = Math.max(15, gp.branch_angle_deg + gp.branch_angle_sd * nrm()) * Math.PI / 180;
@@ -806,10 +829,13 @@ function buildWallModel(wall) {
 // amplified by the local stress-concentration factor and by the net-section
 // loss where part of the site has already cracked. `tf` is a wall-thickness
 // tolerance factor (1 = nominal) used by the Monte Carlo sweep.
-function wallStress(wm, l, p, amp, tf) {
+function wallStress(wm, l, p, amp, tf, spanArr) {
   if (p <= 0 || wm.open_in[l] > 0.5) return 0;
   const te = Math.max(wm.t_in[l] * (tf || 1), MIN_T_EFF_MM);
-  const sl = wm.span_in[l] / te;
+  // beta*(L/t)^2 is Roark's case for pressure spread UNIFORMLY over a panel of
+  // width L. A root bears on a patch a few mm across, not the whole sector, so
+  // the bending span is capped at the width actually loaded.
+  const sl = (spanArr ? spanArr[l] : wm.span_in[l]) / te;
   return wm.scf_in[l] * amp * p * (wm.rb_in[l] / te + PLATE_BETA * sl * sl);
 }
 
@@ -868,6 +894,17 @@ function runSimulation(wm, roots, sp, ph, capFrames) {
       contrib[l].push([j, clip(1 - d / Math.max(pr, 1e-6), 0.05, 1)]);
     }
   }
+  // per-face loaded width, from the contact patches that actually bear on it
+  const loadW = new Float64Array(wm.nIn), wCnt = new Float64Array(wm.nIn);
+  for (let j = 0; j < N; j++) {
+    const prj = Math.max(sp.contact_patch_factor * pipe[j], sp.min_patch_radius);
+    const fs = wm.grid.ball(Px[j], Py[j], Pz[j], prj);
+    for (let t = 0; t < fs.length; t++) { loadW[fs[t]] += 2 * prj; wCnt[fs[t]] += 1; }
+  }
+  const spanEff = new Float64Array(wm.nIn);
+  for (let l = 0; l < wm.nIn; l++)
+    spanEff[l] = wCnt[l] > 0 ? Math.min(wm.span_in[l], loadW[l] / wCnt[l]) : wm.span_in[l];
+
   const delta0 = contactRefMm(sp.contact_stiffness);          // mm of indentation for full bearing
   const pullMPa = Math.max(sp.pull_assist, 0);                // planting-team assist, MPa-equivalent
   const nExp = ph.fatigue_n, tf = ph.thickness_factor;
@@ -916,7 +953,7 @@ function runSimulation(wm, roots, sp, ph, capFrames) {
       const si = wm.face_site[l];
       // NOMINAL stress on the intact section — this is the design demand, and
       // what the heatmap and the reported numbers show.
-      const s = wallStress(wm, l, p, 1, tf);
+      const s = wallStress(wm, l, p, 1, tf, spanEff);
       sigma[l] = s;
       if (s > sigmaPeak[l]) sigmaPeak[l] = s;
       if (s > peakThisStep) peakThisStep = s;
@@ -2010,7 +2047,7 @@ function simFromCfg(cfg) {
 function simulate(cfg) {
   const pat = patternFromCfg(cfg), gp = growthFromCfg(cfg), sp = simFromCfg(cfg), ph = physFromCfg(cfg);
   const wall = buildFields(pat), wm = buildWallModel(wall);
-  const roots = propRootSystem(+(cfg.seed || 1));
+  const roots = grow(gp, +(cfg.seed || 1));
   const res = runSimulation(wm, roots, sp, ph);
   const { intensity, cmax } = vertexIntensity(res.faceField, !!cfg.project_outer, res.sigma_f_end_mpa);
   const roots_payload = rootTubeMesh(roots);
@@ -2071,7 +2108,7 @@ function* montecarloIter(cfg, nRuns) {
   const nArch = Math.min(n, 12), archPool = [];
   // The reported mechanics must be the NOMINAL design, not whichever random
   // draw happened to be first.
-  archPool[0] = propRootSystem(+(cfg.seed || 1));
+  archPool[0] = grow(gp, +(cfg.seed || 1));
   const nomRes = runSimulation(wm, archPool[0], sp, ph0);
   yield { done: 0, total: n, phase: "nominal design" };
   for (let kk = 0; kk < n; kk++) {
@@ -2080,7 +2117,7 @@ function* montecarloIter(cfg, nRuns) {
       const g = Object.assign({}, gp);
       g.slot_bias = Math.max(0.2, gp.slot_bias * (1 + 0.5 * jNorm() * 0.3));
       g.down_bias = clip(gp.down_bias * (1 + 0.5 * jNorm() * 0.3), 0.1, 1);
-      archPool[ai] = propRootSystem(kk);
+      archPool[ai] = grow(g, kk);
     }
     // physical uncertainty for this draw
     const ph = Object.assign({}, ph0);
@@ -2167,7 +2204,7 @@ function montecarlo(cfg, nRuns) {
 function simulateFrames(cfg) {
   const pat = patternFromCfg(cfg), gp = growthFromCfg(cfg), sp = simFromCfg(cfg), ph = physFromCfg(cfg);
   const wall = buildFields(pat), wm = buildWallModel(wall);
-  const roots = propRootSystem(+(cfg.seed || 1));
+  const roots = grow(gp, +(cfg.seed || 1));
   const capFrames = [];
   const res = runSimulation(wm, roots, sp, ph, capFrames);
   const T = sp.n_time_steps, projectOuter = cfg.project_outer !== false;
@@ -2386,12 +2423,12 @@ function* crackReportIter(cfg, nRuns) {
     const g = Object.assign({}, gp);
     g.slot_bias = Math.max(0.2, gp.slot_bias * (1 + 0.5 * jNorm() * 0.3));
     g.down_bias = clip(gp.down_bias * (1 + 0.5 * jNorm() * 0.3), 0.1, 1);
-    rootSys.push(propRootSystem(kk));
+    rootSys.push(grow(g, kk));
     yield { done: kk + 1, total: nArch + 4, phase: "growing roots" };
   }
   // the nominal architecture, for the headline mechanics numbers — reporting
   // whichever random draw happened to be last would swing them wildly
-  const nomRoots = propRootSystem(+(cfg.seed || 1));
+  const nomRoots = grow(gp, +(cfg.seed || 1));
   const mats = ["pha", "pla", "clay", "concrete"], byMat = {};
   const finite = a => a.filter(v => isFinite(v)), mean = a => a.length ? a.reduce((s, x) => s + x, 0) / a.length : Infinity;
   for (const mk of mats) {

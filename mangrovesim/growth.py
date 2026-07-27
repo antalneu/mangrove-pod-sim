@@ -93,6 +93,7 @@ class GrowthParams:
     # the pod is loaded years before it would be in the ground.
     window_months: float = 12.0
     order_onset_months: tuple = (0.0, 12.0, 24.0, 36.0)
+    length_year_exp: float = 0.7    # how root LENGTH scales with years
     # --- architecture ---
     max_order: int = 3
     branch_angle_deg: float = 68.0
@@ -238,6 +239,12 @@ def grow(pod, params: Optional[GrowthParams] = None, seed: int = 0) -> RootSyste
     # Only the orders whose developmental onset falls inside the window exist.
     allowed_order = max(0, sum(1 for m in p.order_onset_months
                                if m <= p.window_months) - 1)
+    # Root SIZE scales with the window too. A 3-year system is not a 1-year
+    # system with more branches - the axes themselves are far longer, and the
+    # tips have to stay alive long enough for the later orders to emerge at
+    # their onset. Without this the gating never fires past year one.
+    years = max(p.window_months / 12.0, 1.0)
+    len_scale = years ** p.length_year_exp
     max_order = min(p.max_order, allowed_order)
     f = pod.features
     H = f.height
@@ -258,7 +265,13 @@ def grow(pod, params: Optional[GrowthParams] = None, seed: int = 0) -> RootSyste
     # long enough to descend the whole cavity, LEAVE through the open base and
     # then run out into the mud - a year-one primary root does not stop at the
     # pod lip, it keeps going into the substrate
-    axis_len = (z_seed - p.exit_z_frac * H) + p.substrate_run
+    axis_len = ((z_seed - p.exit_z_frac * H) + p.substrate_run) * len_scale
+    # The primary axis takes the WHOLE window to grow - a root keeps extending
+    # over years, it does not finish in month two and then idle. Developmental
+    # age is therefore progress along that growth, which is what lets the
+    # later branch orders reach their onset before the tips run out.
+    growth_steps = max(int(axis_len / p.step_size), 8)
+    max_steps = min(int(growth_steps * 1.6), 4000)
     tips: List[_Tip] = []
     for k in range(max(1, p.n_seeds)):
         th = 2 * np.pi * k / max(1, p.n_seeds) + rng.uniform(0, 1)
@@ -269,7 +282,7 @@ def grow(pod, params: Optional[GrowthParams] = None, seed: int = 0) -> RootSyste
                          roll=rng.uniform(0, 2 * np.pi)))
 
     P = rs.nodes
-    for step in range(1, p.max_steps + 1):
+    for step in range(1, max_steps + 1):
         if not tips:
             break
         spawned: List[_Tip] = []
@@ -367,7 +380,8 @@ def grow(pod, params: Optional[GrowthParams] = None, seed: int = 0) -> RootSyste
             # Laterals are only just beginning at the end of year one, so they
             # may not appear until the plant is developmentally old enough.
             onset = p.order_onset_months[min(tip.order + 1, len(p.order_onset_months) - 1)]
-            mature_enough = (step / max(p.max_steps, 1)) >= min(onset / max(p.window_months, 1e-6), 1.0)
+            age_months = p.window_months * step / max(growth_steps, 1)
+            mature_enough = age_months >= onset
             can_branch = mature_enough and (tip.remaining > p.apical_unbranched
                                             or (in_base and tip.order <= 1))
             if tip.order < max_order and tip.since_branch >= spacing and can_branch:
@@ -382,7 +396,7 @@ def grow(pod, params: Optional[GrowthParams] = None, seed: int = 0) -> RootSyste
                 # except in the base where it must reach out into the feet
                 llen = max(2.0 * p.step_size,
                            p.length_falloff * (tip.remaining + p.step_size)
-                           * rng.uniform(0.75, 1.25))
+                           * rng.uniform(0.75, 1.25) * len_scale)
                 # Only the main axes throw the long anchoring roots; letting
                 # every order do it in the base compounds into a runaway ball.
                 if in_base and tip.order <= 1:

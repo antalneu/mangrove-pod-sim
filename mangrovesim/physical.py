@@ -58,6 +58,9 @@ class PhysicalContext:
     # the nominal run. None => the material's best estimate.
     sigma_f_mpa: Optional[float] = None
     thickness_factor: float = 1.0
+    # Override the species' 12-month window to run multi-year: the pod is
+    # not opened inside year one, so the question is WHEN, over years.
+    window_months: Optional[float] = None
 
     def __post_init__(self):
         if self.sigma_f_mpa is None:
@@ -110,8 +113,9 @@ class PhysicalContext:
         # root load whatsoever. Re-base the ramp on emergence, not on stranding.
         ramp = self.species.force_ramp_norm(self.species.post_emergence_frac(frac))
         ramp = np.where(frac < self.species.emergence_frac(), 0.0, ramp)
+        w = self.window_months or self.species.window_months
         months = np.array([self.species.elapsed_months(fr, self.salinity_ppt)
-                           for fr in frac])
+                           for fr in frac]) * (w / self.species.window_months)
         degrade = np.array([self.material.degradation_multiplier(mo) for mo in months])
         drive = self.root_pressure_mpa * ramp
         capacity = np.maximum(self.sigma_f_mpa * degrade, 1e-6)

@@ -43,10 +43,10 @@ def main():
     print(pod.summary())
 
     pattern = perf.PerforationPattern.detected(pod, name="as-drawn")
-    # As moulded the ~21 mm wall never releases, whatever the material — the pod
-    # only opens once the seams are scored. Use the browser tool's default design
-    # (85% deep over a 50-degree band) so the two reports agree.
-    pattern.seam_score, pattern.seam_width_deg = 0.85, 50.0
+    # As moulded the ~21 mm wall never releases, whatever the material. Seams
+    # scored 92% deep over a 50-degree band: the margin design point, which
+    # still releases under simultaneous worst-case assumptions.
+    pattern.seam_score, pattern.seam_width_deg = 0.92, 50.0
     print(f"\nPattern: {pattern.name} (seam score {pattern.seam_score:g} over "
           f"{pattern.seam_width_deg:g} deg)   |   {N_RUNS} runs per combination\n")
 

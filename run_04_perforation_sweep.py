@@ -26,7 +26,7 @@ Hf = pod.features.height
 # ~21 mm wall never releases, so an unscored sweep would rank nothing against
 # nothing. "shallow-seam"/"deeper-seam" isolate scoring depth itself, which is
 # by far the strongest lever the designer has (stress goes as 1/t^2 in bending).
-SEAM = dict(seam_score=0.85, seam_width_deg=50.0)
+SEAM = dict(seam_score=0.92, seam_width_deg=50.0)
 
 as_drawn = perf.PerforationPattern.detected(pod, name="as-drawn")
 as_drawn.seam_score, as_drawn.seam_width_deg = SEAM["seam_score"], SEAM["seam_width_deg"]

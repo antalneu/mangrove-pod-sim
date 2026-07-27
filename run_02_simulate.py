@@ -15,10 +15,13 @@ seed = int(sys.argv[1]) if len(sys.argv) > 1 else 2
 
 pod = PodMesh.from_ply("pod_mesh.ply")
 pattern = perf.PerforationPattern.detected(pod)
-# Design point: seams scored 92% over a 50-degree band. Chosen for MARGIN -
-# it still releases 100% of runs with every uncertainty set against it at
-# once (weakest root force, strongest clay draw, perfect bond, thick wall).
-pattern.seam_score, pattern.seam_width_deg = 0.92, 50.0
+# Design point: seams scored 85% over a 50-degree band. The pod is a
+# PROTECTIVE shell first - it has to survive waves and animals while the
+# seedling establishes - so releasing early is a failure, not a success.
+# At 0.85 nothing cracks before ~4.5 months and PHA releases at ~11.6,
+# close to the ~12-month outplant window. Deeper scoring opens it sooner
+# and leaves the seedling exposed.
+pattern.seam_score, pattern.seam_width_deg = 0.85, 50.0
 wm = pr.WallModel(pod, pattern.build_fields(pod))
 
 sp = pr.SimParams()

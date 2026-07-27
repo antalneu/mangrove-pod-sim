@@ -44,9 +44,9 @@ def main():
 
     pattern = perf.PerforationPattern.detected(pod, name="as-drawn")
     # As moulded the ~21 mm wall never releases, whatever the material. Seams
-    # scored 92% deep over a 50-degree band: the margin design point, which
-    # still releases under simultaneous worst-case assumptions.
-    pattern.seam_score, pattern.seam_width_deg = 0.92, 50.0
+    # scored 85% deep over a 50-degree band: the pod must PROTECT first and
+    # release near outplant-readiness, so early release is a failure mode.
+    pattern.seam_score, pattern.seam_width_deg = 0.85, 50.0
     print(f"\nPattern: {pattern.name} (seam score {pattern.seam_score:g} over "
           f"{pattern.seam_width_deg:g} deg)   |   {N_RUNS} runs per combination\n")
 

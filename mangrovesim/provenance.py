@@ -131,9 +131,15 @@ def coupling_constants() -> List[Constant]:
         Constant(
             "unit_scale", "Model unit scale",
             f"1 unit = {MM_PER_UNIT:g} mm", "", GEOMETRY,
-            "Read off the Rhino model's own dimensions.",
-            "THE SINGLE MOST LOAD-BEARING ASSUMPTION IN THE TOOL: every stress "
-            "scales with it. Confirm it against the physical prototype.",
+            "Read off the Rhino model's own dimensions; CONFIRMED against the "
+            "design intent by the project owner.",
+            "Every stress scales with this, so it was long flagged as the tool's "
+            "most load-bearing assumption. Now settled: the design is a 334 mm "
+            "pod. Note the 14 cm 3-D-printed field demo is a 2.4x scale "
+            "PROTOTYPE - stress results transfer to it (the stress relation "
+            "depends on r/t and span/t, which are ratios) but CONTACT TIMING "
+            "does not, because a real propagule and its roots are the same "
+            "physical size in both.",
             group="model"),
         Constant(
             "stress_formula", "Wall stress relation",

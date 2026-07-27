@@ -815,6 +815,7 @@ function runSimulation(wm, roots, sp, ph, capFrames) {
   const T = sp.n_time_steps;
   const ps = physPerStep(ph, T), drive = ps.drive, cap = ps.cap, months = ps.months;
   const N = roots.n, Px = roots.nx, Py = roots.ny, Pz = roots.nz, pipe = roots.radius, birth = roots.birth;
+  const radiusAt = roots.radiusAt || null;
   let maxBirth = 1; for (let i = 0; i < N; i++) if (birth[i] > maxBirth) maxBirth = birth[i];
   const birthTime = new Float64Array(N);
   for (let i = 0; i < N; i++) birthTime[i] = birth[i] / maxBirth * (sp.growth_fraction * T);
@@ -857,9 +858,13 @@ function runSimulation(wm, roots, sp, ph, capFrames) {
     const pMax = drive[t - 1], sigF = cap[t - 1];
     const dMonths = Math.max(months[t - 1] - (t > 1 ? months[t - 2] : 0), 0);
     // --- 1. bearing pressure per root node (MPa, turgor-bounded) ---
+    // A root system may carry its own thickening law (the prop-root cage extends
+    // its tip first, then thickens behind it); otherwise the generic curve.
+    const radArr = radiusAt ? radiusAt(t, T) : null;
     for (let i = 0; i < N; i++) {
       if (birthTime[i] > t) { pressNode[i] = 0; continue; }
-      const age = t - birthTime[i], rad = nodeRadius(pipe[i], age, sp);
+      const age = t - birthTime[i];
+      const rad = radArr ? radArr[i] : nodeRadius(pipe[i], age, sp);
       const pen = (rNode[i] + rad) - rInnerHere[i];
       if (pen <= 0) { pressNode[i] = 0; continue; }
       // engagement saturates: once the root has indented the bore by a few
@@ -1000,19 +1005,31 @@ function seamScoreSweep(wm, res, ph, sp, pat) {
 // releases on whichever seam reaches that first. This is the number to compare
 // against material strength when asking "will it open?".
 function governingSeamStress(wm, res, sp) {
-  let out = Infinity;
+  // The number to compare against material strength when asking "will it open?".
+  // A crack no longer has to be initiated across a seam — it starts at the worst
+  // spot and PROPAGATES (see the K term in runSimulation), so what decides a seam
+  // is the peak NOMINAL driving stress it carries, sigma/SCF, de-concentrated for
+  // the same reason the crack driver is. Keying this to band SPAN — as it did
+  // when failure needed a crack present across the section — reports 0 for a
+  // discrete load, where most bands legitimately carry nothing.
+  const drives = [];
   for (let si = 0; si < wm.n_sites; si++) {
     if (!wm.is_lig[si]) continue;
-    const fs = wm.site_faces[si], bands = wm.site_band[si], nb = wm.site_nbands[si];
+    const fs = wm.site_faces[si];
     if (!fs.length) continue;
-    const bandMax = new Float64Array(nb);
-    for (let q = 0; q < fs.length; q++) { const b = bands[q], v = res.sigmaPeak[fs[q]]; if (v > bandMax[b]) bandMax[b] = v; }
-    const sorted = Array.from(bandMax).sort((a, b) => b - a);
-    const idx = clip(Math.ceil(sp.span_frac * nb) - 1, 0, nb - 1);
-    if (sorted[idx] < out) out = sorted[idx];
+    let d = 0;
+    for (let q = 0; q < fs.length; q++) {
+      const v = res.sigmaPeak[fs[q]] / Math.max(wm.scf_in[fs[q]], 1e-6);
+      if (v > d) d = v;
+    }
+    drives.push(d);
   }
-  return isFinite(out) ? out : 0;
+  if (!drives.length) return 0;
+  drives.sort((a, b) => b - a);
+  const needed = Math.max(1, Math.ceil(drives.length * sp.breakthrough_frac));
+  return drives[Math.min(needed - 1, drives.length - 1)];
 }
+
 // Net wall left at the seam for a given scoring depth, in mm — the number a
 // designer actually has to draw.
 function seamThicknessAt(wm, score) {
@@ -1359,10 +1376,13 @@ let _rzCache = null;
 // a few arches at continuously-accumulating, irregular azimuths so generations
 // interleave and the landing points form an irregular ~360° circle. Each grounded
 // arch adds one short underground planting root; some upper arches stay aerial.
-function _rzForest() {
-  if (_rzCache) return _rzCache;
+function _rzForest(seedOverride) {
+  // seedOverride lets the SIMULATION build its own cage per run (Monte Carlo
+  // resamples root azimuths) without disturbing the cached one the scene draws.
+  if (seedOverride === undefined && _rzCache) return _rzCache;
   const P = _rzParams, H = POD.features.height, footR = rOuterAt(0.05 * H), gz = groundZ();
-  const rng = mulberry32(P.seed), strands = [], landings = [], nL = P.levels.length;
+  const rng = mulberry32(seedOverride === undefined ? P.seed : seedOverride),
+        strands = [], landings = [], nL = P.levels.length;
   // per-level counts, clamped so the total visible arch count lands in [min,max]
   const counts = P.levels.map(() => P.rootsPerLevel[0] +
     Math.floor(rng() * (P.rootsPerLevel[1] - P.rootsPerLevel[0] + 1)));
@@ -1394,6 +1414,7 @@ function _rzForest() {
       }
     }
   }
+  if (seedOverride !== undefined) return { strands, landings };
   _rzCache = { strands, landings };
   return _rzCache;
 }
@@ -1475,6 +1496,57 @@ function stageRootMesh(p) {
 // ---------------------------------------------------------------------------
 // mud surface sits just ABOVE the foot tips (which bottom out at z=0) so the 4
 // feet visibly press into / are partly embedded in the mud, not floating over it
+// ---------------------------------------------------------------------------
+//  The prop-root cage AS THE LOAD SOURCE  (port of proproots.py)
+// ---------------------------------------------------------------------------
+//  These are the roots the tool draws, and now the ones the physics runs on.
+//  Each stilt root leaves the stem at r~6 mm — INSIDE the bore — sweeps outward
+//  and drops into the mud a foot-radius away, so its intended path crosses the
+//  wall at z~34-107 mm: the slot->foot ligament and base-split band, exactly
+//  where the pod is designed to release. The load is therefore ~8 directed
+//  beams on specific wall patches, not a diffuse cloud.
+//
+//  A root cannot pass through an intact wall, so the indentation driving contact
+//  pressure is how far past the bore the intended path has grown, capped at the
+//  wall. Points still inside the bore, and points already beyond the outer
+//  surface (they have left through the gaps between the feet), carry no load.
+// ---------------------------------------------------------------------------
+function propRootSystem(seed) {
+  const F = _rzForest(seed);
+  const nx = [], ny = [], nz = [], parent = [], birth = [], radius = [];
+  const birthFrac = [], thickenP = [], fullR = [];
+  for (const st of F.strands) {
+    if (st.underground) continue;
+    for (const q of st.pts) {
+      const r = Math.hypot(q[0], q[1]), rIn = rInnerAt(q[2]), rOut = rOuterAt(q[2]);
+      if (!(r > rIn && r <= rOut)) continue;      // not bearing on the wall
+      const u = q[4];
+      nx.push(q[0]); ny.push(q[1]); nz.push(q[2]);
+      parent.push(-1); radius.push(q[3]);
+      birth.push(Math.round((st.birthP + st.span * u) * 1000));
+      birthFrac.push(st.birthP + st.span * u);
+      thickenP.push(st.birthP + st.span * 1.35);
+      fullR.push(q[3]);
+    }
+  }
+  const n = nx.length;
+  return {
+    nx, ny, nz, parent, birth, radius: Float64Array.from(radius), n,
+    strands: F.strands,
+    // the prop root's own growth law: the tip EXTENDS to a station first, then
+    // the root THICKENS behind it — not the generic maturation/swelling curve
+    radiusAt(t, T) {
+      const p = t / Math.max(T, 1), out = new Float64Array(n);
+      for (let i = 0; i < n; i++) {
+        if (p < birthFrac[i]) { out[i] = 0; continue; }
+        const span = Math.max(thickenP[i] - birthFrac[i], 1e-6);
+        out[i] = fullR[i] * (0.5 + 0.5 * clip((p - birthFrac[i]) / span, 0, 1));
+      }
+      return out;
+    },
+  };
+}
+
 function groundZ() { return 0.03 * POD.features.height; }
 function rootLandings() { return _rzForest().landings; }
 // --- deterministic value-noise FBM (procedural mudflat terrain + texture) -----
@@ -1894,7 +1966,7 @@ function simFromCfg(cfg) {
 function simulate(cfg) {
   const pat = patternFromCfg(cfg), gp = growthFromCfg(cfg), sp = simFromCfg(cfg), ph = physFromCfg(cfg);
   const wall = buildFields(pat), wm = buildWallModel(wall);
-  const roots = grow(gp, +(cfg.seed || 1));
+  const roots = propRootSystem(+(cfg.seed || 1));
   const res = runSimulation(wm, roots, sp, ph);
   const { intensity, cmax } = vertexIntensity(res.faceField, !!cfg.project_outer, res.sigma_f_end_mpa);
   const roots_payload = rootTubeMesh(roots);
@@ -1955,7 +2027,7 @@ function* montecarloIter(cfg, nRuns) {
   const nArch = Math.min(n, 12), archPool = [];
   // The reported mechanics must be the NOMINAL design, not whichever random
   // draw happened to be first.
-  archPool[0] = grow(gp, +(cfg.seed || 1));
+  archPool[0] = propRootSystem(+(cfg.seed || 1));
   const nomRes = runSimulation(wm, archPool[0], sp, ph0);
   yield { done: 0, total: n, phase: "nominal design" };
   for (let kk = 0; kk < n; kk++) {
@@ -1964,7 +2036,7 @@ function* montecarloIter(cfg, nRuns) {
       const g = Object.assign({}, gp);
       g.slot_bias = Math.max(0.2, gp.slot_bias * (1 + 0.5 * jNorm() * 0.3));
       g.down_bias = clip(gp.down_bias * (1 + 0.5 * jNorm() * 0.3), 0.1, 1);
-      archPool[ai] = grow(g, kk);
+      archPool[ai] = propRootSystem(kk);
     }
     // physical uncertainty for this draw
     const ph = Object.assign({}, ph0);
@@ -2008,7 +2080,7 @@ function* montecarloIter(cfg, nRuns) {
   for (const o of orders) if (o.length) { const key = o.slice(0, 3).map(s => wm.labels[s]).join(" → "); oc[key] = (oc[key] || 0) + 1; }
   const topOrders = Object.entries(oc).sort((a, b) => b[1] - a[1]).slice(0, 5);
   const { intensity, cmax } = vertexIntensity(cumAccum, !!cfg.project_outer, nomRes.sigma_f_end_mpa);
-  const rep = grow(gp, 7), roots_payload = rootTubeMesh(rep);
+  const roots_payload = stageRootMesh(1);
   const pct = (a, p) => { const s = a.filter(isFinite).sort((x, y) => x - y); return s.length ? +s[clip(Math.round((p / 100) * (s.length - 1)), 0, s.length - 1)].toFixed(2) : null; };
   const stats = {
     pattern: pat.name, n_runs: n, reliability,
@@ -2051,7 +2123,7 @@ function montecarlo(cfg, nRuns) {
 function simulateFrames(cfg) {
   const pat = patternFromCfg(cfg), gp = growthFromCfg(cfg), sp = simFromCfg(cfg), ph = physFromCfg(cfg);
   const wall = buildFields(pat), wm = buildWallModel(wall);
-  const roots = grow(gp, +(cfg.seed || 1));
+  const roots = propRootSystem(+(cfg.seed || 1));
   const capFrames = [];
   const res = runSimulation(wm, roots, sp, ph, capFrames);
   const T = sp.n_time_steps, projectOuter = cfg.project_outer !== false;
@@ -2270,12 +2342,12 @@ function* crackReportIter(cfg, nRuns) {
     const g = Object.assign({}, gp);
     g.slot_bias = Math.max(0.2, gp.slot_bias * (1 + 0.5 * jNorm() * 0.3));
     g.down_bias = clip(gp.down_bias * (1 + 0.5 * jNorm() * 0.3), 0.1, 1);
-    rootSys.push(grow(g, kk));
+    rootSys.push(propRootSystem(kk));
     yield { done: kk + 1, total: nArch + 4, phase: "growing roots" };
   }
   // the nominal architecture, for the headline mechanics numbers — reporting
   // whichever random draw happened to be last would swing them wildly
-  const nomRoots = grow(gp, +(cfg.seed || 1));
+  const nomRoots = propRootSystem(+(cfg.seed || 1));
   const mats = ["pha", "pla", "clay", "concrete"], byMat = {};
   const finite = a => a.filter(v => isFinite(v)), mean = a => a.length ? a.reduce((s, x) => s + x, 0) / a.length : Infinity;
   for (const mk of mats) {

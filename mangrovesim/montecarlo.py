@@ -28,7 +28,7 @@ from typing import List, Dict, Optional
 
 import numpy as np
 
-from . import growth
+from . import growth, proproots
 from .growth import GrowthParams
 from .perforation import PerforationPattern
 from .pressure import (WallModel, SimParams, run_simulation,
@@ -164,7 +164,10 @@ def run_montecarlo(pod, pattern: PerforationPattern, n_runs=40,
         drawn_strength[k] = ph.sigma_f_mpa
         drawn_pressure[k] = ph.root_pressure_mpa
 
-        rs = growth.grow(pod, gp, seed=base_seed * 1000 + k)
+        # Resample the prop-root cage itself: root count, azimuths and reach all
+        # differ run to run. Whether the cage happens to line up with the scored
+        # seams is the dominant architectural risk, so it has to be sampled.
+        rs = proproots.grow_prop_roots(pod, seed=base_seed * 1000 + k)
         res = run_simulation(pod, wm, rs, sparams, phys=ph)
         first_crack[k] = res.first_crack_step
         breakthrough[k] = res.breakthrough_step

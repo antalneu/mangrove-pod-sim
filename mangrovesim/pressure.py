@@ -441,25 +441,32 @@ def run_simulation(pod, wallmodel: WallModel, roots, sparams: Optional[SimParams
 #  reporting: the numbers a designer actually acts on
 # --------------------------------------------------------------------------- #
 def governing_seam_stress(wm: WallModel, res: SimResult, sp: SimParams) -> float:
-    """The stress that GOVERNS release, as opposed to the peak at the slot-tip
-    stress raiser. A seam only tears once cracking spans `span_frac` of its
-    bands, so the deciding stress is the span_frac-th highest band stress — and
-    the pod releases on whichever seam reaches that first. This is the number to
-    compare against material strength when asking "will it open?"."""
-    out = np.inf
+    """The stress that GOVERNS release: the number to compare against material
+    strength when asking "will it open?".
+
+    A crack no longer has to be initiated across a seam — it initiates at the
+    worst-loaded spot and then *propagates* (see the K term in run_simulation).
+    So what decides a seam is the peak NOMINAL driving stress it carries,
+    `sigma/SCF`, de-concentrated for the same reason the crack driver is: the
+    slot-tip raiser starts the crack, it does not have to sustain it.
+
+    The pod needs `breakthrough_frac` of its seams to go, so the governing value
+    is the corresponding order statistic across seams — the weakest seam that
+    still has to open. Keying this to band *span* (as it did when failure needed
+    a crack present across the section) reports 0 for a discrete load, where most
+    bands legitimately carry nothing."""
+    drives = []
     for si in range(wm.n_sites):
         if not wm.is_ligament[si]:
             continue
         fs = wm.site_faces[si]
         if len(fs) == 0:
             continue
-        nb = wm.site_nbands[si]
-        band_max = np.zeros(nb)
-        np.maximum.at(band_max, wm.site_band[si], res.stress_peak_in[fs])
-        order = np.sort(band_max)[::-1]
-        idx = int(np.clip(np.ceil(sp.span_frac * nb) - 1, 0, nb - 1))
-        out = min(out, order[idx])
-    return float(out) if np.isfinite(out) else 0.0
+        drives.append(float((res.stress_peak_in[fs] / np.maximum(wm.scf_in[fs], 1e-6)).max()))
+    if not drives:
+        return 0.0
+    needed = max(1, int(np.ceil(len(drives) * sp.breakthrough_frac)))
+    return float(np.sort(drives)[::-1][min(needed - 1, len(drives) - 1)])
 
 
 def seam_thickness_at(wm: WallModel, score: float):

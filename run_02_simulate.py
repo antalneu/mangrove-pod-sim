@@ -7,6 +7,7 @@ import sys
 import os
 from mangrovesim.podmesh import PodMesh
 from mangrovesim import growth, perforation as perf, pressure as pr, viz
+from mangrovesim import proproots
 from mangrovesim.physical import PhysicalContext
 
 os.makedirs("outputs", exist_ok=True)
@@ -20,11 +21,15 @@ wm = pr.WallModel(pod, pattern.build_fields(pod))
 
 sp = pr.SimParams()
 phys = PhysicalContext.default()
-roots = growth.grow(pod, growth.GrowthParams(), seed=seed)
+# The load source is the propagule's own prop-root cage: the stilt roots emerge
+# inside the bore and drive OUT through the wall, in the ligament band, which is
+# what actually cracks the pod. `growth.grow` (the in-bore seedling root system)
+# is still available and is what the root figure draws alongside.
+roots = proproots.grow_prop_roots(pod, seed=seed)
 res = pr.run_simulation(pod, wm, roots, sp, phys=phys)
 mech = pr.mechanics_summary(res, wm, phys, pattern, sp)
 
-print(f"Grew {len(roots.nodes)} root nodes.")
+print(f"{len(roots.strands)} prop-root strands -> {len(roots.nodes)} wall contact stations.")
 print(f"First crack : step {res.first_crack_step} "
       f"at {res.site_labels[res.first_crack_site] if res.first_crack_site>=0 else 'n/a'}")
 print(f"Breakthrough: step {res.breakthrough_step}")
@@ -38,7 +43,9 @@ print(f"Governing seam stress: {mech['seam_stress_mpa']} MPa  vs "
 # top of the scale literally means "at fracture"
 field = res.stress_faces()
 cmax = res.sigma_f_end_mpa
-viz.render_root_system(pod, roots, "outputs/02_roots.png")
+viz.render_root_system(pod, proproots.cage_render_tree(roots.strands),
+                       "outputs/02_roots.png",
+                       title="prop roots driving through the pod wall")
 viz.render_pressure_outer(pod, field, "outputs/02_stress_outer.png", vmax=cmax,
                           title=f"wall stress, MPa (seed {seed})")
 viz.render_pressure_png(pod, field, "outputs/02_stress_cutaway.png", vmax=cmax,

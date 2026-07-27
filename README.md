@@ -34,11 +34,13 @@ gentle pull from a planting team).
    opening, the narrow waist, the **4 vertical slot perforations**, the **4
    splayed base feet**, the **split-lines** between the feet, and a per-face
    **wall-thickness** field.
-3. **Simulate root growth.** A rule-based *architectural* model of a young
-   *Rhizophora* root system — a dominant gravitropic taproot, laterals emerging
-   acropetally behind the tip at per-order set-point angles, and a basal root
-   ball that flares into the feet — growing down through the waist with
-   configurable growth rate, branching and bias toward the slots/feet.
+3. **Grow the propagule's prop roots.** The load source is the young
+   *Rhizophora*'s own stilt-root cage (`proproots.py`) — the roots the tool
+   draws. They emerge on the stem *inside* the bore, arch outward and drop into
+   the mud, so their path crosses the wall in the ligament band: ~8 directed
+   beams on specific wall patches, not a diffuse cloud. (`growth.py` still
+   models the in-bore seedling root system and is available as an alternative
+   load source.)
 4. **Compute wall stress over time.** Roots swell each time-step; where a root
    body reaches the inner wall it bears outward at its turgor-limited growth
    pressure. That pressure is mapped onto the real inner-wall faces and turned
@@ -358,10 +360,17 @@ calibrated so the `n_attractors` knob keeps its old meaning.
 As moulded, the ~21 mm wall sees a negligible seam stress against 22 MPa of
 remaining strength — **no material releases without deep scoring**. Required
 scoring depth: concrete/clay ≈ 55%, PHA ≈ 85% (3.6 mm of wall), PLA ≈ 95%. At the
-85% default, PHA releases at **~month 8** and clay/concrete around **month 5**,
-early enough to flag against the ~12-month outplant-readiness window. **PLA is
-the marginal case**: it releases in only ~1 run in 6, and when it does it is at
-~month 12 — at the very edge of the window, so it cannot be relied on to open.
+85% default, clay and concrete release early and reliably (**~month 3–6**, 100%
+of runs), **PHA is marginal** — it opens in roughly two runs in three, at
+~month 11, right at the edge of the ~12-month outplant window — and **PLA never
+does**.
+
+That PHA number is a release *probability*, not a schedule, and the reason is
+architectural: the eight prop roots land at azimuths that vary run to run, so
+whether they line up with the four scored seams is luck. When they hit, the pod
+opens; when they fall between seams, it does not. **Seam count and placement
+relative to the root cage is therefore a first-order design variable** — more
+seams, or seams rotated to match the cage, would convert luck into reliability.
 
 Scoring depth remains the dominant lever: in `run_04` a 92%-scored seam releases
 at step ~62 while a 70%-scored one never releases at all, a far wider spread than

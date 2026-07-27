@@ -391,6 +391,39 @@ class PropRootSystem:
         return np.where(grown, self._full_r * thicken, 0.0)
 
 
+class _CageRenderTree:
+    """The cage as a node/parent tree, so the existing tapered-tube renderers
+    draw the actual prop roots. Physics uses the contact stations; this is only
+    geometry for the figures."""
+
+    def __init__(self, strands: List[Strand]):
+        nodes, parent, radius, birth = [], [], [], []
+        for st in strands:
+            first = len(nodes)
+            for i, q in enumerate(st.pts):
+                nodes.append(np.array([q[0], q[1], q[2]]))
+                parent.append(-1 if i == 0 else first + i - 1)
+                radius.append(q[3])
+                birth.append(st.birth_p + st.span * q[4])
+        self.nodes = nodes
+        self.parent_arr = np.array(parent, int)
+        self.parent = list(parent)
+        self.radius = np.array(radius)
+        self.birth_arr = np.array(birth)
+
+    def positions(self):
+        return np.array(self.nodes)
+
+    def segments(self):
+        return [(self.nodes[p], self.nodes[i])
+                for i, p in enumerate(self.parent_arr) if p >= 0]
+
+
+def cage_render_tree(strands: List[Strand]) -> "_CageRenderTree":
+    """Geometry of the prop-root cage for rendering."""
+    return _CageRenderTree(strands)
+
+
 def grow_prop_roots(pod, params: Optional[PropRootParams] = None,
                     seed: Optional[int] = None) -> PropRootSystem:
     """Build the propagule's prop-root cage and reduce it to the wall load it

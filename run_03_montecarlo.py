@@ -34,7 +34,8 @@ for k, v in order_str.most_common(5):
 
 viz.render_results_analysis(pod, r, pattern, "outputs/03_results_analysis.png",
                             title="As-drawn perforation - Monte-Carlo")
-rep = growth.grow(pod, growth.GrowthParams(), seed=7)
+from mangrovesim import proproots
+rep = proproots.cage_render_tree(proproots.build_cage(pod, seed=7))
 viz.pressure_heatmap_html(pod, r.mean_stress_faces,
                           "outputs/03_mean_stress_interactive.html", roots=rep,
                           title="Mean wall stress, MPa (as-drawn, %d runs)" % n_runs)

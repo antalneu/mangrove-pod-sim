@@ -78,6 +78,15 @@ class GrowthParams:
     slot_bias: float = 2.2          # lateral pull toward slots / feet
     wall_bias: float = 0.75         # 0 = fill volume, 1 = hug the inner wall
     seed_depth_frac: float = 0.92   # radicle starts just below the top opening
+    # --- developmental pacing (Rhizophora growth stages) ---
+    # A real Rhizophora does NOT have a branched root system in year one. Field
+    # growth stages: 0-1 yr the PRIMARY root develops; 1-2 yr lateral roots
+    # BEGIN to form; 2-3 yr laterals become numerous; 3-5 yr prop roots start.
+    # Branch order therefore has to be gated by the plant's real age, not just
+    # by arc length - otherwise a 12-month window grows a 3-year root system and
+    # the pod is loaded years before it would be in the ground.
+    window_months: float = 12.0
+    order_onset_months: tuple = (0.0, 12.0, 24.0, 36.0)
     # --- architecture ---
     max_order: int = 3
     branch_angle_deg: float = 68.0
@@ -216,6 +225,10 @@ def grow(pod, params: Optional[GrowthParams] = None, seed: int = 0) -> RootSyste
     params = params or GrowthParams()
     p = params
     rng = np.random.default_rng(seed)
+    # Only the orders whose developmental onset falls inside the window exist.
+    allowed_order = max(0, sum(1 for m in p.order_onset_months
+                               if m <= p.window_months) - 1)
+    max_order = min(p.max_order, allowed_order)
     f = pod.features
     H = f.height
     z_base = f.z_base_top
@@ -328,9 +341,13 @@ def grow(pod, params: Optional[GrowthParams] = None, seed: int = 0) -> RootSyste
                 spacing *= p.basal_branch_factor
             # In the anchoring zone an axis keeps throwing laterals even as it
             # runs out of length - that terminal whorl IS the root ball.
-            can_branch = (tip.remaining > p.apical_unbranched
-                          or (in_base and tip.order <= 1))
-            if tip.order < p.max_order and tip.since_branch >= spacing and can_branch:
+            # Laterals are only just beginning at the end of year one, so they
+            # may not appear until the plant is developmentally old enough.
+            onset = p.order_onset_months[min(tip.order + 1, len(p.order_onset_months) - 1)]
+            mature_enough = (step / max(p.max_steps, 1)) >= min(onset / max(p.window_months, 1e-6), 1.0)
+            can_branch = mature_enough and (tip.remaining > p.apical_unbranched
+                                            or (in_base and tip.order <= 1))
+            if tip.order < max_order and tip.since_branch >= spacing and can_branch:
                 tip.since_branch = 0.0
                 tip.roll += np.radians(DIVERGENCE_DEG)
                 ang = np.radians(max(15.0, rng.normal(p.branch_angle_deg,

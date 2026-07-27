@@ -104,6 +104,10 @@ class GrowthParams:
     basal_lateral_len: float = 46.0     # basal laterals reach out into the feet
     wall_friction: float = 0.45     # damps sliding along the wall (0 = frictionless)
     wall_seek_frac: float = 0.80    # outward drift stops past this frac of the bore
+    # --- leaving the pod ---
+    exit_z_frac: float = 0.02       # below this the root has left through the base
+    substrate_run: float = 90.0     # how far it then runs out into the mud
+    substrate_flare: float = 0.55   # how strongly it spreads once outside
     # thickening (pipe model)
     tip_radius: float = 1.4
     pipe_exponent: float = 2.3
@@ -245,7 +249,10 @@ def grow(pod, params: Optional[GrowthParams] = None, seed: int = 0) -> RootSyste
     # couple of near-equal companions is normal; they start close to the axis.
     z_seed = p.seed_depth_frac * H
     r_seed = max(pod.r_inner_at(z_seed) * 0.4, 3.0)
-    axis_len = 0.95 * (z_seed - 0.02 * H)
+    # long enough to descend the whole cavity, LEAVE through the open base and
+    # then run out into the mud - a year-one primary root does not stop at the
+    # pod lip, it keeps going into the substrate
+    axis_len = (z_seed - p.exit_z_frac * H) + p.substrate_run
     tips: List[_Tip] = []
     for k in range(max(1, p.n_seeds)):
         th = 2 * np.pi * k / max(1, p.n_seeds) + rng.uniform(0, 1)
@@ -304,11 +311,21 @@ def grow(pod, params: Optional[GrowthParams] = None, seed: int = 0) -> RootSyste
             newp = here + d * p.step_size
 
             # --- confinement + mechanical deflection along the wall ----------
-            newp[2] = float(np.clip(newp[2], 0.02 * H, 0.99 * H))
-            r_here = pod.r_inner_at(newp[2])
+            # The pod is open at the base: a root reaching it LEAVES, into the
+            # substrate, and spreads there. It must not be clamped against the
+            # inside of the base - a root that has left the pod cannot push on
+            # it, and trapping it invents load at the feet that is not real.
+            newp[2] = float(min(newp[2], 0.99 * H))
+            below_pod = newp[2] < p.exit_z_frac * H
+            r_here = pod.r_inner_at(max(newp[2], p.exit_z_frac * H))
             rr = np.hypot(newp[0], newp[1])
             limit = 0.985 * r_here
-            if rr > limit and rr > 1e-6:
+            if below_pod:
+                # outside the pod: spread outward into the mud, no confinement
+                tip.remaining = min(tip.remaining, p.substrate_run)
+                d = _unit(d + p.substrate_flare * np.array(
+                    [newp[0] / (rr or 1.0), newp[1] / (rr or 1.0), 0.0]))
+            elif rr > limit and rr > 1e-6:
                 newp[0] *= limit / rr
                 newp[1] *= limit / rr
                 # a root cannot bore through the wall: drop the outward radial

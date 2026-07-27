@@ -53,6 +53,10 @@ class Material:
     biodegradable: bool
     biodegradability: str                 # short human label
     biodegradability_note: str
+    # Wet strength loss PLATEAUS: it is not a slide to zero. Marine PHBV drops
+    # ~25% early then holds 17-22 MPa of its initial 27; ceramics and concrete
+    # lose a little and then hold. Fraction of initial strength retained.
+    strength_floor: float = 0.60
     strength_note: str = ""               # caveat on the strength estimate
     warn: bool = False                    # show a visible UI warning
     warn_text: str = ""
@@ -63,7 +67,7 @@ class Material:
         """Remaining strength fraction after `elapsed_months` of tidal wetting.
         Linear loss, floored so a wall never becomes literally zero-strength."""
         m = 1.0 - self.wet_strength_loss_per_month * max(elapsed_months, 0.0)
-        return float(max(m, 0.05))
+        return float(max(m, self.strength_floor))
 
     # ---- provenance ----
     def provenance_entries(self) -> List[Constant]:
@@ -132,10 +136,14 @@ MATERIALS = {
     # this whole project is built around.
     "pha": Material(
         key="pha", name="PHA / PHBV (marine-degradable)",
-        fracture_strength_mpa=55.0, fracture_range_mpa=(40.0, 75.0),
+        # Measured PHBV (the marine-degradable grade actually mouldable here)
+        # sits at ~27-33 MPa; neat PHA reaches ~58 MPa. Range spans both.
+        fracture_strength_mpa=32.0, fracture_range_mpa=(25.0, 58.0),
         stiffness_mpa=2800.0,
         fatigue_exponent=12,   # ductile-ish polymer: slow crack growth, forgiving
-        wet_strength_loss_per_month=0.05,
+        # Marine field data: strength falls ~25% early, then HOLDS at 17-22 MPa
+        # of an initial 27 - it plateaus rather than sliding to zero.
+        wet_strength_loss_per_month=0.06, strength_floor=0.68,
         biodegradable=True, biodegradability="Marine-biodegradable — months to ~1 yr",
         biodegradability_note=(
             "PHA (incl. PHBV) genuinely biodegrades in seawater — field studies show "
@@ -150,10 +158,11 @@ MATERIALS = {
     # needs the heat of industrial composting. Distinct preset, distinct claim.
     "pla": Material(
         key="pla", name="PLA (industrial-compost only)",
-        fracture_strength_mpa=90.0, fracture_range_mpa=(70.0, 110.0),
+        fracture_strength_mpa=55.0, fracture_range_mpa=(45.0, 70.0),
         stiffness_mpa=3500.0,
         fatigue_exponent=14,   # stiffer, more brittle polymer than PHA
-        wet_strength_loss_per_month=0.006,
+        # Does not meaningfully degrade in ambient seawater over the window.
+        wet_strength_loss_per_month=0.004, strength_floor=0.90,
         biodegradable=False,
         biodegradability="NOT marine-degradable — industrial composting only",
         biodegradability_note=(
@@ -170,10 +179,11 @@ MATERIALS = {
 
     "clay": Material(
         key="clay", name="Clay (low-fired earthenware)",
-        fracture_strength_mpa=6.0, fracture_range_mpa=(1.0, 25.0),
+        # Flexural strength across clay-based studies spans ~2.0-9.5 MPa.
+        fracture_strength_mpa=5.5, fracture_range_mpa=(2.0, 9.5),
         stiffness_mpa=8000.0,
         fatigue_exponent=30,   # ceramic static fatigue — very sharp threshold
-        wet_strength_loss_per_month=0.03,
+        wet_strength_loss_per_month=0.03, strength_floor=0.55,
         biodegradable=True, biodegradability="Inert mineral — environmentally benign",
         biodegradability_note=(
             "Fired clay is not 'biodegradable' in the polymer sense, but it is an "
@@ -189,10 +199,11 @@ MATERIALS = {
 
     "concrete": Material(
         key="concrete", name="Concrete (unreinforced, thin-wall)",
-        fracture_strength_mpa=4.0, fracture_range_mpa=(3.0, 6.0),
+        # Tensile strength of unreinforced concrete is ~2.2-4.2 MPa.
+        fracture_strength_mpa=3.2, fracture_range_mpa=(2.2, 4.2),
         stiffness_mpa=25000.0,
         fatigue_exponent=24,   # concrete static fatigue
-        wet_strength_loss_per_month=0.004,
+        wet_strength_loss_per_month=0.006, strength_floor=0.72,
         biodegradable=False, biodegradability="Not biodegradable — persistent",
         biodegradability_note=(
             "LEAST biodegradable option. Persists in the marine environment for "

@@ -225,9 +225,11 @@ const MATERIALS = {
   // material — the design-intent baseline this whole project is built around.
   pha: {
     key: "pha", name: "PHA / PHBV (marine-degradable)",
-    fracture_strength_mpa: 55, fracture_range_mpa: [40, 75], stiffness_mpa: 2800,
+    // Measured PHBV (the marine-degradable grade) is ~27-33 MPa; neat PHA
+    // reaches ~58. Marine field data: strength falls ~25% then HOLDS.
+    fracture_strength_mpa: 32, fracture_range_mpa: [25, 58], stiffness_mpa: 2800,
     fatigue_exponent: 12,   // ductile-ish polymer: slow crack growth, forgiving
-    wet_strength_loss_per_month: 0.05, biodegradable: true,
+    wet_strength_loss_per_month: 0.06, strength_floor: 0.68, biodegradable: true,
     biodegradability: "Marine-biodegradable — months to ~1 yr",
     biodegradability_note: "PHA (incl. PHBV) genuinely biodegrades in seawater — field studies show full marine degradation on the order of months to a few years (within ~1 yr for some formulations), depending on thickness, formulation and site. This is the design-intent baseline that holds shape, then dissolves to release the seedling. Estimate — verify with immersion testing.",
     warn: false, warn_text: "",
@@ -237,9 +239,9 @@ const MATERIALS = {
   // needs the heat of industrial composting. Distinct preset, distinct claim.
   pla: {
     key: "pla", name: "PLA (industrial-compost only)",
-    fracture_strength_mpa: 90, fracture_range_mpa: [70, 110], stiffness_mpa: 3500,
+    fracture_strength_mpa: 55, fracture_range_mpa: [45, 70], stiffness_mpa: 3500,
     fatigue_exponent: 14,   // stiffer, more brittle polymer than PHA
-    wet_strength_loss_per_month: 0.006, biodegradable: false,
+    wet_strength_loss_per_month: 0.004, strength_floor: 0.90, biodegradable: false,
     biodegradability: "NOT marine-degradable — industrial composting only",
     biodegradability_note: "PLA does NOT reliably biodegrade in ambient marine or soil conditions — it needs the elevated heat of industrial composting. In side-by-side testing PLA did not meet standard marine-biodegradation thresholds where PHA did. It persists in seawater over the establishment window. Estimate.",
     warn: true,
@@ -248,10 +250,11 @@ const MATERIALS = {
   },
   clay: {
     key: "clay", name: "Clay (low-fired earthenware)",
-    fracture_strength_mpa: 6, fracture_range_mpa: [1, 25], stiffness_mpa: 8000,
+    // Flexural strength across clay studies spans ~2.0-9.5 MPa.
+    fracture_strength_mpa: 5.5, fracture_range_mpa: [2.0, 9.5], stiffness_mpa: 8000,
     fatigue_exponent: 30,   // ceramic static fatigue — very sharp threshold
     strength_note: "Flexural strength across fired-clay studies spans roughly 1–25 MPa; true low-fired earthenware sits toward the LOW/weak end (intentionally more porous and less vitrified than higher-fired stoneware), so ~6 MPa is more representative than the mid-range. Treat the low end as the working value; verify by testing notched samples.",
-    wet_strength_loss_per_month: 0.03, biodegradable: true,
+    wet_strength_loss_per_month: 0.03, strength_floor: 0.55, biodegradable: true,
     biodegradability: "Inert mineral — environmentally benign",
     biodegradability_note: "Fired clay is not 'biodegradable' in the polymer sense, but it is an inert, non-toxic mineral that breaks down to sediment. Unfired/low-fired clay slakes faster in water (higher degradation). Estimate.",
     warn: false, warn_text: "",
@@ -259,9 +262,10 @@ const MATERIALS = {
   },
   concrete: {
     key: "concrete", name: "Concrete (unreinforced, thin-wall)",
-    fracture_strength_mpa: 4, fracture_range_mpa: [3, 6], stiffness_mpa: 25000,
+    // Tensile strength of unreinforced concrete is ~2.2-4.2 MPa.
+    fracture_strength_mpa: 3.2, fracture_range_mpa: [2.2, 4.2], stiffness_mpa: 25000,
     fatigue_exponent: 24,   // concrete static fatigue
-    wet_strength_loss_per_month: 0.004, biodegradable: false,
+    wet_strength_loss_per_month: 0.006, strength_floor: 0.72, biodegradable: false,
     biodegradability: "Not biodegradable — persistent",
     biodegradability_note: "LEAST biodegradable option. Persists in the marine environment for decades; alkaline leachate can locally raise pH. Cracks in tension at a scored seam, but the fragments remain. Not recommended for leave-in-place / dissolving pod designs. Estimate.",
     warn: true,
@@ -269,7 +273,12 @@ const MATERIALS = {
     blurb: "Durable and cheap, but persistent. Weak in tension so a thin scored seam still cracks.",
   },
 };
-function matDegrade(m, months) { return Math.max(0.05, 1 - m.wet_strength_loss_per_month * Math.max(months, 0)); }
+// Wet strength loss PLATEAUS: marine PHBV drops ~25% early then HOLDS
+// 17-22 MPa of its initial 27. It is not a slide to zero.
+function matDegrade(m, months) {
+  return Math.max(m.strength_floor != null ? m.strength_floor : 0.6,
+                  1 - m.wet_strength_loss_per_month * Math.max(months, 0));
+}
 function materialCard(m) {
   return Object.assign({}, m, { estimate_disclaimer: "Engineering estimate — requires lab verification." });
 }

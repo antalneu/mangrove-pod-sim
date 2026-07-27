@@ -152,7 +152,12 @@ function rOuterAt(z) { return interp(POD.outerProf.z, POD.outerProf.r, z); }
 const G_DEFAULT = {
   step_size: 7, n_attractors: 2600, max_steps: 200, n_seeds: 3,
   jitter: 0.30, down_bias: 0.55, slot_bias: 2.2, wall_bias: 0.75,
-  seed_depth_frac: 0.92,
+  // The propagule spans the FULL pod: shoot out of the top, lower tip at the
+  // base. The radicle emerges from that lower tip and fans out into the mud, so
+  // roots start at the BASE - 0.92 seeded them at the shoot end by mistake.
+  seed_depth_frac: 0.16,
+  // leaving the pod through the open base
+  exit_z_frac: 0.02, substrate_run: 90, substrate_flare: 0.55,
   // architecture
   // 0-1 yr the PRIMARY root develops; 1-2 yr laterals BEGIN; 2-3 yr numerous;
   // 3-5 yr prop roots. Branch order is gated by the plant's real age.
@@ -510,7 +515,9 @@ function grow(gp, seed) {
 
   // primary axes from the hypocotyl base
   const zSeed = gp.seed_depth_frac * H, rSeed = Math.max(rInnerAt(zSeed) * 0.4, 3);
-  const axisLen = 0.95 * (zSeed - 0.02 * H);
+  // long enough to descend the cavity, LEAVE through the open base, and run
+  // out into the mud - a primary root does not stop at the pod lip
+  const axisLen = (zSeed - gp.exit_z_frac * H) + gp.substrate_run;
   let tips = [];
   const nSeeds = Math.max(1, gp.n_seeds);
   for (let k = 0; k < nSeeds; k++) {
@@ -564,12 +571,21 @@ function grow(gp, seed) {
                  d[2] + gp.jitter * 0.30 * nrm());
 
       let px = hx + d[0] * gp.step_size, py = hy + d[1] * gp.step_size;
-      let pz = clip(hz + d[2] * gp.step_size, 0.02 * H, 0.99 * H);
+      let pz = Math.min(hz + d[2] * gp.step_size, 0.99 * H);
 
-      // confinement + mechanical deflection along the wall
-      const rHere = rInnerAt(pz), limit = 0.985 * rHere;
+      // The pod is open at the base: a root reaching it LEAVES, into the
+      // substrate. It must not be clamped against the inside of the base — a
+      // root that has left cannot push on the pod, and trapping it invents load
+      // at the feet that is not real.
+      const belowPod = pz < gp.exit_z_frac * H;
+      const rHere = rInnerAt(Math.max(pz, gp.exit_z_frac * H)), limit = 0.985 * rHere;
       const rr = Math.hypot(px, py);
-      if (rr > limit && rr > 1e-6) {
+      if (belowPod) {
+        tip.remaining = Math.min(tip.remaining, gp.substrate_run);
+        const rn = rr || 1;
+        d = _unit3(d[0] + gp.substrate_flare * px / rn,
+                   d[1] + gp.substrate_flare * py / rn, d[2]);
+      } else if (rr > limit && rr > 1e-6) {
         px *= limit / rr; py *= limit / rr;
         const nn = Math.hypot(px, py);
         if (nn > 1e-6) {

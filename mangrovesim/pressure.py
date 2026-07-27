@@ -163,14 +163,14 @@ class WallModel:
         _, loc = self.tree.query(positions, k=1)
         return loc
 
-    def wall_stress(self, p, amp=1.0, thickness_factor=1.0):
+    def wall_stress(self, p, amp=1.0, thickness_factor=1.0, span=None):
         """Wall stress (MPa) per inner face under bearing pressure `p` (MPa):
         membrane hoop on the net section + transverse plate bending over its
         reacting span, amplified by the local stress-concentration factor and by
         `amp` (net-section loss where part of the site has already cracked).
         `thickness_factor` is a moulding tolerance (1 = nominal)."""
         te = np.maximum(self.t_in * thickness_factor, MIN_T_EFF_MM)
-        sl = self.span_in / te
+        sl = (self.span_in if span is None else span) / te
         s = self.scf_in * amp * p * (self.rb_in / te + PLATE_BETA * sl * sl)
         return np.where((p > 0) & (self.open_in <= 0.5), s, 0.0)
 
@@ -280,6 +280,23 @@ def run_simulation(pod, wallmodel: WallModel, roots, sparams: Optional[SimParams
     n_in = len(wm.inner_idx)
     M = spr.csr_matrix((data, (rows, cols)), shape=(n_in, len(P)))
 
+    # --- how WIDE the load actually is ----------------------------------------
+    # The plate-bending term beta*(L/t)^2 is derived for pressure spread
+    # uniformly over a panel of width L. A root does not do that: it bears on a
+    # patch a few mm across. Using the full hinged-sector width with a point-ish
+    # contact overstates bending by (L/w)^2 - about 8x for a 14 mm patch on a
+    # 39 mm sector - and that error is worst exactly when the seedling is young
+    # and its roots are thinnest. Cap the bending span at the loaded width.
+    load_w = np.zeros(n_in)
+    wsum = np.zeros(n_in)
+    for j, fs in enumerate(patches):
+        if len(fs) == 0:
+            continue
+        load_w[fs] += 2.0 * patch_r[j]
+        wsum[fs] += 1.0
+    load_w = np.where(wsum > 0, load_w / np.maximum(wsum, 1e-9), wm.span_in)
+    span_eff = np.minimum(wm.span_in, load_w)
+
     delta0 = contact_ref_mm(sp.contact_stiffness)   # mm of indentation for full bearing
     pull_mpa = max(sp.pull_assist, 0.0)             # planting-team assist, MPa
     below_waist = wm.z_in < pod.features.z_waist_hi
@@ -337,7 +354,7 @@ def run_simulation(pod, wallmodel: WallModel, roots, sparams: Optional[SimParams
 
         # NOMINAL stress on the intact section — this is the design demand, and
         # what the heatmap and the reported numbers show.
-        sigma = wm.wall_stress(p_face, 1.0, tf)
+        sigma = wm.wall_stress(p_face, 1.0, tf, span_eff)
         np.maximum(sigma_peak, sigma, out=sigma_peak)
 
         # Damage sees the net-section amplification instead: once bands of this

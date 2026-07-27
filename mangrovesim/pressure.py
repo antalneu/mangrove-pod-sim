@@ -243,9 +243,17 @@ def run_simulation(pod, wallmodel: WallModel, roots, sparams: Optional[SimParams
     pipe = roots.radius
     birth = roots.birth_arr.astype(float)
     radius_at = getattr(roots, "radius_at", None)
-    # map growth steps onto the first `growth_fraction` of the time axis
-    max_birth = max(birth.max(), 1.0)
-    birth_time = birth / max_birth * (sp.growth_fraction * T)
+    # A root system may know its own real growth timing (the prop-root cage
+    # carries a growth fraction per station); otherwise map arbitrary birth
+    # steps onto the first `growth_fraction` of the time axis. Renormalising the
+    # cage would squeeze its true schedule - the last roots emerge at ~0.8 of the
+    # window - forward into 0.6, loading the wall before those roots exist.
+    birth_time_fn = getattr(roots, "birth_time", None)
+    if birth_time_fn is not None:
+        birth_time = birth_time_fn(T)
+    else:
+        max_birth = max(birth.max(), 1.0)
+        birth_time = birth / max_birth * (sp.growth_fraction * T)
 
     r_node = np.hypot(P[:, 0], P[:, 1])
     r_inner_here = pod.r_inner_at(P[:, 2])

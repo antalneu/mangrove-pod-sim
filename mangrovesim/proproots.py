@@ -381,6 +381,13 @@ class PropRootSystem:
     def segments(self):
         return []
 
+    def birth_time(self, T):
+        """Real step at which each station's root tip actually reaches it. The
+        cage's growth fractions are already on the window's own time axis, so
+        they must NOT be renormalised - doing so pulls the late-emerging roots
+        forward and loads the wall before they exist."""
+        return self._birth_frac * T
+
     def radius_at(self, t, T):
         """Contact radius at step t. Zero before the tip arrives; then the root
         thickens from half to full girth over its thickening window."""

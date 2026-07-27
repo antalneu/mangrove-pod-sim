@@ -831,9 +831,18 @@ function runSimulation(wm, roots, sp, ph, capFrames) {
   const ps = physPerStep(ph, T), drive = ps.drive, cap = ps.cap, months = ps.months;
   const N = roots.n, Px = roots.nx, Py = roots.ny, Pz = roots.nz, pipe = roots.radius, birth = roots.birth;
   const radiusAt = roots.radiusAt || null;
-  let maxBirth = 1; for (let i = 0; i < N; i++) if (birth[i] > maxBirth) maxBirth = birth[i];
-  const birthTime = new Float64Array(N);
-  for (let i = 0; i < N; i++) birthTime[i] = birth[i] / maxBirth * (sp.growth_fraction * T);
+  // A root system may know its own real growth timing (the prop-root cage carries
+  // a growth fraction per station); otherwise map arbitrary birth steps onto the
+  // first `growth_fraction` of the axis. Renormalising the cage would squeeze its
+  // true schedule — the last roots emerge at ~0.8 of the window — forward into
+  // 0.6, loading the wall before those roots exist.
+  let birthTime;
+  if (roots.birthTime) birthTime = roots.birthTime(T);
+  else {
+    let maxBirth = 1; for (let i = 0; i < N; i++) if (birth[i] > maxBirth) maxBirth = birth[i];
+    birthTime = new Float64Array(N);
+    for (let i = 0; i < N; i++) birthTime[i] = birth[i] / maxBirth * (sp.growth_fraction * T);
+  }
   const rNode = new Float64Array(N), rInnerHere = new Float64Array(N), baseNode = new Uint8Array(N);
   const zBase = POD.features.z_base_top;
   for (let i = 0; i < N; i++) { rNode[i] = Math.hypot(Px[i], Py[i]); rInnerHere[i] = rInnerAt(Pz[i]); baseNode[i] = Pz[i] < zBase * 1.25 ? 1 : 0; }
@@ -1554,6 +1563,12 @@ function propRootSystem(seed) {
     strands: F.strands,
     // the prop root's own growth law: the tip EXTENDS to a station first, then
     // the root THICKENS behind it — not the generic maturation/swelling curve
+    // real step at which each station's root tip actually reaches it
+    birthTime(T) {
+      const out = new Float64Array(n);
+      for (let i = 0; i < n; i++) out[i] = birthFrac[i] * T;
+      return out;
+    },
     radiusAt(t, T) {
       const p = t / Math.max(T, 1), out = new Float64Array(n);
       for (let i = 0; i < n; i++) {

@@ -1405,12 +1405,14 @@ function _rzForest(seedOverride) {
       const a = _archStrand({ hz, az: az + (rng() - 0.5) * 0.12, stemR, reach, baseR, gz,
         twistSign: rng() < 0.5 ? -1 : 1, sway: 0.6 + 0.8 * rng(), phase, rng, short });
       strands.push({ pts: a.pts, colA: _tint(_RZ.barkDark, tint), colB: _tint(_RZ.barkTan, tint),
-        phase, birthP, span: span * 0.62 });
+        phase, birthP, span: span * 0.62, underground: false });
       if (!short && a.land) {
         landings.push(a.land);
         strands.push({ pts: _ugPlunge(a.land, a.landDir, a.tipR, rng, phase, reach),
           colA: _tint(_RZ.soilDark, tint), colB: _RZ.soilDeep,
-          phase, birthP: clip(birthP + span * 0.55, 0, 0.95), span: span * 0.5 });
+          phase, birthP: clip(birthP + span * 0.55, 0, 0.95), span: span * 0.5,
+          // below the mud and outside the pod: never a wall load
+          underground: true });
       }
     }
   }

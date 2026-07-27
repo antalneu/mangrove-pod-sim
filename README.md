@@ -263,11 +263,14 @@ outputs/          all generated figures, interactive HTML, and pod_features.json
 > the Python package under `mangrovesim/` both run the **shell-mechanics model
 > (v2)** described below, in real MPa. They are independent implementations of
 > the same equations, so the offline render pipeline (`run_01`..`run_05`) and the
-> website agree. Root growth uses each language's own RNG, so a given seed grows a
-> different root system in each — compare *distributions*, not single runs. Across
-> 30 seeds on the default design the two agree on mean node count (449 vs 452),
-> mean first crack (69.3 vs 68.9 steps), mean breakthrough (78.7 vs 78.7) and
-> release rate (100% vs 100%).
+> website agree. The prop-root cage they both load the wall with is built from the
+> same PRNG drawn in the same order, so for a given seed it is **bit-identical** in
+> the two engines — root architecture is no longer a source of divergence. Across
+> 16 seeds on the default design they agree on wall contact stations (69, 69, 67,
+> 64, 85, 56 — exactly), mean breakthrough (115.07 both), release rate (88% both),
+> mean first crack (100.8 vs 99.8) and governing seam stress (24.9 vs 25.2 MPa).
+> The residual sub-1% differences come from the geometry rounding in the exported
+> `pod.js` and a three-face difference in the inner-wall mask.
 
 ### Why v2 replaced the original surrogate
 

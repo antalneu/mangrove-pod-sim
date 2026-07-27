@@ -1,23 +1,23 @@
 {
-  "n_runs": 8,
+  "n_runs": 6,
   "rows": [
     {
       "species": "rhizophora",
       "material": "pha",
       "reliability": 100.0,
-      "mean_breakthrough_step": 91.625,
-      "mean_breakthrough_time": "~9.2 months",
-      "mean_seam_stress_mpa": 15.02,
+      "mean_breakthrough_step": 79.83333333333333,
+      "mean_breakthrough_time": "~8.0 months",
+      "mean_seam_stress_mpa": 15.42,
       "strength_end_mpa": 22.0,
       "first_seam": "slot@-88deg"
     },
     {
       "species": "rhizophora",
       "material": "pla",
-      "reliability": 0.0,
-      "mean_breakthrough_step": null,
-      "mean_breakthrough_time": "\u2014",
-      "mean_seam_stress_mpa": 15.02,
+      "reliability": 16.666666666666664,
+      "mean_breakthrough_step": 117.0,
+      "mean_breakthrough_time": "~11.7 months",
+      "mean_seam_stress_mpa": 15.42,
       "strength_end_mpa": 83.52,
       "first_seam": "slot@-88deg"
     },
@@ -25,39 +25,39 @@
       "species": "rhizophora",
       "material": "clay",
       "reliability": 100.0,
-      "mean_breakthrough_step": 60.875,
-      "mean_breakthrough_time": "~6.1 months",
-      "mean_seam_stress_mpa": 15.02,
+      "mean_breakthrough_step": 50.0,
+      "mean_breakthrough_time": "~5.0 months",
+      "mean_seam_stress_mpa": 15.42,
       "strength_end_mpa": 3.84,
-      "first_seam": "slot@88deg"
+      "first_seam": "slot@-9deg"
     },
     {
       "species": "rhizophora",
       "material": "concrete",
       "reliability": 100.0,
-      "mean_breakthrough_step": 57.125,
-      "mean_breakthrough_time": "~5.7 months",
-      "mean_seam_stress_mpa": 15.02,
+      "mean_breakthrough_step": 47.333333333333336,
+      "mean_breakthrough_time": "~4.7 months",
+      "mean_seam_stress_mpa": 15.42,
       "strength_end_mpa": 3.81,
-      "first_seam": "slot@88deg"
+      "first_seam": "slot@-176deg"
     },
     {
       "species": "avicennia",
       "material": "pha",
-      "reliability": 87.5,
-      "mean_breakthrough_step": 85.14285714285714,
-      "mean_breakthrough_time": "~7.8 months \u00b7 ~6 nodes",
-      "mean_seam_stress_mpa": 15.02,
+      "reliability": 100.0,
+      "mean_breakthrough_step": 75.16666666666667,
+      "mean_breakthrough_time": "~6.9 months \u00b7 ~6 nodes",
+      "mean_seam_stress_mpa": 15.42,
       "strength_end_mpa": 24.75,
       "first_seam": "slot@-88deg"
     },
     {
       "species": "avicennia",
       "material": "pla",
-      "reliability": 0.0,
-      "mean_breakthrough_step": null,
-      "mean_breakthrough_time": "\u2014",
-      "mean_seam_stress_mpa": 15.02,
+      "reliability": 16.666666666666664,
+      "mean_breakthrough_step": 114.0,
+      "mean_breakthrough_time": "~10.4 months \u00b7 ~8 nodes",
+      "mean_seam_stress_mpa": 15.42,
       "strength_end_mpa": 84.06,
       "first_seam": "slot@-88deg"
     },
@@ -65,26 +65,26 @@
       "species": "avicennia",
       "material": "clay",
       "reliability": 100.0,
-      "mean_breakthrough_step": 59.625,
-      "mean_breakthrough_time": "~5.5 months \u00b7 ~4 nodes",
-      "mean_seam_stress_mpa": 15.02,
+      "mean_breakthrough_step": 48.5,
+      "mean_breakthrough_time": "~4.4 months \u00b7 ~4 nodes",
+      "mean_seam_stress_mpa": 15.42,
       "strength_end_mpa": 4.02,
-      "first_seam": "slot@88deg"
+      "first_seam": "slot@-9deg"
     },
     {
       "species": "avicennia",
       "material": "concrete",
       "reliability": 100.0,
-      "mean_breakthrough_step": 56.375,
-      "mean_breakthrough_time": "~5.2 months \u00b7 ~4 nodes",
-      "mean_seam_stress_mpa": 15.02,
+      "mean_breakthrough_step": 47.0,
+      "mean_breakthrough_time": "~4.3 months \u00b7 ~3 nodes",
+      "mean_seam_stress_mpa": 15.42,
       "strength_end_mpa": 3.82,
-      "first_seam": "slot@88deg"
+      "first_seam": "slot@-176deg"
     }
   ],
   "counts": {
     "calibrated": 9,
-    "estimate": 7,
+    "estimate": 8,
     "geometry": 6,
     "literature": 5
   }

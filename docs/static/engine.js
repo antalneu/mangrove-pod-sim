@@ -203,6 +203,13 @@ const PLATE_BETA = 0.31;
 const T_REF_MONTHS = 0.5;
 const MIN_T_EFF_MM = 0.15;          // a score cannot thin the wall below this
 const NET_SECTION_FLOOR = 0.12;     // cap on net-section amplification (≈8×)
+// Crack propagation, K = Y·σ·√(πa). What advances a crack front is the stress
+// INTENSITY there — the load applied to the section times the square root of the
+// crack already formed — not the stress that happens to sit ahead of the tip.
+// That distinction decides whether a DISCRETE load can open a seam at all: a
+// prop root driving through the wall at one point raises almost no stress in the
+// next band along, so a local-stress rule stalls at one cracked band.
+const CRACK_GEOM_Y = 1.15;          // geometry factor Y (order 1)
 // Indentation at which a swelling root develops its full bearing pressure. Tied
 // to the "contact stiffness" control so that slider keeps its meaning: a stiffer
 // contact reaches full pressure after a smaller indentation.
@@ -832,6 +839,9 @@ function runSimulation(wm, roots, sp, ph, capFrames) {
   const nExp = ph.fatigue_n, tf = ph.thickness_factor;
   const z_waist_hi = POD.features.z_waist_hi;
   const sigma = new Float64Array(wm.nIn), sigmaPeak = new Float64Array(wm.nIn), dmg = new Float64Array(wm.nIn);
+  // effective crack-tip stress on bands at a crack front (K-based propagation);
+  // zero where there is no front. Carried into the next step, like sitePhi.
+  const crackTip = new Float64Array(wm.nIn);
   const pPeak = new Float64Array(wm.nIn);   // peak bearing pressure per face — feeds the design guidance
   const pressNode = new Float64Array(N);
   const bandFailed = [], sitePhi = new Float64Array(wm.n_sites);
@@ -875,7 +885,10 @@ function runSimulation(wm, roots, sp, ph, capFrames) {
       // Damage sees the net-section amplification instead: once bands of this
       // seam have cracked, the survivors carry the whole section.
       const amp = si >= 0 ? 1 / Math.max(1 - sitePhi[si], NET_SECTION_FLOOR) : 1;
-      const sAmp = s * amp;
+      // A band at a crack front is driven by the stress intensity there, from
+      // the load on the seam and the crack already formed — not by the local
+      // stress ahead of the tip. Whichever is worse governs.
+      const sAmp = Math.max(s * amp, crackTip[l]);
       if (sAmp > 0 && dmg[l] < 1) {
         // brittle overload, then power-law subcritical crack growth
         if (sAmp >= sigF) dmg[l] = 1;
@@ -899,6 +912,29 @@ function runSimulation(wm, roots, sp, ph, capFrames) {
       for (let q = 0; q < fs.length; q++) if (dmg[fs[q]] >= 1) bf[bands[q]] = 1;
       let nf = 0; for (let b = 0; b < bf.length; b++) if (bf[b]) nf++;
       sitePhi[si] = nf / wm.site_nbands[si];
+      // --- crack propagation, K = Y·σ_drive·√a --------------------------------
+      // σ_drive is the NOMINAL section stress (σ/SCF), not the peak: the peak
+      // sits at the slot-tip raiser and already carries the concentration, and
+      // once a crack exists it — not the notch — is the dominant feature, so
+      // driving K with the concentrated value counts the concentration twice.
+      const nb2 = wm.site_nbands[si];
+      if (nf > 0 && nf < nb2) {
+        const front = new Uint8Array(nb2);
+        for (let b = 0; b < nb2; b++) if (bf[b]) {
+          if (b > 0) front[b - 1] = 1;
+          if (b < nb2 - 1) front[b + 1] = 1;
+        }
+        for (let b = 0; b < nb2; b++) if (bf[b]) front[b] = 0;
+        let drive = 0;
+        for (let q = 0; q < fs.length; q++) {
+          const v = sigma[fs[q]] / Math.max(wm.scf_in[fs[q]], 1e-6);
+          if (v > drive) drive = v;
+        }
+        const kEff = drive * CRACK_GEOM_Y * Math.sqrt(nf);
+        for (let q = 0; q < fs.length; q++) crackTip[fs[q]] = front[bands[q]] ? kEff : 0;
+      } else {
+        for (let q = 0; q < fs.length; q++) crackTip[fs[q]] = 0;
+      }
       if (sitePhi[si] >= sp.span_frac && !isFinite(activation[si])) { activation[si] = t; order.push(si); }
     }
     sigSeries[t - 1] = isFinite(govNow) ? govNow : peakThisStep;

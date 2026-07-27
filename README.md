@@ -264,8 +264,8 @@ outputs/          all generated figures, interactive HTML, and pod_features.json
 > website agree. Root growth uses each language's own RNG, so a given seed grows a
 > different root system in each — compare *distributions*, not single runs. Across
 > 30 seeds on the default design the two agree on mean node count (449 vs 452),
-> mean first crack (77 vs 75 steps), mean breakthrough (86.0 vs 86.2), release
-> rate (100% vs 100%) and governing seam stress (21.0 vs 20.0 MPa).
+> mean first crack (69.3 vs 68.9 steps), mean breakthrough (78.7 vs 78.7) and
+> release rate (100% vs 100%).
 
 ### Why v2 replaced the original surrogate
 
@@ -302,9 +302,16 @@ provenance panel as the tool's single most load-bearing assumption.
   eventually; one held well under it never does. `σ_f` decays over the window
   with wet degradation, so a biodegradable pod releases because **the wall
   weakens into the root load** — the actual design mechanism.
-- **Crack propagation.** Once a fraction φ of a seam's z-bands have cracked, the
-  survivors carry the whole section (`σ ×= 1/(1−φ)`, capped at 8×). A crack
-  initiates at the slot-tip stress raiser and then *runs* across the ligament.
+- **Crack propagation.** Two mechanisms. Once a fraction φ of a seam's z-bands
+  have cracked the survivors carry the whole section (`σ ×= 1/(1−φ)`, capped at
+  8×); and the band at a crack *front* is driven by the stress **intensity**
+  there, `K = Y·σ_drive·√a`, where `a` is the crack already formed and `σ_drive`
+  is the **nominal** section stress `σ/SCF` — not the peak, which sits at the
+  slot-tip raiser and already carries the concentration. Net-section alone cannot
+  propagate a crack started by a *discrete* load: one cracked band of eight gives
+  only 1.14×, and the bands either side of a point load carry almost no stress.
+  The K term is what lets a single prop root punching through the wall open a
+  whole seam.
 - **Break sites.** A **slot→foot ligament** tears when cracking spans
   `span_frac` of its stacked z-bands. Base **split-lines** are banded and judged
   by the same rule.
@@ -351,9 +358,10 @@ calibrated so the `n_attractors` knob keeps its old meaning.
 As moulded, the ~21 mm wall sees a negligible seam stress against 22 MPa of
 remaining strength — **no material releases without deep scoring**. Required
 scoring depth: concrete/clay ≈ 55%, PHA ≈ 85% (3.6 mm of wall), PLA ≈ 95%. At the
-85% default, PHA releases at **~month 9** while **PLA never does**, and
-clay/concrete release around **month 5–6**, early enough to flag against the
-~12-month outplant-readiness window.
+85% default, PHA releases at **~month 8** and clay/concrete around **month 5**,
+early enough to flag against the ~12-month outplant-readiness window. **PLA is
+the marginal case**: it releases in only ~1 run in 6, and when it does it is at
+~month 12 — at the very edge of the window, so it cannot be relied on to open.
 
 Scoring depth remains the dominant lever: in `run_04` a 92%-scored seam releases
 at step ~62 while a 70%-scored one never releases at all, a far wider spread than

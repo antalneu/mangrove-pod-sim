@@ -239,6 +239,7 @@ def run_simulation(pod, wallmodel: WallModel, roots, sparams: Optional[SimParams
     P = roots.positions()
     pipe = roots.radius
     birth = roots.birth_arr.astype(float)
+    radius_at = getattr(roots, "radius_at", None)
     # map growth steps onto the first `growth_fraction` of the time axis
     max_birth = max(birth.max(), 1.0)
     birth_time = birth / max_birth * (sp.growth_fraction * T)
@@ -297,7 +298,13 @@ def run_simulation(pod, wallmodel: WallModel, roots, sparams: Optional[SimParams
 
         # --- 1. bearing pressure per root node (MPa, turgor-bounded) ---
         age = t - birth_time
-        rad = _node_radius(pipe, age, sp)
+        # A root system may carry its own thickening law (the prop-root cage
+        # extends its tip first, then thickens behind it); otherwise use the
+        # generic maturation + swelling curve.
+        if radius_at is not None:
+            rad = radius_at(t, T)
+        else:
+            rad = _node_radius(pipe, age, sp)
         pen = (r_node + rad) - r_inner_here
         # engagement saturates: once the root has indented the bore by a few
         # delta0 it is bearing at its full growth pressure and can push no harder

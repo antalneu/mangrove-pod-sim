@@ -77,7 +77,13 @@ class GrowthParams:
     down_bias: float = 0.55         # gravitropism strength
     slot_bias: float = 2.2          # lateral pull toward slots / feet
     wall_bias: float = 0.75         # 0 = fill volume, 1 = hug the inner wall
-    seed_depth_frac: float = 0.92   # radicle starts just below the top opening
+    # The propagule runs the FULL length of the pod - shoot out of the top
+    # opening, lower tip at the base - and the radicle emerges from that lower
+    # tip, at the feet, then fans straight out into the mud. Roots therefore
+    # start at the BASE, not below the rim: they barely travel inside the bore
+    # at all. (0.92 was inherited from a model that seeded "where the sapling
+    # emerges", i.e. the shoot end, which is the wrong end of the propagule.)
+    seed_depth_frac: float = 0.16
     # --- developmental pacing (Rhizophora growth stages) ---
     # A real Rhizophora does NOT have a branched root system in year one. Field
     # growth stages: 0-1 yr the PRIMARY root develops; 1-2 yr lateral roots

@@ -358,6 +358,35 @@ loads the release seams noticeably harder at the same node density (~20 MPa vs
 cover far more of each seam's z-bands than a diffuse tangle does. Node density is
 calibrated so the `n_attractors` knob keeps its old meaning.
 
+### Four bonded pieces, and what the holes actually do
+
+The pod is moulded as **4 quarter-pieces bonded along the seams**, not carved
+from one shell, and a joint reaches only a fraction of the parent wall's
+strength. That fraction — `seam_bond_efficiency` — is what the seam fails at,
+and it is a strong lever:
+
+| bond efficiency | releases | breakthrough |
+|---|---|---|
+| 1.00 (a perfect weld — i.e. monolithic) | 88% | step 115 |
+| 0.65 | 100% | 98 |
+| **0.55** (typical adhesive/weld, the default) | **100%** | **90** |
+| 0.25 (weak mortar / slip joint) | 100% | 56 |
+
+Note the top row: **four pieces do not help on their own.** At 100% joint
+efficiency the pod behaves exactly like a one-piece shell. What buys reliable
+release is a *deliberately weak* joint — going from a perfect weld to a typical
+adhesive turns a marginal 88% into a certain 100% and pulls release forward by
+~25 steps. Bond efficiency is a manufacturing choice, so it belongs on the
+drawing next to the scoring depth.
+
+**The slots** help in two ways the model already counts: they remove
+load-bearing section, and their tips carry a 3x stress raiser that initiates the
+crack. But they help through slot **length** — a longer slot leaves a shorter
+ligament to tear — *not* width. Once a wide seam is scored, the seam and not the
+slot sets the ligament, which is why `wider-slots` and `narrower-slots` return
+identical results in `run_04` (in both engines — it is a real property of the
+model, not a bug).
+
 ### What v2 concludes
 
 As moulded, the ~21 mm wall sees a negligible seam stress against 22 MPa of

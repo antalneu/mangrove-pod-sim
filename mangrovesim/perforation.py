@@ -82,6 +82,14 @@ class PerforationPattern:
     # seam set is the pattern's theta_offset (see parametric()).
     seam_score: float = 0.0
     seam_width_deg: float = 0.0        # 0 => default to ~2x the ligament half-width
+    # The pod is moulded as 4 quarter-pieces BONDED along those seams, not carved
+    # from one shell. A joint reaches only a fraction of the parent material's
+    # strength - welded/adhesive polymer joints typically 0.4-0.7, mortar or
+    # slip-joined ceramic lower - and that fraction, not the parent strength, is
+    # what the seam actually fails at. 1.0 = a perfect joint (as strong as the
+    # wall), which is why four pieces do not help on their own: low bond
+    # efficiency is what makes the pod open.
+    seam_bond_efficiency: float = 0.55
 
     # ---------- constructors ---------- #
     @classmethod
@@ -213,6 +221,19 @@ class PerforationPattern:
                                          np.where(on_seam, self.seam_score, 0.0))
         weaken = np.maximum(weaken, seam_weaken)
 
+        # Bonded-joint capacity along the quarter-piece seams. Where a face sits
+        # on a seam it is not parent material at all, it is a joint, so it fails
+        # at the bond's strength. Base split-lines are moulded features of a
+        # piece, not joints, so they keep parent strength.
+        bond = np.ones(n)
+        eff = float(np.clip(self.seam_bond_efficiency, 0.02, 1.0))
+        if eff < 1.0:
+            seam_hw = (self.seam_width_deg / 2.0 if self.seam_width_deg > 0
+                       else m.ligament_halfwidth_deg)
+            for s in self.slots:
+                on_seam = inner & (angdiff(th, s.theta_deg) < seam_hw)
+                bond = np.where(on_seam, np.minimum(bond, eff), bond)
+
         # ---- section geometry, in millimetres -------------------------------
         #  t_eff  net wall left after scoring - this is what carries the load
         #  r_bore local inner radius (the lever arm for membrane hoop stress)
@@ -239,7 +260,7 @@ class PerforationPattern:
             split_site[inner & near & low] = spi
 
         return WallFields(open_frac=open_frac, weaken=weaken, t_eff=t_eff,
-                          span=span, r_bore=r_bore, scf=scf,
+                          span=span, r_bore=r_bore, scf=scf, bond=bond,
                           ligament=ligament, split_site=split_site,
                           n_slots=len(self.slots), n_splits=len(self.split_lines),
                           pattern=self)
@@ -252,6 +273,7 @@ class WallFields:
     t_eff: np.ndarray             # net wall after scoring, mm
     span: np.ndarray              # bending reaction span, mm
     r_bore: np.ndarray            # local inner radius, mm
+    bond: np.ndarray              # joint capacity as a fraction of parent (1 = parent)
     scf: np.ndarray
     ligament: np.ndarray          # slot->foot bridge index per face (-1 none)
     split_site: np.ndarray        # base split-line index per face (-1 none)

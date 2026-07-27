@@ -618,7 +618,8 @@ function detectedPattern() {
   return {
     slots: f.slots.map(s => ({ theta_deg: s.theta_deg, width_deg: s.width_deg, z_lo: s.z_lo, z_hi: s.z_hi })),
     split_lines: f.split_line_deg.map(a => ({ theta_deg: a, depth_frac: 1.3, score: 0.35 })),
-    mat: Object.assign({}, MAT_PARAMS), seam_score: 0, seam_width_deg: 0, name: "as-drawn",
+    mat: Object.assign({}, MAT_PARAMS), seam_score: 0, seam_width_deg: 0,
+    seam_bond_efficiency: 0.55, name: "as-drawn",
   };
 }
 function parametricPattern(o) {
@@ -650,7 +651,9 @@ function parametricPattern(o) {
   const split_lines = split_th.map(a => ({ theta_deg: a, depth_frac: o.split_depth_frac != null ? o.split_depth_frac : 1.3, score: o.split_score != null ? o.split_score : 0.35 }));
   return {
     slots, split_lines, mat: Object.assign({}, MAT_PARAMS),
-    seam_score: o.seam_score || 0, seam_width_deg: o.seam_width_deg || 0, name: o.name || "custom",
+    seam_score: o.seam_score || 0, seam_width_deg: o.seam_width_deg || 0,
+    seam_bond_efficiency: o.seam_bond_efficiency != null ? +o.seam_bond_efficiency : 0.55,
+    name: o.name || "custom",
   };
 }
 
@@ -708,6 +711,18 @@ function buildFields(pat) {
   //         localises bending to its boundary layer √(r·t), but once the
   //         vertical seams are scored the wall hinges there and the whole
   //         sector between two seams reacts at the score.
+  // Bonded-joint capacity along the quarter-piece seams. A seam face is not
+  // parent material, it is a JOINT, and a joint reaches only a fraction of the
+  // wall's strength - which is what four bonded pieces actually buy you. At
+  // efficiency 1.0 (a perfect weld) it is identical to a monolithic shell.
+  const bond = new Float64Array(nF).fill(1);
+  const bondEff = clip(pat.seam_bond_efficiency != null ? pat.seam_bond_efficiency : 0.55, 0.02, 1);
+  if (bondEff < 1) {
+    const bhw = pat.seam_width_deg > 0 ? pat.seam_width_deg / 2 : m.ligament_halfwidth_deg;
+    for (const s of pat.slots)
+      for (let i = 0; i < nF; i++)
+        if (inner[i] && angdiff(thd[i], s.theta_deg) < bhw) bond[i] = Math.min(bond[i], bondEff);
+  }
   const t_eff = new Float64Array(nF), span = new Float64Array(nF), r_bore = new Float64Array(nF);
   const nPieces = Math.max(pat.slots.length, 2), sectorRad = 2 * Math.PI / nPieces;
   for (let i = 0; i < nF; i++) {
@@ -730,7 +745,7 @@ function buildFields(pat) {
   }
   const labels = pat.slots.map(s => `slot@${s.theta_deg.toFixed(0)}°`)
     .concat(pat.split_lines.map(s => `split@${s.theta_deg.toFixed(0)}°`));
-  return { open_frac, t_eff, span, r_bore, weaken, scf, ligament, split_site,
+  return { open_frac, t_eff, span, r_bore, weaken, bond, scf, ligament, split_site,
     n_slots: pat.slots.length, n_splits: pat.split_lines.length, labels, pattern: pat };
 }
 
@@ -742,14 +757,14 @@ function buildWallModel(wall) {
   const Cin = new Float64Array(nIn * 3);
   const scf_in = new Float64Array(nIn), z_in = new Float64Array(nIn), r_in = new Float64Array(nIn);
   const t_in = new Float64Array(nIn), span_in = new Float64Array(nIn), rb_in = new Float64Array(nIn);
-  const open_in = new Float64Array(nIn), score_in = new Float64Array(nIn);
+  const open_in = new Float64Array(nIn), score_in = new Float64Array(nIn), bond_in = new Float64Array(nIn);
   const lig = new Int32Array(nIn), split = new Int32Array(nIn);
   for (let l = 0; l < nIn; l++) {
     const g = innerIdx[l];
     Cin[3 * l] = POD.cx[g]; Cin[3 * l + 1] = POD.cy[g]; Cin[3 * l + 2] = POD.cz[g];
     scf_in[l] = wall.scf[g];
     t_in[l] = wall.t_eff[g]; span_in[l] = wall.span[g]; rb_in[l] = wall.r_bore[g];
-    open_in[l] = wall.open_frac[g]; score_in[l] = wall.weaken[g];
+    open_in[l] = wall.open_frac[g]; score_in[l] = wall.weaken[g]; bond_in[l] = wall.bond[g];
     z_in[l] = POD.zFace[g]; r_in[l] = POD.rFace[g];
     lig[l] = wall.ligament[g]; split[l] = wall.split_site[g];
   }
@@ -774,7 +789,7 @@ function buildWallModel(wall) {
   // net-section amplification can be looked up per face in the time loop
   const face_site = new Int32Array(nIn).fill(-1);
   for (let si = 0; si < n_sites; si++) for (const l of site_faces[si]) face_site[l] = si;
-  return { innerIdx, nIn, Cin, grid, scf_in, z_in, r_in, t_in, span_in, rb_in, open_in, score_in,
+  return { innerIdx, nIn, Cin, grid, scf_in, z_in, r_in, t_in, span_in, rb_in, open_in, score_in, bond_in,
     n_slots, n_splits, n_sites, labels: wall.labels, site_faces, is_lig, site_band, site_nbands, face_site };
 }
 // Wall stress (MPa) at one inner face under bearing pressure p (MPa): membrane
@@ -895,9 +910,11 @@ function runSimulation(wm, roots, sp, ph, capFrames) {
       // stress ahead of the tip. Whichever is worse governs.
       const sAmp = Math.max(s * amp, crackTip[l]);
       if (sAmp > 0 && dmg[l] < 1) {
+        // A seam face fails at the JOINT's strength, not the parent wall's.
+        const capF = sigF * wm.bond_in[l];
         // brittle overload, then power-law subcritical crack growth
-        if (sAmp >= sigF) dmg[l] = 1;
-        else if (dMonths > 0) dmg[l] += Math.pow(sAmp / sigF, nExp) * dMonths / T_REF_MONTHS;
+        if (sAmp >= capF) dmg[l] = 1;
+        else if (dMonths > 0) dmg[l] += Math.pow(sAmp / capF, nExp) * dMonths / T_REF_MONTHS;
       }
     }
     capSeries[t - 1] = sigF;
@@ -1941,11 +1958,12 @@ function patternFromCfg(cfg) {
     const pat = detectedPattern();
     if (cfg.seam_score !== "" && cfg.seam_score != null) pat.seam_score = +cfg.seam_score;
     if (cfg.seam_width_deg !== "" && cfg.seam_width_deg != null) pat.seam_width_deg = +cfg.seam_width_deg;
+    if (cfg.seam_bond_efficiency !== "" && cfg.seam_bond_efficiency != null) pat.seam_bond_efficiency = +cfg.seam_bond_efficiency;
     pat.name = "as-drawn"; return pat;
   }
   const o = { name: cfg.name || "custom", align: cfg.align || "feet" };
   for (const key of ["n_slots"]) if (cfg[key] != null && cfg[key] !== "") o[key] = Math.round(+cfg[key]);
-  for (const key of ["slot_length_frac", "slot_width_deg", "slot_z_center_frac", "theta_offset_deg", "split_score", "split_depth_frac", "seam_score", "seam_width_deg"])
+  for (const key of ["slot_length_frac", "slot_width_deg", "slot_z_center_frac", "theta_offset_deg", "split_score", "split_depth_frac", "seam_score", "seam_width_deg", "seam_bond_efficiency"])
     if (cfg[key] != null && cfg[key] !== "") o[key] = +cfg[key];
   return parametricPattern(o);
 }

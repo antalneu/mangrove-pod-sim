@@ -113,6 +113,9 @@ class WallModel:
         self.rb_in = wall.r_bore[self.inner_idx]        # bore radius, mm
         self.open_in = wall.open_frac[self.inner_idx]
         self.score_in = wall.weaken[self.inner_idx]
+        # bonded-joint capacity: a seam face fails at the JOINT's strength,
+        # not the parent wall's, so capacity is scaled per face
+        self.bond_in = wall.bond[self.inner_idx]
         self.z_in = pod.z_face[self.inner_idx]
         self.r_in = pod.r_face[self.inner_idx]
         lig = wall.ligament[self.inner_idx]
@@ -340,11 +343,12 @@ def run_simulation(pod, wallmodel: WallModel, roots, sparams: Optional[SimParams
         # not from the local stress ahead of the tip. Whichever is worse governs.
         s_amp = np.maximum(sigma * amp, crack_tip)
         live = (s_amp > 0) & (dmg < 1.0)
-        brittle = live & (s_amp >= sig_f)          # brittle overload
+        cap_face = sig_f * wm.bond_in              # joints fail before parent
+        brittle = live & (s_amp >= cap_face)       # brittle overload
         dmg[brittle] = 1.0
         if d_months > 0:                            # subcritical crack growth
             fat = live & ~brittle
-            dmg[fat] += (s_amp[fat] / sig_f) ** n_exp * d_months / T_REF_MONTHS
+            dmg[fat] += (s_amp[fat] / cap_face[fat]) ** n_exp * d_months / T_REF_MONTHS
         strength_series[t - 1] = sig_f
 
         # --- 3. site state: which bands have cracked, and has the site torn? ---

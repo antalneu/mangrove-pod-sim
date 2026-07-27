@@ -77,7 +77,7 @@ from scipy.spatial import cKDTree
 
 from .perforation import WallFields, _sstep
 from .provenance import (MM_PER_UNIT, PLATE_BETA, T_REF_MONTHS, MIN_T_EFF_MM,
-                         NET_SECTION_FLOOR, contact_ref_mm)
+                         NET_SECTION_FLOOR, CRACK_GEOM_Y, contact_ref_mm)
 
 
 @dataclass
@@ -277,6 +277,10 @@ def run_simulation(pod, wallmodel: WallModel, roots, sparams: Optional[SimParams
     sigma_peak = np.zeros(n_in)
     p_peak = np.zeros(n_in)
     dmg = np.zeros(n_in)
+    # Effective crack-tip stress on the bands at a crack front, from the K-based
+    # propagation rule. Zero where there is no front. Carried into the next step,
+    # exactly like site_phi.
+    crack_tip = np.zeros(n_in)
     site_phi = np.zeros(wm.n_sites)
     phi_hist = np.zeros((T, wm.n_sites))
     band_failed = [np.zeros(wm.site_nbands[si], bool) for si in range(wm.n_sites)]
@@ -331,7 +335,10 @@ def run_simulation(pod, wallmodel: WallModel, roots, sparams: Optional[SimParams
         has_site = wm.face_site >= 0
         amp[has_site] = 1.0 / np.maximum(1.0 - site_phi[wm.face_site[has_site]],
                                          NET_SECTION_FLOOR)
-        s_amp = sigma * amp
+        # A band at a crack front is driven by the stress INTENSITY there, which
+        # comes from the load applied to the seam and the crack already formed —
+        # not from the local stress ahead of the tip. Whichever is worse governs.
+        s_amp = np.maximum(sigma * amp, crack_tip)
         live = (s_amp > 0) & (dmg < 1.0)
         brittle = live & (s_amp >= sig_f)          # brittle overload
         dmg[brittle] = 1.0
@@ -358,6 +365,28 @@ def run_simulation(pod, wallmodel: WallModel, roots, sparams: Optional[SimParams
             bf = band_failed[si]
             bf[bands[dmg[fs] >= 1.0]] = True
             site_phi[si] = bf.sum() / nb
+            # --- crack propagation, K = Y * sigma_drive * sqrt(a) ------------
+            # sigma_drive is the load this seam is actually carrying (the wedging
+            # root), a is the crack length in bands. Only the bands at the front
+            # advance, so the crack runs a band at a time rather than all at once.
+            n_cracked = int(bf.sum())
+            if 0 < n_cracked < nb:
+                idx = np.arange(nb)
+                at_front = np.zeros(nb, bool)
+                cracked = np.where(bf)[0]
+                at_front[np.clip(cracked - 1, 0, nb - 1)] = True
+                at_front[np.clip(cracked + 1, 0, nb - 1)] = True
+                at_front &= ~bf
+                # The driver is the NOMINAL stress on the section, not the peak.
+                # The peak sits at the slot-tip raiser and already carries the
+                # SCF; once a crack exists it, not the notch, is the dominant
+                # feature, so feeding the concentrated value into K would count
+                # the concentration twice and make every seam cascade at once.
+                sigma_drive = float((sigma[fs] / wm.scf_in[fs]).max())
+                k_eff = sigma_drive * CRACK_GEOM_Y * np.sqrt(n_cracked)
+                crack_tip[fs] = np.where(at_front[bands], k_eff, 0.0)
+            else:
+                crack_tip[fs] = 0.0
             if site_phi[si] >= sp.span_frac and not np.isfinite(activation_step[si]):
                 activation_step[si] = t
                 activation_order.append(si)

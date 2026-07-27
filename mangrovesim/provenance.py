@@ -97,6 +97,16 @@ PLATE_BETA = 0.31
 T_REF_MONTHS = 0.5
 MIN_T_EFF_MM = 0.15            # a score cannot thin the wall below this
 NET_SECTION_FLOOR = 0.12       # cap on net-section amplification (~8x)
+# Crack propagation, K = Y * sigma * sqrt(pi*a). What drives a crack forward is
+# the stress INTENSITY at its tip - a function of the load applied to the seam
+# and how long the crack already is - NOT whatever stress happens to sit in the
+# material just ahead of it. That distinction decides whether a DISCRETE load can
+# open a seam at all: a prop root driving through the wall at one spot raises
+# almost no stress in the next band along, so a rule keyed to local stress
+# stalls, while a K-based one lets the crack run on the load that started it.
+# Expressed per band, with the first cracked band as the reference flaw:
+#     amplification = CRACK_GEOM_Y * sqrt(bands already cracked)
+CRACK_GEOM_Y = 1.15            # geometry factor Y (edge-crack-ish, order 1)
 
 REF_ROOT_PRESSURE_MPA = 0.75   # mid of the grounded 0.5-1.0 MPa working range
 
@@ -196,6 +206,16 @@ def core_constants(pod=None) -> List[Constant]:
             "Order-of-magnitude fracture-mechanics estimate for a rounded notch.",
             "Real value depends on tip radius and material; verify with FEA / a "
             "notched-sample test.",
+            group="failure"),
+        Constant(
+            "crack_geom_y", "Crack-propagation geometry factor Y",
+            f"{CRACK_GEOM_Y}", "", ESTIMATE,
+            "Linear-elastic fracture mechanics, K = Y*sigma*sqrt(pi*a); Y is order 1.",
+            "A crack front advances on the stress INTENSITY there - the seam's "
+            "driving load times the square root of the crack already formed - not "
+            "on the local stress ahead of it. This is what lets a discrete load "
+            "(a prop root through the wall at one point) open a whole seam, and "
+            "what makes a long crack accelerate. Verify against a fracture test.",
             group="failure"),
         Constant(
             "span_frac", "Seam tear criterion (crack span)",

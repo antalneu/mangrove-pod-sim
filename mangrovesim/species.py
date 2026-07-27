@@ -50,6 +50,11 @@ class Species:
     salinity_optimum_ppt: tuple
     early_root_note: str
     node_interval_days: Optional[float] = None   # Avicennia biological clock
+    # Roots do not appear the moment the propagule strands. Field observation of
+    # Kandelia candel puts root emergence at 19-68 days after stranding, sooner
+    # on direct sediment contact than resting in standing water. Until then the
+    # pod carries NO root load at all.
+    root_emergence_days: float = 40.0
     ramp_base: float = 0.25          # root force at the very start (fraction)
     ramp_exp: float = 1.4            # >1 => slow-start (concave) ramp
     ramp_peak: float = 1.15          # multiplier reached late in the window
@@ -68,6 +73,16 @@ class Species:
         the root pressure the user sets IS the peak turgor-limited pressure a
         root can exert rather than something the ramp overshoots."""
         return self.force_ramp(frac) / self.ramp_peak
+
+    def emergence_frac(self) -> float:
+        """Fraction of the window elapsed before roots emerge at all."""
+        return float(self.root_emergence_days / 30.437 / max(self.window_months, 1e-6))
+
+    def post_emergence_frac(self, frac):
+        """Re-base the growth fraction on root EMERGENCE rather than stranding:
+        zero until roots appear, then ramping over the remaining window."""
+        e = self.emergence_frac()
+        return np.clip((np.asarray(frac, float) - e) / max(1.0 - e, 1e-6), 0.0, 1.0)
 
     # ---- salinity modifies growth RATE (optional environmental input) ----
     def growth_rate_modifier(self, salinity_ppt: Optional[float]) -> float:

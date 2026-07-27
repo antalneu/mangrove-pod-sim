@@ -106,7 +106,10 @@ class PhysicalContext:
         (MPa of remaining fracture strength after wet degradation), plus the real
         elapsed months each step lands on. Returns (drive[T], capacity[T], months[T])."""
         frac = np.arange(1, T + 1, dtype=float) / max(T, 1)
-        ramp = self.species.force_ramp_norm(frac)
+        # Roots emerge 19-68 days after stranding; before that the pod carries no
+        # root load whatsoever. Re-base the ramp on emergence, not on stranding.
+        ramp = self.species.force_ramp_norm(self.species.post_emergence_frac(frac))
+        ramp = np.where(frac < self.species.emergence_frac(), 0.0, ramp)
         months = np.array([self.species.elapsed_months(fr, self.salinity_ppt)
                            for fr in frac])
         degrade = np.array([self.material.degradation_multiplier(mo) for mo in months])

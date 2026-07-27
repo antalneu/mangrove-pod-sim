@@ -27,14 +27,22 @@ pressure-vessel action rather than a point poke.
 
 Timing
 ------
-A *Rhizophora* propagule is ~15-25 mm across at planting against a ~25.6 mm bore
-at the waist, so it starts with a few millimetres of radial clearance. Seedling
-secondary thickening is slow — a few mm of diameter per year — so first contact
-is expected around year 2-3 rather than inside the first 12 months. That is
-consistent with the root evidence: nothing about this pod opens in year one.
+The project's measured propagule is **16 mm** across, against a **25.6 mm** bore
+at the waist — **4.8 mm of radial clearance**. It is loose in the bore, not a
+press fit. At a seedling stem thickening of 2-5 mm of diameter per year, first
+contact lands at **4-10 years**:
 
-All of these numbers are ESTIMATES for the species class and want measuring on
-a real propagule before they drive a decision.
+    2 mm/yr -> ~9.9 yr    3 mm/yr -> ~6.6 yr
+    4 mm/yr -> ~5.0 yr    5 mm/yr -> ~4.0 yr
+
+So the hypocotyl cannot open this pod within the establishment window either,
+and the bore may simply be oversized for a 16 mm propagule: a looser fit both
+delays contact and holds the seedling less securely, which is the pod's other
+job.
+
+The propagule diameter is now MEASURED. The thickening rate is still an estimate
+and is what the remaining 4-10 year spread is made of - measuring the stem again
+in a year would collapse it.
 """
 from __future__ import annotations
 
@@ -47,8 +55,9 @@ import numpy as np
 @dataclass
 class HypocotylParams:
     """Geometry and growth of the propagule stem inside the bore."""
-    # A Rhizophora mangle propagule is roughly 15-25 mm across at its thickest.
-    initial_diameter_mm: float = 18.0
+    # MEASURED on the project's own planted propagule: 16 mm across. (Literature
+    # range for R. mangle is ~15-25 mm; this one sits at the slim end.)
+    initial_diameter_mm: float = 16.0
     # Secondary thickening of a young seedling stem. Slow: a few mm of DIAMETER
     # per year. This is the single most important number here and the least
     # certain - it decides when the plant first touches the wall.

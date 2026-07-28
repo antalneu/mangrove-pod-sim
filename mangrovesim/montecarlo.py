@@ -28,7 +28,7 @@ from typing import List, Dict, Optional
 
 import numpy as np
 
-from . import growth, proproots
+from . import growth, proproots, hypocotyl
 from .growth import GrowthParams
 from .perforation import PerforationPattern
 from .pressure import (WallModel, SimParams, run_simulation,
@@ -164,9 +164,16 @@ def run_montecarlo(pod, pattern: PerforationPattern, n_runs=40,
         drawn_strength[k] = ph.sigma_f_mpa
         drawn_pressure[k] = ph.root_pressure_mpa
 
-        # Year-one seedling roots: the prop-root cage is a 3-5 year structure and
-        # cannot load a pod inside a 12-month window.
-        rs = growth.grow(pod, gp, seed=base_seed * 1000 + k)
+        # Load source: the propagule's HYPOCOTYL thickening in the bore. At the
+        # pod's true scale (197 mm, 25.6 mm bore) a 20-36 mm propagule is an
+        # interference fit from planting, so the stem - not the roots, which
+        # leave through the open base - is what loads the wall. Propagule
+        # diameter is resampled across the species range, since that is what
+        # decides when contact starts.
+        hp = hypocotyl.HypocotylParams(
+            initial_diameter_mm=float(np.clip(rng.normal(24.0, 3.5), 18.0, 34.0)))
+        rs = hypocotyl.grow_hypocotyl(
+            pod, hp, window_months=(phys.window_months or phys.species.window_months))
         res = run_simulation(pod, wm, rs, sparams, phys=ph)
         first_crack[k] = res.first_crack_step
         breakthrough[k] = res.breakthrough_step

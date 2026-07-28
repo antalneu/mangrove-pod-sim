@@ -77,7 +77,7 @@ from scipy.spatial import cKDTree
 
 from .perforation import WallFields, _sstep
 from .provenance import (MM_PER_UNIT, PLATE_BETA, T_REF_MONTHS, MIN_T_EFF_MM,
-                         NET_SECTION_FLOOR, CRACK_GEOM_Y, contact_ref_mm)
+                         NET_SECTION_FLOOR, CRACK_GEOM_Y, contact_ref_mm, to_units)
 
 
 @dataclass
@@ -90,7 +90,7 @@ class SimParams:
     contact_stiffness: float = 20.0   # sets delta0, the indentation for full bearing
     base_wedge: float = 0.6           # extra outward push from the base root ball
     contact_patch_factor: float = 1.6  # wall contact radius as multiple of root girth
-    min_patch_radius: float = 7.0     # floor on the contact-patch radius
+    min_patch_radius: float = 7.0     # floor on the contact-patch radius, MM
     dt: float = 1.0
     span_frac: float = 0.6            # frac of a site's z-bands cracked -> it tears
     breakthrough_frac: float = 0.75   # frac of slot->foot ligaments that must tear
@@ -139,7 +139,7 @@ class WallModel:
         # both fail by the same physical rule: a crack has to run across the
         # section, not just nick it somewhere. Band count encodes site height, so
         # a taller bridge (shorter slot) is genuinely harder to sever.
-        band_h = 12.0
+        band_h = to_units(12.0)      # mm -> model units
         self.site_band = [None] * self.n_sites
         self.site_nbands = np.ones(self.n_sites, int)
         for si in range(self.n_sites):
@@ -266,7 +266,8 @@ def run_simulation(pod, wallmodel: WallModel, roots, sparams: Optional[SimParams
     # normalised to 1 — pressure is not divided between the faces a root bears
     # on, it acts across all of them.
     import scipy.sparse as spr
-    patch_r = np.maximum(sp.contact_patch_factor * pipe, sp.min_patch_radius)
+    patch_r = np.maximum(sp.contact_patch_factor * pipe,
+                         to_units(sp.min_patch_radius))
     patches = wm.tree.query_ball_point(P, patch_r)
     rows, cols, data = [], [], []
     for j, fs in enumerate(patches):

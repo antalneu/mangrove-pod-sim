@@ -58,6 +58,8 @@ from typing import List, Optional
 
 import numpy as np
 
+from .provenance import to_units
+
 # Gravitropic set-point angle per branch order, in degrees from HORIZONTAL
 # (negative = downward). Taproot near-vertical; first-order laterals oblique;
 # higher orders near-horizontal and exploratory.
@@ -69,6 +71,7 @@ DIVERGENCE_DEG = 137.507
 
 @dataclass
 class GrowthParams:
+    # ALL lengths below are in MILLIMETRES; to_units() converts at use.
     step_size: float = 7.0
     max_steps: int = 200
     n_seeds: int = 3
@@ -263,7 +266,7 @@ def grow(pod, params: Optional[GrowthParams] = None, seed: int = 0) -> RootSyste
 
     # Density knob -> lateral spacing. More density = laterals closer together.
     density = max(float(p.n_attractors), 1.0) / 2600.0
-    spacing0 = max(p.lateral_spacing / max(density, 0.25), p.step_size)
+    spacing0 = max(to_units(p.lateral_spacing) / max(density, 0.25), to_units(p.step_size))
 
     rs = RootSystem()
 
@@ -275,13 +278,13 @@ def grow(pod, params: Optional[GrowthParams] = None, seed: int = 0) -> RootSyste
     # long enough to descend the whole cavity, LEAVE through the open base and
     # then run out into the mud - a year-one primary root does not stop at the
     # pod lip, it keeps going into the substrate
-    axis_len = ((z_seed - p.mud_level_frac * H) + p.substrate_run) * len_scale
+    axis_len = ((z_seed - p.mud_level_frac * H) + to_units(p.substrate_run)) * len_scale
     # The primary axis takes the WHOLE window to grow - a root keeps extending
     # over years, it does not finish in month two and then idle. Developmental
     # age is therefore progress along that growth, which is what lets the
     # later branch orders reach their onset before the tips run out.
-    len_ref = (z_seed - p.mud_level_frac * H) + p.substrate_run   # 1-year length
-    growth_steps = max(int(axis_len / p.step_size), 8)
+    len_ref = (z_seed - p.mud_level_frac * H) + to_units(p.substrate_run)   # 1-year length
+    growth_steps = max(int(axis_len / to_units(p.step_size)), 8)
     # generous headroom so laterals spawned late still have room to run
     max_steps = min(int(growth_steps * 2.5), 6000)
 
@@ -290,7 +293,7 @@ def grow(pod, params: Optional[GrowthParams] = None, seed: int = 0) -> RootSyste
         L(t) = L_1yr * (t/12)**length_year_exp. A given step is therefore the
         same age in EVERY window - the window decides how far along we look, not
         how fast the plant grows."""
-        return 12.0 * (max(st * p.step_size, 1e-9) / len_ref) ** (1.0 / p.length_year_exp)
+        return 12.0 * (max(st * to_units(p.step_size), 1e-9) / len_ref) ** (1.0 / p.length_year_exp)
     tips: List[_Tip] = []
     for k in range(max(1, p.n_seeds)):
         th = 2 * np.pi * k / max(1, p.n_seeds) + rng.uniform(0, 1)
@@ -346,7 +349,7 @@ def grow(pod, params: Optional[GrowthParams] = None, seed: int = 0) -> RootSyste
             # tortuosity: a small correlated turn, not white noise
             d = _unit(d + p.jitter * 0.30 * rng.normal(0, 1, 3))
 
-            newp = here + d * p.step_size
+            newp = here + d * to_units(p.step_size)
 
             # --- confinement + mechanical deflection along the wall ----------
             # The pod is open at the base: a root reaching it LEAVES, into the
@@ -369,7 +372,7 @@ def grow(pod, params: Optional[GrowthParams] = None, seed: int = 0) -> RootSyste
             limit = 0.985 * r_here
             if below_pod:
                 # outside the pod: spread outward into the mud, no confinement
-                tip.remaining = min(tip.remaining, p.substrate_run * len_scale)
+                tip.remaining = min(tip.remaining, to_units(p.substrate_run) * len_scale)
                 d = _unit(d + p.substrate_flare * np.array(
                     [newp[0] / (rr or 1.0), newp[1] / (rr or 1.0), 0.0]))
             elif rr > limit and rr > 1e-6:
@@ -395,8 +398,8 @@ def grow(pod, params: Optional[GrowthParams] = None, seed: int = 0) -> RootSyste
             ni = rs.add(newp, tip.node, step, order=tip.order)
             tip.node = ni
             tip.dir = d
-            tip.remaining -= p.step_size
-            tip.since_branch += p.step_size
+            tip.remaining -= to_units(p.step_size)
+            tip.since_branch += to_units(p.step_size)
 
             # --- acropetal lateral emergence ---------------------------------
             # laterals crowd together in the basal anchoring zone
@@ -410,7 +413,7 @@ def grow(pod, params: Optional[GrowthParams] = None, seed: int = 0) -> RootSyste
             onset = p.order_onset_months[min(tip.order + 1, len(p.order_onset_months) - 1)]
             age_months = age_at(step)
             mature_enough = age_months >= onset
-            can_branch = mature_enough and (tip.remaining > p.apical_unbranched
+            can_branch = mature_enough and (tip.remaining > to_units(p.apical_unbranched)
                                             or (in_base and tip.order <= 1))
             if tip.order < max_order and tip.since_branch >= spacing and can_branch:
                 tip.since_branch = 0.0
@@ -422,13 +425,13 @@ def grow(pod, params: Optional[GrowthParams] = None, seed: int = 0) -> RootSyste
                 ld = _unit(np.cos(ang) * d + np.sin(ang) * side)
                 # a lateral is shorter than what remains of its parent axis,
                 # except in the base where it must reach out into the feet
-                llen = max(2.0 * p.step_size,
-                           p.length_falloff * (tip.remaining + p.step_size)
+                llen = max(2.0 * to_units(p.step_size),
+                           p.length_falloff * (tip.remaining + to_units(p.step_size))
                            * rng.uniform(0.75, 1.25))
                 # Only the main axes throw the long anchoring roots; letting
                 # every order do it in the base compounds into a runaway ball.
                 if in_base and tip.order <= 1:
-                    llen = max(llen, p.basal_lateral_len
+                    llen = max(llen, to_units(p.basal_lateral_len)
                                * (p.length_falloff ** tip.order)
                                * rng.uniform(0.7, 1.3))
                 spawned.append(_Tip(ni, ld, tip.order + 1, llen,

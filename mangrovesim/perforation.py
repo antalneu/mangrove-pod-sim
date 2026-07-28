@@ -42,7 +42,7 @@ from typing import List, Optional
 import numpy as np
 
 from .podmesh import Slot
-from .provenance import MM_PER_UNIT, MIN_T_EFF_MM
+from .provenance import MM_PER_UNIT, MIN_T_EFF_MM, to_units
 
 
 def _sstep(t):
@@ -63,7 +63,7 @@ class SplitLine:
 class MaterialParams:
     slot_tip_scf: float = 3.0    # stress concentration right at a slot tip
     split_scf: float = 1.8       # stress concentration along a scored split-line
-    tip_zone: float = 22.0       # model-unit radius of the slot-tip stress zone
+    tip_zone: float = 22.0       # radius of the slot-tip stress zone, MM
     ligament_halfwidth_deg: float = 26.0   # angular half-width of a slot->foot bridge
 
 
@@ -184,7 +184,7 @@ class PerforationPattern:
                 d = np.hypot((angdiff(th, s.theta_deg) * np.pi / 180.0) *
                              np.maximum(r, 1.0), (z - ztip))
                 scf = np.maximum(scf, 1 + (m.slot_tip_scf - 1) *
-                                 np.exp(-(d / m.tip_zone) ** 2))
+                                 np.exp(-(d / to_units(m.tip_zone)) ** 2))
             # ligament = load-bearing bridge between the slot bottom and the top
             # of the foot; this is the wall that must tear for the petal to release.
             # A wider seam band widens the load-bearing bridge it defines.

@@ -119,6 +119,19 @@ MEASURED_WAIST_BORE_MM = 25.6
 REF_ROOT_PRESSURE_MPA = 0.75   # mid of the grounded 0.5-1.0 MPa working range
 
 
+def to_units(mm_value):
+    """Convert a length in MILLIMETRES to model units.
+
+    Every tunable length in this package is declared in mm - that is the unit a
+    designer thinks in, and it stays meaningful when the source model changes.
+    The mesh itself is in model units, so anything compared against mesh
+    coordinates has to be converted here. Skipping this is what broke the model
+    when the pod file switched from a 334-unit mesh to a 19.7-unit one: a 7 mm
+    contact patch silently became 70 mm, wider than the pod.
+    """
+    return mm_value / MM_PER_UNIT
+
+
 def contact_ref_mm(contact_stiffness: float) -> float:
     """Indentation delta0 (mm) at which a swelling root reaches its full bearing
     pressure, p = p_root * (1 - exp(-delta/delta0)). Tied to the "wall contact

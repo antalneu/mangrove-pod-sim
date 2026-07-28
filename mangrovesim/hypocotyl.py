@@ -64,6 +64,8 @@ class HypocotylParams:
     growth_mm_per_year: float = 3.0
     # The propagule tapers toward its lower tip; 1.0 at the widest point.
     tip_taper: float = 0.55
+    widest_frac: float = 0.30      # widest point, as a fraction up the propagule
+    shoot_taper: float = 0.35      # how slim it is at the shoot end
     # Axial extent in the pod, as fractions of pod height. The propagule spans
     # the whole bore, so contact is possible anywhere along it.
     z_lo_frac: float = 0.05
@@ -86,9 +88,18 @@ class HypocotylSystem:
         z = np.linspace(self.p.z_lo_frac * H, self.p.z_hi_frac * H, self.p.n_stations)
         self.P = np.stack([np.zeros_like(z), np.zeros_like(z), z], axis=1)
         self.nodes = list(self.P)
-        # taper: widest high up the propagule, narrowing to the lower tip
+        # Taper, from the photographs: the propagule is WIDEST in its lower
+        # third - the brown region just above the root collar - and narrows
+        # upward to the slim green shoot. That widest part therefore sits at or
+        # near the pod's WAIST, the tightest point of the bore. Having it the
+        # other way round (widest at the top, where the bore flares) meant the
+        # stem could never reach the constriction that actually grips it.
         f = (z - z.min()) / max(z.max() - z.min(), 1e-9)
-        self._taper = self.p.tip_taper + (1.0 - self.p.tip_taper) * f
+        widest = self.p.widest_frac
+        self._taper = np.where(
+            f <= widest,
+            self.p.tip_taper + (1.0 - self.p.tip_taper) * (f / max(widest, 1e-9)),
+            1.0 - (1.0 - self.p.shoot_taper) * ((f - widest) / max(1 - widest, 1e-9)))
         self._r0 = 0.5 * self.p.initial_diameter_mm * self._taper
         self.radius = self._r0.copy()
         self.parent_arr = np.full(len(z), -1, int)

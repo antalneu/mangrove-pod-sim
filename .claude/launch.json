@@ -17,7 +17,9 @@
       "name": "docs-app",
       "runtimeExecutable": ".venv/Scripts/python.exe",
       "runtimeArgs": ["serve_docs.py"],
-      "port": 8010
+      "port": 8010,
+      "_comment": "serve_docs.py reads $PORT, so autoPort lets a second worktree preview the docs while 8010 is in use.",
+      "autoPort": true
     }
   ]
 }

@@ -2,19 +2,22 @@
 physical.py
 ===========
 The bridge between the *physical* selections (material, species, root pressure,
-salinity, and any Calibration-Mode measurement) and the *dimensionless* failure
-surrogate in pressure.py.
+salinity, and any Calibration-Mode measurement) and the wall-mechanics model in
+pressure.py.
 
-Design principle: the engine is untouched. Everything here produces plain
-per-time-step multipliers that default to 1.0, so with no PhysicalContext the
-simulation behaves exactly as before. When a context is supplied:
+Everything here produces per-time-step quantities in **real units**:
 
-    drive multiplier (per step)     = (root_pressure / REF) * species.force_ramp(t)
-    capacity multiplier (per step)  = material.strength_scale
-                                      * material.degradation(elapsed_months(t))
+    drive (per step)    = root_pressure_mpa * species.force_ramp_norm(t)   [MPa]
+    capacity (per step) = sigma_f_mpa * material.degradation(months(t))    [MPa]
+    months (per step)   = real elapsed time, stretched by salinity stress
 
-These are *relative* couplings for design/material comparison - NOT calibrated
-absolute physics. That caveat is surfaced in the provenance panel.
+`drive` is the turgor-limited bearing pressure a fully-engaged root can develop;
+`capacity` is the wall's remaining fracture strength. The ramp is normalised to
+1.0 at maturity so the root pressure you set IS the peak a root can exert rather
+than something the ramp overshoots.
+
+The absolute numbers rest on the model's unit scale (provenance.MM_PER_UNIT) and
+on estimated material constants - that caveat is surfaced in the provenance panel.
 
 Calibration Mode
 ----------------
@@ -50,8 +53,30 @@ class PhysicalContext:
     calibration_active: bool = False
     calibration_force_n: Optional[float] = None
     calibration_area_mm2: Optional[float] = None
+    # sigma_f_mpa / thickness_factor let Monte Carlo sample the published
+    # strength range and a wall-thickness moulding tolerance without disturbing
+    # the nominal run. None => the material's best estimate.
+    sigma_f_mpa: Optional[float] = None
+    thickness_factor: float = 1.0
+    # Override the species' 12-month window to run multi-year: the pod is
+    # not opened inside year one, so the question is WHEN, over years.
+    window_months: Optional[float] = None
+
+    def __post_init__(self):
+        if self.sigma_f_mpa is None:
+            self.sigma_f_mpa = self.material.fracture_strength_mpa
+
+    @property
+    def fatigue_n(self) -> float:
+        return self.material.fatigue_exponent
 
     # ---- factories ----
+    @classmethod
+    def default(cls) -> "PhysicalContext":
+        """The design-intent baseline: PHA in a Rhizophora window."""
+        return cls(material=get_material(DEFAULT_MATERIAL),
+                   species=get_species(DEFAULT_SPECIES))
+
     @classmethod
     def from_config(cls, cfg: dict) -> "PhysicalContext":
         mat = get_material(cfg.get("material", DEFAULT_MATERIAL))
@@ -67,23 +92,33 @@ class PhysicalContext:
         a = float(a) if a not in (None, "") else None
         if active and f and a:
             p = pressure_from_force(f, a)
+        sig = cfg.get("sigma_f_mpa")
+        tfac = cfg.get("thickness_factor")
         return cls(material=mat, species=sp, root_pressure_mpa=p,
                    salinity_ppt=sal, calibration_active=active and bool(f and a),
-                   calibration_force_n=f, calibration_area_mm2=a)
+                   calibration_force_n=f, calibration_area_mm2=a,
+                   sigma_f_mpa=float(sig) if sig not in (None, "") else None,
+                   thickness_factor=float(tfac) if tfac not in (None, "") else 1.0)
 
     # ---- couplings ----
     def load_factor(self) -> float:
         return self.root_pressure_mpa / REF_ROOT_PRESSURE_MPA
 
     def per_step(self, T: int):
-        """Return (drive_mult[T], capacity_mult[T], months[T])."""
+        """Per-step drive (MPa of available root bearing pressure) and capacity
+        (MPa of remaining fracture strength after wet degradation), plus the real
+        elapsed months each step lands on. Returns (drive[T], capacity[T], months[T])."""
         frac = np.arange(1, T + 1, dtype=float) / max(T, 1)
-        ramp = self.species.force_ramp(frac)
+        # Roots emerge 19-68 days after stranding; before that the pod carries no
+        # root load whatsoever. Re-base the ramp on emergence, not on stranding.
+        ramp = self.species.force_ramp_norm(self.species.post_emergence_frac(frac))
+        ramp = np.where(frac < self.species.emergence_frac(), 0.0, ramp)
+        w = self.window_months or self.species.window_months
         months = np.array([self.species.elapsed_months(fr, self.salinity_ppt)
-                           for fr in frac])
+                           for fr in frac]) * (w / self.species.window_months)
         degrade = np.array([self.material.degradation_multiplier(mo) for mo in months])
-        drive = self.load_factor() * ramp
-        capacity = self.material.strength_scale() * degrade
+        drive = self.root_pressure_mpa * ramp
+        capacity = np.maximum(self.sigma_f_mpa * degrade, 1e-6)
         return drive, capacity, months
 
     def elapsed_context(self, step, T):
@@ -100,5 +135,6 @@ class PhysicalContext:
             "calibration_active": self.calibration_active,
             "window_months": self.species.window_months,
             "load_factor": round(self.load_factor(), 3),
-            "strength_scale": round(self.material.strength_scale(), 3),
+            "sigma_f_mpa": round(self.sigma_f_mpa, 2),
+            "fatigue_n": self.fatigue_n,
         }

@@ -150,19 +150,35 @@ function rOuterAt(z) { return interp(POD.outerProf.z, POD.outerProf.r, z); }
 //  default parameter sets (match the Python dataclasses exactly)
 // ---------------------------------------------------------------------------
 const G_DEFAULT = {
-  step_size: 7, influence_radius: 45, kill_radius: 10, n_attractors: 2600,
-  max_steps: 200, n_seeds: 3, jitter: 0.35, down_bias: 0.55, slot_bias: 2.2,
-  wall_bias: 0.75, seed_depth_frac: 0.92, tip_radius: 1.4, pipe_exponent: 2.3,
-  radius_gain: 1.7,
+  step_size: 7, n_attractors: 2600, max_steps: 200, n_seeds: 3,
+  jitter: 0.30, down_bias: 0.55, slot_bias: 2.2, wall_bias: 0.75,
+  // The propagule spans the FULL pod: shoot out of the top, lower tip at the
+  // base. The radicle emerges from that lower tip and fans out into the mud, so
+  // roots start at the BASE - 0.92 seeded them at the shoot end by mistake.
+  seed_depth_frac: 0.16,
+  // leaving the pod through the open base
+  exit_z_frac: 0.02, substrate_run: 90, substrate_flare: 0.55,
+  // architecture
+  // 0-1 yr the PRIMARY root develops; 1-2 yr laterals BEGIN; 2-3 yr numerous;
+  // 3-5 yr prop roots. Branch order is gated by the plant's real age.
+  window_months: 12, order_onset_months: [0, 12, 24, 36],
+  max_order: 3, branch_angle_deg: 68, branch_angle_sd: 13,
+  lateral_spacing: 31, length_falloff: 0.42, apical_unbranched: 16,
+  // basal anchoring zone (the root ball that splays the feet)
+  basal_zone_frac: 1.7, basal_flare: 0.55, basal_branch_factor: 0.60,
+  basal_lateral_len: 46, wall_friction: 0.45, wall_seek_frac: 0.80,
+  // thickening (pipe model)
+  tip_radius: 1.4, pipe_exponent: 2.3, radius_gain: 1.7,
+  order_radius_falloff: 0.72,
 };
 const S_DEFAULT = {
   n_time_steps: 120, growth_fraction: 0.6, maturation: 30, swell_rate: 0.012,
   max_swell: 2.6, contact_stiffness: 20, base_wedge: 0.6, contact_patch_factor: 1.6,
-  min_patch_radius: 7, dt: 1, span_frac: 0.6,
+  min_patch_radius: 7,   // MM dt: 1, span_frac: 0.6,
   breakthrough_frac: 0.75, pull_assist: 0,
 };
 const MAT_PARAMS = {
-  slot_tip_scf: 3, split_scf: 1.8, tip_zone: 22,
+  slot_tip_scf: 3, split_scf: 1.8, tip_zone: 22,   // MM
   ligament_halfwidth_deg: 26,
 };
 
@@ -186,7 +202,16 @@ const MAT_PARAMS = {
 //  the hinge. L_b blends between the two with scoring depth. This is what gives
 //  scoring its real, dominant t⁻² leverage.
 // ---------------------------------------------------------------------------
-const MM_PER_UNIT = 1.0;
+// MEASURED off the physical pod: 197 mm tall, 126 mm foot span, 51.4 mm top
+// opening. Height fixes the scale; the other two then agree within 3-5%.
+// The pod model is authored in CENTIMETRES: 197 mm tall, 25.6 mm waist bore,
+// 130 mm foot span, 6.5 mm wall - matching the measured object directly.
+const MM_PER_UNIT = 10.0;
+// Every tunable LENGTH below is declared in millimetres and converted here.
+// Hardcoding them in model units is what broke the model when the pod file
+// changed scale: a 7 mm contact patch silently became 70 mm.
+function toUnits(mm) { return mm / MM_PER_UNIT; }
+
 // Clamped rectangular plate, peak bending stress σ = β·p·(L/t)² (Roark, clamped
 // edges, a/b ≈ 1 → β ≈ 0.308).
 const PLATE_BETA = 0.31;
@@ -195,6 +220,13 @@ const PLATE_BETA = 0.31;
 const T_REF_MONTHS = 0.5;
 const MIN_T_EFF_MM = 0.15;          // a score cannot thin the wall below this
 const NET_SECTION_FLOOR = 0.12;     // cap on net-section amplification (≈8×)
+// Crack propagation, K = Y·σ·√(πa). What advances a crack front is the stress
+// INTENSITY there — the load applied to the section times the square root of the
+// crack already formed — not the stress that happens to sit ahead of the tip.
+// That distinction decides whether a DISCRETE load can open a seam at all: a
+// prop root driving through the wall at one point raises almost no stress in the
+// next band along, so a local-stress rule stalls at one cracked band.
+const CRACK_GEOM_Y = 1.15;          // geometry factor Y (order 1)
 // Indentation at which a swelling root develops its full bearing pressure. Tied
 // to the "contact stiffness" control so that slider keeps its meaning: a stiffer
 // contact reaches full pressure after a smaller indentation.
@@ -210,9 +242,11 @@ const MATERIALS = {
   // material — the design-intent baseline this whole project is built around.
   pha: {
     key: "pha", name: "PHA / PHBV (marine-degradable)",
-    fracture_strength_mpa: 55, fracture_range_mpa: [40, 75], stiffness_mpa: 2800,
+    // Measured PHBV (the marine-degradable grade) is ~27-33 MPa; neat PHA
+    // reaches ~58. Marine field data: strength falls ~25% then HOLDS.
+    fracture_strength_mpa: 32, fracture_range_mpa: [25, 58], stiffness_mpa: 2800,
     fatigue_exponent: 12,   // ductile-ish polymer: slow crack growth, forgiving
-    wet_strength_loss_per_month: 0.05, biodegradable: true,
+    wet_strength_loss_per_month: 0.06, strength_floor: 0.68, biodegradable: true,
     biodegradability: "Marine-biodegradable — months to ~1 yr",
     biodegradability_note: "PHA (incl. PHBV) genuinely biodegrades in seawater — field studies show full marine degradation on the order of months to a few years (within ~1 yr for some formulations), depending on thickness, formulation and site. This is the design-intent baseline that holds shape, then dissolves to release the seedling. Estimate — verify with immersion testing.",
     warn: false, warn_text: "",
@@ -222,9 +256,9 @@ const MATERIALS = {
   // needs the heat of industrial composting. Distinct preset, distinct claim.
   pla: {
     key: "pla", name: "PLA (industrial-compost only)",
-    fracture_strength_mpa: 90, fracture_range_mpa: [70, 110], stiffness_mpa: 3500,
+    fracture_strength_mpa: 55, fracture_range_mpa: [45, 70], stiffness_mpa: 3500,
     fatigue_exponent: 14,   // stiffer, more brittle polymer than PHA
-    wet_strength_loss_per_month: 0.006, biodegradable: false,
+    wet_strength_loss_per_month: 0.004, strength_floor: 0.90, biodegradable: false,
     biodegradability: "NOT marine-degradable — industrial composting only",
     biodegradability_note: "PLA does NOT reliably biodegrade in ambient marine or soil conditions — it needs the elevated heat of industrial composting. In side-by-side testing PLA did not meet standard marine-biodegradation thresholds where PHA did. It persists in seawater over the establishment window. Estimate.",
     warn: true,
@@ -233,10 +267,11 @@ const MATERIALS = {
   },
   clay: {
     key: "clay", name: "Clay (low-fired earthenware)",
-    fracture_strength_mpa: 6, fracture_range_mpa: [1, 25], stiffness_mpa: 8000,
+    // Flexural strength across clay studies spans ~2.0-9.5 MPa.
+    fracture_strength_mpa: 5.5, fracture_range_mpa: [2.0, 9.5], stiffness_mpa: 8000,
     fatigue_exponent: 30,   // ceramic static fatigue — very sharp threshold
     strength_note: "Flexural strength across fired-clay studies spans roughly 1–25 MPa; true low-fired earthenware sits toward the LOW/weak end (intentionally more porous and less vitrified than higher-fired stoneware), so ~6 MPa is more representative than the mid-range. Treat the low end as the working value; verify by testing notched samples.",
-    wet_strength_loss_per_month: 0.03, biodegradable: true,
+    wet_strength_loss_per_month: 0.03, strength_floor: 0.55, biodegradable: true,
     biodegradability: "Inert mineral — environmentally benign",
     biodegradability_note: "Fired clay is not 'biodegradable' in the polymer sense, but it is an inert, non-toxic mineral that breaks down to sediment. Unfired/low-fired clay slakes faster in water (higher degradation). Estimate.",
     warn: false, warn_text: "",
@@ -244,9 +279,10 @@ const MATERIALS = {
   },
   concrete: {
     key: "concrete", name: "Concrete (unreinforced, thin-wall)",
-    fracture_strength_mpa: 4, fracture_range_mpa: [3, 6], stiffness_mpa: 25000,
+    // Tensile strength of unreinforced concrete is ~2.2-4.2 MPa.
+    fracture_strength_mpa: 3.2, fracture_range_mpa: [2.2, 4.2], stiffness_mpa: 25000,
     fatigue_exponent: 24,   // concrete static fatigue
-    wet_strength_loss_per_month: 0.004, biodegradable: false,
+    wet_strength_loss_per_month: 0.006, strength_floor: 0.72, biodegradable: false,
     biodegradability: "Not biodegradable — persistent",
     biodegradability_note: "LEAST biodegradable option. Persists in the marine environment for decades; alkaline leachate can locally raise pH. Cracks in tension at a scored seam, but the fragments remain. Not recommended for leave-in-place / dissolving pod designs. Estimate.",
     warn: true,
@@ -254,7 +290,12 @@ const MATERIALS = {
     blurb: "Durable and cheap, but persistent. Weak in tension so a thin scored seam still cracks.",
   },
 };
-function matDegrade(m, months) { return Math.max(0.05, 1 - m.wet_strength_loss_per_month * Math.max(months, 0)); }
+// Wet strength loss PLATEAUS: marine PHBV drops ~25% early then HOLDS
+// 17-22 MPa of its initial 27. It is not a slide to zero.
+function matDegrade(m, months) {
+  return Math.max(m.strength_floor != null ? m.strength_floor : 0.6,
+                  1 - m.wet_strength_loss_per_month * Math.max(months, 0));
+}
 function materialCard(m) {
   return Object.assign({}, m, { estimate_disclaimer: "Engineering estimate — requires lab verification." });
 }
@@ -265,7 +306,7 @@ const SPECIES = {
     window_months: 12, outplant_months: 12, mature_growth_m_yr: [1.0, 1.5],
     salinity_optimum_ppt: [5, 25], node_interval_days: null,
     early_root_note: "Early root growth very slow (~0.1 mm at 4 weeks, R. mucronata).",
-    ramp_base: 0.20, ramp_exp: 1.5, ramp_peak: 1.15,
+    root_emergence_days: 40, ramp_base: 0.20, ramp_exp: 1.5, ramp_peak: 1.15,
     blurb: "Red mangrove; the tall propagule this pod is shaped for. Slow-start roots.",
   },
   avicennia: {
@@ -273,7 +314,7 @@ const SPECIES = {
     window_months: 11, outplant_months: 10, mature_growth_m_yr: [0.6, 1.0],
     salinity_optimum_ppt: [5, 15], node_interval_days: 37.5,
     early_root_note: "Node-paced growth; ~37-38 day node interval as a biological clock.",
-    ramp_base: 0.30, ramp_exp: 1.2, ramp_peak: 1.12,
+    root_emergence_days: 40, ramp_base: 0.30, ramp_exp: 1.2, ramp_peak: 1.12,
     blurb: "Grey mangrove; steady node-paced growth, salinity-sensitive early on.",
   },
 };
@@ -284,7 +325,18 @@ function spForceRamp(sp, frac) {
 // Same concave slow-start shape, normalised to 1.0 at maturity, so the root
 // pressure the user sets IS the peak turgor-limited pressure a root can exert
 // rather than something the ramp overshoots.
-function spForceRampNorm(sp, frac) { return spForceRamp(sp, frac) / sp.ramp_peak; }
+// Roots emerge 19-68 days after stranding (Kandelia candel field data); before
+// that the pod carries NO root load. Re-base the ramp on EMERGENCE, not on
+// stranding, so nothing presses on the wall before roots exist.
+function spEmergenceFrac(sp) {
+  return (sp.root_emergence_days || 0) / 30.437 / Math.max(sp.window_months, 1e-6);
+}
+function spForceRampNorm(sp, frac) {
+  const e = spEmergenceFrac(sp);
+  if (frac < e) return 0;
+  const f = clip((frac - e) / Math.max(1 - e, 1e-6), 0, 1);
+  return spForceRamp(sp, f) / sp.ramp_peak;
+}
 function spGrowthMod(sp, sal) {
   if (sal === null || sal === undefined) return 1;
   const [lo, hi] = sp.salinity_optimum_ppt;
@@ -408,129 +460,211 @@ function buildRegistry(cfg) {
 }
 
 // ---------------------------------------------------------------------------
-//  growth (space colonization) — port of growth.py
+//  growth (seedling root architecture) — port of growth.py
 // ---------------------------------------------------------------------------
-function sampleAttractors(gp, rng, nrm) {
-  const H = POD.features.height, zc = POD.innerProf.z, ri = POD.innerProf.r;
-  const slotTh = POD.features.slots.map(s => s.theta_deg * Math.PI / 180);
-  const x = [], y = [], z = []; let tries = 0; const n = gp.n_attractors;
-  while (x.length < n && tries < n * 60) {
-    tries++;
-    const zz = 0.04 * H + rng() * (0.98 * H - 0.04 * H);
-    const w = 1 - 0.7 * gp.down_bias * (zz / H);
-    if (rng() > w) continue;
-    const rIn = Math.max(interp(zc, ri, zz), 2);
-    const frac = Math.pow(rng(), 1 - 0.85 * gp.wall_bias);
-    const rad = frac * 0.95 * rIn;
-    let th;
-    if (slotTh.length && rng() < gp.slot_bias / (gp.slot_bias + 1))
-      th = slotTh[Math.floor(rng() * slotTh.length)] + nrm() * (20 * Math.PI / 180);
-    else th = -Math.PI + rng() * 2 * Math.PI;
-    x.push(rad * Math.cos(th)); y.push(rad * Math.sin(th)); z.push(zz);
-  }
-  return { x, y, z, n: x.length };
+//  A rule-based architectural model, not a space-filling tangle. Real seedling
+//  roots are strongly structured and that structure decides where the wall gets
+//  loaded, so it is reproduced explicitly: a dominant gravitropic taproot;
+//  laterals emerging acropetally BEHIND the tip; a gravitropic set-point angle
+//  per branch order (taproot near-vertical, laterals oblique, fine roots nearly
+//  horizontal) that each tip relaxes toward, which is what makes roots curve;
+//  golden-angle roll so laterals spiral around the parent instead of stacking;
+//  tortuosity as a correlated random walk; and mechanical deflection along the
+//  wall, because a root cannot bore through it.
+// ---------------------------------------------------------------------------
+const GSA_BY_ORDER_DEG = [-84, -32, -12, -6];
+const DIVERGENCE_DEG = 137.507;
+
+function _unit3(x, y, z) {
+  const n = Math.hypot(x, y, z);
+  return n > 1e-9 ? [x / n, y / n, z / n] : [0, 0, -1];
+}
+function _cross3(a, b) {
+  return [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+}
+// The direction a tip is "trying" to hold: its horizontal heading tilted to the
+// gravitropic set-point angle for its order.
+function _gsaDir(d, gsaDeg) {
+  let hx = d[0], hy = d[1], nh = Math.hypot(hx, hy);
+  if (nh < 1e-9) { hx = 1; hy = 0; nh = 1; }
+  hx /= nh; hy /= nh;
+  const a = gsaDeg * Math.PI / 180;
+  return _unit3(hx * Math.cos(a), hy * Math.cos(a), Math.sin(a));
+}
+function _perpBasis(d) {
+  const ref = Math.abs(d[2]) > 0.9 ? [1, 0, 0] : [0, 0, 1];
+  const c1 = _cross3(d, ref), u = _unit3(c1[0], c1[1], c1[2]);
+  const c2 = _cross3(d, u), v = _unit3(c2[0], c2[1], c2[2]);
+  return [u, v];
+}
+function _slotAzimuths() {
+  const f = POD.features;
+  if (f.slots && f.slots.length) return f.slots.map(s => s.theta_deg * Math.PI / 180);
+  if (f.feet && f.feet.length) return f.feet.map(ft => ft.theta_deg * Math.PI / 180);
+  return [];
 }
 
 function grow(gp, seed) {
   const rng = mulberry32(seed), nrm = makeNormal(rng);
-  const H = POD.features.height;
-  const attr = sampleAttractors(gp, rng, nrm);
-  const nx = [], ny = [], nz = [], parent = [], birth = [];
-  const add = (x, y, z, par, st) => { nx.push(x); ny.push(y); nz.push(z); parent.push(par); birth.push(st); };
-  const zSeed = gp.seed_depth_frac * H, rSeed = Math.max(rInnerAt(zSeed) * 0.4, 3);
-  for (let k = 0; k < gp.n_seeds; k++) {
-    const th = 2 * Math.PI * k / gp.n_seeds + rng();
-    add(rSeed * Math.cos(th) * 0.3, rSeed * Math.sin(th) * 0.3, zSeed, -1, 0);
-  }
-  const aAlive = new Uint8Array(attr.n).fill(1); let remaining = attr.n;
-  // cell = influence_radius so any node within influence of an attractor is found
-  // in a single 3x3x3 ring scan (capped) — avoids pathological ring expansion.
-  const cell = gp.influence_radius;
-  // Attractors never move, so index them ONCE. The kill pass then only has to
-  // ask "which attractors are near each NEW node" instead of rebuilding a node
-  // grid and running a nearest-neighbour query for every surviving attractor
-  // every step. Identical results — an attractor that survived the previous
-  // step can only be killed by a node added since.
-  const apos = new Float64Array(attr.n * 3);
-  for (let a = 0; a < attr.n; a++) { apos[3 * a] = attr.x[a]; apos[3 * a + 1] = attr.y[a]; apos[3 * a + 2] = attr.z[a]; }
-  const attrGrid = new Grid(apos, attr.n, Math.max(gp.kill_radius, 1));
-  // Cursor over nodes not yet used for a kill test. On the first pass this
-  // covers the seed nodes too, so the pass happens at exactly the same point in
-  // the sequence as the original whole-grid rebuild did.
-  let killCursor = 0;
-  const killPass = () => {
-    for (; killCursor < nx.length; killCursor++) {
-      const near = attrGrid.ball(nx[killCursor], ny[killCursor], nz[killCursor], gp.kill_radius);
-      for (let t = 0; t < near.length; t++) { const a = near[t]; if (aAlive[a]) { aAlive[a] = 0; remaining--; } }
-    }
+  const H = POD.features.height, zBase = POD.features.z_base_top;
+  const slotTh = _slotAzimuths();
+  // only the orders whose developmental onset falls inside the window exist
+  const onsets = gp.order_onset_months || [0, 12, 24, 36];
+  const wMonths = gp.window_months || 12;
+  const allowedOrder = Math.max(0, onsets.filter(m => m <= wMonths).length - 1);
+  const maxOrder = Math.min(gp.max_order, allowedOrder);
+  const nx = [], ny = [], nz = [], parent = [], birth = [], order = [];
+  const add = (x, y, z, par, st, ord) => {
+    nx.push(x); ny.push(y); nz.push(z); parent.push(par); birth.push(st); order.push(ord);
+    return nx.length - 1;
   };
+  // Density knob -> lateral spacing. More density = laterals closer together.
+  const density = Math.max(gp.n_attractors, 1) / 2600;
+  const spacing0 = Math.max(toUnits(gp.lateral_spacing) / Math.max(density, 0.25), toUnits(gp.step_size));
+
+  // primary axes from the hypocotyl base
+  const zSeed = gp.seed_depth_frac * H, rSeed = Math.max(rInnerAt(zSeed) * 0.4, 3);
+  // long enough to descend the cavity, LEAVE through the open base, and run
+  // out into the mud - a primary root does not stop at the pod lip
+  const axisLen = (zSeed - gp.exit_z_frac * H) + toUnits(gp.substrate_run);
+  let tips = [];
+  const nSeeds = Math.max(1, gp.n_seeds);
+  for (let k = 0; k < nSeeds; k++) {
+    const th = 2 * Math.PI * k / nSeeds + rng();
+    const ni = add(rSeed * Math.cos(th) * 0.3, rSeed * Math.sin(th) * 0.3, zSeed, -1, 0, 0);
+    tips.push({ node: ni, dir: _unit3(Math.cos(th) * 0.12, Math.sin(th) * 0.12, -1),
+                order: 0, remaining: axisLen * (0.9 + rng() * 0.15),
+                sinceBranch: 0, roll: rng() * 2 * Math.PI });
+  }
+
   for (let step = 1; step <= gp.max_steps; step++) {
-    if (remaining === 0) break;
-    const npos = new Float64Array(nx.length * 3);
-    for (let i = 0; i < nx.length; i++) { npos[3 * i] = nx[i]; npos[3 * i + 1] = ny[i]; npos[3 * i + 2] = nz[i]; }
-    const grid = new Grid(npos, nx.length, cell);
-    const near = new Int32Array(attr.n).fill(-1), dist = new Float64Array(attr.n).fill(Infinity);
-    for (let a = 0; a < attr.n; a++) {
-      if (!aAlive[a]) continue;
-      const q = grid.nearest(attr.x[a], attr.y[a], attr.z[a], 1);
-      near[a] = q.idx; dist[a] = q.dist;
-    }
-    let within = [];
-    for (let a = 0; a < attr.n; a++) if (aAlive[a] && dist[a] < gp.influence_radius) within.push(a);
-    if (!within.length) {
-      // nothing within influence: advance the single globally-nearest tip
-      // (linear scan; only reached early on when nodes are sparse — cheap)
-      let bestA = -1, bestNi = -1, bestD = Infinity;
-      for (let a = 0; a < attr.n; a++) {
-        if (!aAlive[a]) continue;
-        const ax = attr.x[a], ay = attr.y[a], az = attr.z[a];
-        for (let i = 0; i < nx.length; i++) {
-          const dx = nx[i] - ax, dy = ny[i] - ay, dz = nz[i] - az, d = dx * dx + dy * dy + dz * dz;
-          if (d < bestD) { bestD = d; bestA = a; bestNi = i; }
+    if (!tips.length) break;
+    const spawned = [];
+    for (const tip of tips) {
+      if (tip.remaining <= 0) continue;
+      const hx = nx[tip.node], hy = ny[tip.node], hz = nz[tip.node];
+      let d = tip.dir;
+
+      // relax toward the gravitropic set-point angle for this order
+      const gsa = GSA_BY_ORDER_DEG[Math.min(tip.order, GSA_BY_ORDER_DEG.length - 1)];
+      const t = _gsaDir(d, gsa), k1 = (0.25 + 0.75 * gp.down_bias) * 0.45;
+      d = [d[0] + k1 * (t[0] - d[0]), d[1] + k1 * (t[1] - d[1]), d[2] + k1 * (t[2] - d[2])];
+      // laterals steer toward the nearest slot / foot meridian
+      if (tip.order >= 1 && slotTh.length) {
+        const az = Math.atan2(hy, hx);
+        let best = slotTh[0], bd = Infinity;
+        for (const s of slotTh) {
+          const dd = Math.abs(Math.atan2(Math.sin(s - az), Math.cos(s - az)));
+          if (dd < bd) { bd = dd; best = s; }
+        }
+        const pull = 0.12 * gp.slot_bias / (1 + gp.slot_bias);
+        d = [d[0] + pull * Math.cos(best), d[1] + pull * Math.sin(best), d[2]];
+      }
+      // outward SEEKING toward the wall; stops once the root has found it, since
+      // a root already bearing on a surface is not driven further into it
+      const rrH = Math.hypot(hx, hy);
+      if (tip.order >= 1 && rrH > 1e-6 && rrH < gp.wall_seek_frac * rInnerAt(hz)) {
+        const k2 = 0.10 * gp.wall_bias;
+        d = [d[0] + k2 * hx / rrH, d[1] + k2 * hy / rrH, d[2]];
+      }
+      // basal root ball: once roots reach the base they flare OUT into the feet,
+      // and that splaying is what loads the base split-lines
+      const inBase = hz < zBase * gp.basal_zone_frac;
+      if (inBase && rrH > 1e-6) {
+        d = [d[0] + gp.basal_flare * hx / rrH, d[1] + gp.basal_flare * hy / rrH,
+             d[2] + 0.25 * gp.basal_flare];
+      }
+      // tortuosity: a small correlated turn, not white noise
+      d = _unit3(d[0] + gp.jitter * 0.30 * nrm(),
+                 d[1] + gp.jitter * 0.30 * nrm(),
+                 d[2] + gp.jitter * 0.30 * nrm());
+
+      let px = hx + d[0] * toUnits(gp.step_size), py = hy + d[1] * toUnits(gp.step_size);
+      let pz = Math.min(hz + d[2] * toUnits(gp.step_size), 0.99 * H);
+
+      // The pod is open at the base: a root reaching it LEAVES, into the
+      // substrate. It must not be clamped against the inside of the base — a
+      // root that has left cannot push on the pod, and trapping it invents load
+      // at the feet that is not real.
+      const belowPod = pz < gp.exit_z_frac * H;
+      const rHere = rInnerAt(Math.max(pz, gp.exit_z_frac * H)), limit = 0.985 * rHere;
+      const rr = Math.hypot(px, py);
+      if (belowPod) {
+        tip.remaining = Math.min(tip.remaining, toUnits(gp.substrate_run));
+        const rn = rr || 1;
+        d = _unit3(d[0] + gp.substrate_flare * px / rn,
+                   d[1] + gp.substrate_flare * py / rn, d[2]);
+      } else if (rr > limit && rr > 1e-6) {
+        px *= limit / rr; py *= limit / rr;
+        const nn = Math.hypot(px, py);
+        if (nn > 1e-6) {
+          const ndx = px / nn, ndy = py / nn;
+          const out = d[0] * ndx + d[1] * ndy;
+          if (out > 0) d = [d[0] - out * ndx, d[1] - out * ndy, d[2]];
+          // friction: a root pinned to a surface does not slide freely sideways,
+          // which stops tips spiralling round the bore and braiding into a rope
+          const tgx = -ndy, tgy = ndx, circ = d[0] * tgx + d[1] * tgy;
+          d = _unit3(d[0] - gp.wall_friction * circ * tgx,
+                     d[1] - gp.wall_friction * circ * tgy, d[2]);
         }
       }
-      if (bestA < 0) break;
-      near[bestA] = bestNi; dist[bestA] = Math.sqrt(bestD); within = [bestA];
+
+      const ni = add(px, py, pz, tip.node, step, tip.order);
+      tip.node = ni; tip.dir = d;
+      tip.remaining -= toUnits(gp.step_size);
+      tip.sinceBranch += toUnits(gp.step_size);
+
+      // acropetal lateral emergence; laterals crowd in the anchoring zone
+      let spacing = spacing0 * (1 + 0.35 * tip.order);
+      if (inBase) spacing *= gp.basal_branch_factor;
+      // laterals are only just BEGINNING at the end of year one
+      const onset = onsets[Math.min(tip.order + 1, onsets.length - 1)];
+      const matureEnough = (step / Math.max(gp.max_steps, 1)) >= Math.min(onset / Math.max(wMonths, 1e-6), 1);
+      const canBranch = matureEnough &&
+        ((tip.remaining > toUnits(gp.apical_unbranched)) || (inBase && tip.order <= 1));
+      if (tip.order < maxOrder && tip.sinceBranch >= spacing && canBranch) {
+        tip.sinceBranch = 0;
+        tip.roll += DIVERGENCE_DEG * Math.PI / 180;
+        const ang = Math.max(15, gp.branch_angle_deg + gp.branch_angle_sd * nrm()) * Math.PI / 180;
+        const ub = _perpBasis(d), u = ub[0], v = ub[1];
+        const cr = Math.cos(tip.roll), sr = Math.sin(tip.roll);
+        const side = [cr * u[0] + sr * v[0], cr * u[1] + sr * v[1], cr * u[2] + sr * v[2]];
+        const ca = Math.cos(ang), sa = Math.sin(ang);
+        const ld = _unit3(ca * d[0] + sa * side[0], ca * d[1] + sa * side[1], ca * d[2] + sa * side[2]);
+        let llen = Math.max(2 * toUnits(gp.step_size),
+          gp.length_falloff * (tip.remaining + toUnits(gp.step_size)) * (0.75 + rng() * 0.5));
+        // only the main axes throw the long anchoring roots; letting every order
+        // do it in the base compounds into a runaway ball
+        if (inBase && tip.order <= 1) {
+          llen = Math.max(llen, toUnits(gp.basal_lateral_len)
+            * Math.pow(gp.length_falloff, tip.order) * (0.7 + rng() * 0.6));
+        }
+        spawned.push({ node: ni, dir: ld, order: tip.order + 1, remaining: llen,
+                       sinceBranch: 0, roll: rng() * 2 * Math.PI });
+      }
     }
-    const acc = new Map();
-    for (const a of within) {
-      const ni = near[a], dx = attr.x[a] - nx[ni], dy = attr.y[a] - ny[ni], dz = attr.z[a] - nz[ni];
-      const m = Math.hypot(dx, dy, dz); if (m < 1e-6) continue;
-      let o = acc.get(ni); if (!o) { o = { sx: 0, sy: 0, sz: 0, c: 0 }; acc.set(ni, o); }
-      o.sx += dx / m; o.sy += dy / m; o.sz += dz / m; o.c++;
-    }
-    if (!acc.size) break;
-    const newNodes = [];
-    for (const [ni, o] of acc) {
-      let vx = o.sx / o.c, vy = o.sy / o.c, vz = o.sz / o.c;
-      vz += gp.down_bias * 0.5 * -1;
-      vx += gp.jitter * nrm(); vy += gp.jitter * nrm(); vz += gp.jitter * nrm();
-      const nv = Math.hypot(vx, vy, vz); if (nv < 1e-6) continue;
-      vx /= nv; vy /= nv; vz /= nv;
-      let px = nx[ni] + vx * gp.step_size, py = ny[ni] + vy * gp.step_size, pz = nz[ni] + vz * gp.step_size;
-      const rHere = rInnerAt(pz), rr = Math.hypot(px, py);
-      if (rr > 0.98 * rHere && rr > 1e-6) { px *= 0.98 * rHere / rr; py *= 0.98 * rHere / rr; }
-      pz = clip(pz, 0.02 * H, 0.99 * H);
-      newNodes.push([ni, px, py, pz]);
-    }
-    if (!newNodes.length) break;
-    for (const [ni, px, py, pz] of newNodes) add(px, py, pz, ni, step);
-    killPass();
+    tips = tips.filter(t => t.remaining > 0).concat(spawned);
   }
-  // pipe-model radii
-  const n = nx.length, rad = new Float64Array(n).fill(gp.tip_radius);
+
+  // pipe-model radii; tip radius tapers with branch order so fine roots stay
+  // fine and the taproot ends up genuinely dominant
+  const n = nx.length, rad = new Float64Array(n), tipR = new Float64Array(n);
+  for (let i = 0; i < n; i++) {
+    tipR[i] = gp.tip_radius * Math.pow(gp.order_radius_falloff, order[i]);
+    rad[i] = tipR[i];
+  }
   const children = Array.from({ length: n }, () => []);
   for (let i = 0; i < n; i++) if (parent[i] >= 0) children[parent[i]].push(i);
-  const order = [...Array(n).keys()].sort((a, b) => birth[b] - birth[a]);
-  const p = gp.pipe_exponent;
-  for (const i of order) {
+  const ord = [...Array(n).keys()].sort((a, b) => birth[b] - birth[a]);
+  const pe = gp.pipe_exponent;
+  for (const i of ord) {
     if (children[i].length) {
-      let s = 0; for (const c of children[i]) s += Math.pow(rad[c], p);
-      rad[i] = Math.max(gp.tip_radius, Math.pow(s, 1 / p));
+      let s = 0; for (const c of children[i]) s += Math.pow(rad[c], pe);
+      rad[i] = Math.max(tipR[i], Math.pow(s, 1 / pe));
     }
   }
   for (let i = 0; i < n; i++) rad[i] *= gp.radius_gain;
-  return { nx, ny, nz, parent, birth, radius: rad, n };
+  return { nx, ny, nz, parent, birth, order, radius: rad, n };
 }
 
 // ---------------------------------------------------------------------------
@@ -541,7 +675,8 @@ function detectedPattern() {
   return {
     slots: f.slots.map(s => ({ theta_deg: s.theta_deg, width_deg: s.width_deg, z_lo: s.z_lo, z_hi: s.z_hi })),
     split_lines: f.split_line_deg.map(a => ({ theta_deg: a, depth_frac: 1.3, score: 0.35 })),
-    mat: Object.assign({}, MAT_PARAMS), seam_score: 0, seam_width_deg: 0, name: "as-drawn",
+    mat: Object.assign({}, MAT_PARAMS), seam_score: 0, seam_width_deg: 0,
+    seam_bond_efficiency: 0.55, name: "as-drawn",
   };
 }
 function parametricPattern(o) {
@@ -573,7 +708,9 @@ function parametricPattern(o) {
   const split_lines = split_th.map(a => ({ theta_deg: a, depth_frac: o.split_depth_frac != null ? o.split_depth_frac : 1.3, score: o.split_score != null ? o.split_score : 0.35 }));
   return {
     slots, split_lines, mat: Object.assign({}, MAT_PARAMS),
-    seam_score: o.seam_score || 0, seam_width_deg: o.seam_width_deg || 0, name: o.name || "custom",
+    seam_score: o.seam_score || 0, seam_width_deg: o.seam_width_deg || 0,
+    seam_bond_efficiency: o.seam_bond_efficiency != null ? +o.seam_bond_efficiency : 0.55,
+    name: o.name || "custom",
   };
 }
 
@@ -595,7 +732,7 @@ function buildFields(pat) {
       for (let i = 0; i < nF; i++) {
         const ad = angdiff(thd[i], s.theta_deg) * Math.PI / 180 * Math.max(r[i], 1);
         const d = Math.hypot(ad, z[i] - ztip);
-        const v = 1 + (m.slot_tip_scf - 1) * Math.exp(-((d / m.tip_zone) ** 2));
+        const v = 1 + (m.slot_tip_scf - 1) * Math.exp(-((d / toUnits(m.tip_zone)) ** 2));
         if (v > scf[i]) scf[i] = v;
       }
     }
@@ -631,6 +768,18 @@ function buildFields(pat) {
   //         localises bending to its boundary layer √(r·t), but once the
   //         vertical seams are scored the wall hinges there and the whole
   //         sector between two seams reacts at the score.
+  // Bonded-joint capacity along the quarter-piece seams. A seam face is not
+  // parent material, it is a JOINT, and a joint reaches only a fraction of the
+  // wall's strength - which is what four bonded pieces actually buy you. At
+  // efficiency 1.0 (a perfect weld) it is identical to a monolithic shell.
+  const bond = new Float64Array(nF).fill(1);
+  const bondEff = clip(pat.seam_bond_efficiency != null ? pat.seam_bond_efficiency : 0.55, 0.02, 1);
+  if (bondEff < 1) {
+    const bhw = pat.seam_width_deg > 0 ? pat.seam_width_deg / 2 : m.ligament_halfwidth_deg;
+    for (const s of pat.slots)
+      for (let i = 0; i < nF; i++)
+        if (inner[i] && angdiff(thd[i], s.theta_deg) < bhw) bond[i] = Math.min(bond[i], bondEff);
+  }
   const t_eff = new Float64Array(nF), span = new Float64Array(nF), r_bore = new Float64Array(nF);
   const nPieces = Math.max(pat.slots.length, 2), sectorRad = 2 * Math.PI / nPieces;
   for (let i = 0; i < nF; i++) {
@@ -653,7 +802,7 @@ function buildFields(pat) {
   }
   const labels = pat.slots.map(s => `slot@${s.theta_deg.toFixed(0)}°`)
     .concat(pat.split_lines.map(s => `split@${s.theta_deg.toFixed(0)}°`));
-  return { open_frac, t_eff, span, r_bore, weaken, scf, ligament, split_site,
+  return { open_frac, t_eff, span, r_bore, weaken, bond, scf, ligament, split_site,
     n_slots: pat.slots.length, n_splits: pat.split_lines.length, labels, pattern: pat };
 }
 
@@ -665,14 +814,14 @@ function buildWallModel(wall) {
   const Cin = new Float64Array(nIn * 3);
   const scf_in = new Float64Array(nIn), z_in = new Float64Array(nIn), r_in = new Float64Array(nIn);
   const t_in = new Float64Array(nIn), span_in = new Float64Array(nIn), rb_in = new Float64Array(nIn);
-  const open_in = new Float64Array(nIn), score_in = new Float64Array(nIn);
+  const open_in = new Float64Array(nIn), score_in = new Float64Array(nIn), bond_in = new Float64Array(nIn);
   const lig = new Int32Array(nIn), split = new Int32Array(nIn);
   for (let l = 0; l < nIn; l++) {
     const g = innerIdx[l];
     Cin[3 * l] = POD.cx[g]; Cin[3 * l + 1] = POD.cy[g]; Cin[3 * l + 2] = POD.cz[g];
     scf_in[l] = wall.scf[g];
     t_in[l] = wall.t_eff[g]; span_in[l] = wall.span[g]; rb_in[l] = wall.r_bore[g];
-    open_in[l] = wall.open_frac[g]; score_in[l] = wall.weaken[g];
+    open_in[l] = wall.open_frac[g]; score_in[l] = wall.weaken[g]; bond_in[l] = wall.bond[g];
     z_in[l] = POD.zFace[g]; r_in[l] = POD.rFace[g];
     lig[l] = wall.ligament[g]; split[l] = wall.split_site[g];
   }
@@ -684,7 +833,7 @@ function buildWallModel(wall) {
   // Every site (slot ligament AND base split) is banded up its height, so both
   // fail by the same physical rule: a crack has to run across the section, not
   // just nick it somewhere.
-  const band_h = 12, site_band = new Array(n_sites).fill(null), site_nbands = new Int32Array(n_sites).fill(1);
+  const band_h = toUnits(12), site_band = new Array(n_sites).fill(null), site_nbands = new Int32Array(n_sites).fill(1);
   for (let si = 0; si < n_sites; si++) {
     const fs = site_faces[si]; if (!fs.length) continue;
     let zlo = Infinity, zhi = -Infinity; for (const l of fs) { if (z_in[l] < zlo) zlo = z_in[l]; if (z_in[l] > zhi) zhi = z_in[l]; }
@@ -697,7 +846,7 @@ function buildWallModel(wall) {
   // net-section amplification can be looked up per face in the time loop
   const face_site = new Int32Array(nIn).fill(-1);
   for (let si = 0; si < n_sites; si++) for (const l of site_faces[si]) face_site[l] = si;
-  return { innerIdx, nIn, Cin, grid, scf_in, z_in, r_in, t_in, span_in, rb_in, open_in, score_in,
+  return { innerIdx, nIn, Cin, grid, scf_in, z_in, r_in, t_in, span_in, rb_in, open_in, score_in, bond_in,
     n_slots, n_splits, n_sites, labels: wall.labels, site_faces, is_lig, site_band, site_nbands, face_site };
 }
 // Wall stress (MPa) at one inner face under bearing pressure p (MPa): membrane
@@ -705,10 +854,13 @@ function buildWallModel(wall) {
 // amplified by the local stress-concentration factor and by the net-section
 // loss where part of the site has already cracked. `tf` is a wall-thickness
 // tolerance factor (1 = nominal) used by the Monte Carlo sweep.
-function wallStress(wm, l, p, amp, tf) {
+function wallStress(wm, l, p, amp, tf, spanArr) {
   if (p <= 0 || wm.open_in[l] > 0.5) return 0;
   const te = Math.max(wm.t_in[l] * (tf || 1), MIN_T_EFF_MM);
-  const sl = wm.span_in[l] / te;
+  // beta*(L/t)^2 is Roark's case for pressure spread UNIFORMLY over a panel of
+  // width L. A root bears on a patch a few mm across, not the whole sector, so
+  // the bending span is capped at the width actually loaded.
+  const sl = (spanArr ? spanArr[l] : wm.span_in[l]) / te;
   return wm.scf_in[l] * amp * p * (wm.rb_in[l] / te + PLATE_BETA * sl * sl);
 }
 
@@ -738,9 +890,19 @@ function runSimulation(wm, roots, sp, ph, capFrames) {
   const T = sp.n_time_steps;
   const ps = physPerStep(ph, T), drive = ps.drive, cap = ps.cap, months = ps.months;
   const N = roots.n, Px = roots.nx, Py = roots.ny, Pz = roots.nz, pipe = roots.radius, birth = roots.birth;
-  let maxBirth = 1; for (let i = 0; i < N; i++) if (birth[i] > maxBirth) maxBirth = birth[i];
-  const birthTime = new Float64Array(N);
-  for (let i = 0; i < N; i++) birthTime[i] = birth[i] / maxBirth * (sp.growth_fraction * T);
+  const radiusAt = roots.radiusAt || null;
+  // A root system may know its own real growth timing (the prop-root cage carries
+  // a growth fraction per station); otherwise map arbitrary birth steps onto the
+  // first `growth_fraction` of the axis. Renormalising the cage would squeeze its
+  // true schedule — the last roots emerge at ~0.8 of the window — forward into
+  // 0.6, loading the wall before those roots exist.
+  let birthTime;
+  if (roots.birthTime) birthTime = roots.birthTime(T);
+  else {
+    let maxBirth = 1; for (let i = 0; i < N; i++) if (birth[i] > maxBirth) maxBirth = birth[i];
+    birthTime = new Float64Array(N);
+    for (let i = 0; i < N; i++) birthTime[i] = birth[i] / maxBirth * (sp.growth_fraction * T);
+  }
   const rNode = new Float64Array(N), rInnerHere = new Float64Array(N), baseNode = new Uint8Array(N);
   const zBase = POD.features.z_base_top;
   for (let i = 0; i < N; i++) { rNode[i] = Math.hypot(Px[i], Py[i]); rInnerHere[i] = rInnerAt(Pz[i]); baseNode[i] = Pz[i] < zBase * 1.25 ? 1 : 0; }
@@ -748,7 +910,7 @@ function runSimulation(wm, roots, sp, ph, capFrames) {
   // divided between the faces a root bears on — it acts across all of them.
   const contrib = Array.from({ length: wm.nIn }, () => []);
   for (let j = 0; j < N; j++) {
-    const pr = Math.max(sp.contact_patch_factor * pipe[j], sp.min_patch_radius);
+    const pr = Math.max(sp.contact_patch_factor * pipe[j], toUnits(sp.min_patch_radius));
     let fs = wm.grid.ball(Px[j], Py[j], Pz[j], pr);
     if (!fs.length) fs = [wm.grid.nearest(Px[j], Py[j], Pz[j]).idx];
     for (let t = 0; t < fs.length; t++) {
@@ -757,11 +919,25 @@ function runSimulation(wm, roots, sp, ph, capFrames) {
       contrib[l].push([j, clip(1 - d / Math.max(pr, 1e-6), 0.05, 1)]);
     }
   }
+  // per-face loaded width, from the contact patches that actually bear on it
+  const loadW = new Float64Array(wm.nIn), wCnt = new Float64Array(wm.nIn);
+  for (let j = 0; j < N; j++) {
+    const prj = Math.max(sp.contact_patch_factor * pipe[j], toUnits(sp.min_patch_radius));
+    const fs = wm.grid.ball(Px[j], Py[j], Pz[j], prj);
+    for (let t = 0; t < fs.length; t++) { loadW[fs[t]] += 2 * prj; wCnt[fs[t]] += 1; }
+  }
+  const spanEff = new Float64Array(wm.nIn);
+  for (let l = 0; l < wm.nIn; l++)
+    spanEff[l] = wCnt[l] > 0 ? Math.min(wm.span_in[l], loadW[l] / wCnt[l]) : wm.span_in[l];
+
   const delta0 = contactRefMm(sp.contact_stiffness);          // mm of indentation for full bearing
   const pullMPa = Math.max(sp.pull_assist, 0);                // planting-team assist, MPa-equivalent
   const nExp = ph.fatigue_n, tf = ph.thickness_factor;
   const z_waist_hi = POD.features.z_waist_hi;
   const sigma = new Float64Array(wm.nIn), sigmaPeak = new Float64Array(wm.nIn), dmg = new Float64Array(wm.nIn);
+  // effective crack-tip stress on bands at a crack front (K-based propagation);
+  // zero where there is no front. Carried into the next step, like sitePhi.
+  const crackTip = new Float64Array(wm.nIn);
   const pPeak = new Float64Array(wm.nIn);   // peak bearing pressure per face — feeds the design guidance
   const pressNode = new Float64Array(N);
   const bandFailed = [], sitePhi = new Float64Array(wm.n_sites);
@@ -777,9 +953,13 @@ function runSimulation(wm, roots, sp, ph, capFrames) {
     const pMax = drive[t - 1], sigF = cap[t - 1];
     const dMonths = Math.max(months[t - 1] - (t > 1 ? months[t - 2] : 0), 0);
     // --- 1. bearing pressure per root node (MPa, turgor-bounded) ---
+    // A root system may carry its own thickening law (the prop-root cage extends
+    // its tip first, then thickens behind it); otherwise the generic curve.
+    const radArr = radiusAt ? radiusAt(t, T) : null;
     for (let i = 0; i < N; i++) {
       if (birthTime[i] > t) { pressNode[i] = 0; continue; }
-      const age = t - birthTime[i], rad = nodeRadius(pipe[i], age, sp);
+      const age = t - birthTime[i];
+      const rad = radArr ? radArr[i] : nodeRadius(pipe[i], age, sp);
       const pen = (rNode[i] + rad) - rInnerHere[i];
       if (pen <= 0) { pressNode[i] = 0; continue; }
       // engagement saturates: once the root has indented the bore by a few
@@ -798,18 +978,23 @@ function runSimulation(wm, roots, sp, ph, capFrames) {
       const si = wm.face_site[l];
       // NOMINAL stress on the intact section — this is the design demand, and
       // what the heatmap and the reported numbers show.
-      const s = wallStress(wm, l, p, 1, tf);
+      const s = wallStress(wm, l, p, 1, tf, spanEff);
       sigma[l] = s;
       if (s > sigmaPeak[l]) sigmaPeak[l] = s;
       if (s > peakThisStep) peakThisStep = s;
       // Damage sees the net-section amplification instead: once bands of this
       // seam have cracked, the survivors carry the whole section.
       const amp = si >= 0 ? 1 / Math.max(1 - sitePhi[si], NET_SECTION_FLOOR) : 1;
-      const sAmp = s * amp;
+      // A band at a crack front is driven by the stress intensity there, from
+      // the load on the seam and the crack already formed — not by the local
+      // stress ahead of the tip. Whichever is worse governs.
+      const sAmp = Math.max(s * amp, crackTip[l]);
       if (sAmp > 0 && dmg[l] < 1) {
+        // A seam face fails at the JOINT's strength, not the parent wall's.
+        const capF = sigF * wm.bond_in[l];
         // brittle overload, then power-law subcritical crack growth
-        if (sAmp >= sigF) dmg[l] = 1;
-        else if (dMonths > 0) dmg[l] += Math.pow(sAmp / sigF, nExp) * dMonths / T_REF_MONTHS;
+        if (sAmp >= capF) dmg[l] = 1;
+        else if (dMonths > 0) dmg[l] += Math.pow(sAmp / capF, nExp) * dMonths / T_REF_MONTHS;
       }
     }
     capSeries[t - 1] = sigF;
@@ -829,6 +1014,29 @@ function runSimulation(wm, roots, sp, ph, capFrames) {
       for (let q = 0; q < fs.length; q++) if (dmg[fs[q]] >= 1) bf[bands[q]] = 1;
       let nf = 0; for (let b = 0; b < bf.length; b++) if (bf[b]) nf++;
       sitePhi[si] = nf / wm.site_nbands[si];
+      // --- crack propagation, K = Y·σ_drive·√a --------------------------------
+      // σ_drive is the NOMINAL section stress (σ/SCF), not the peak: the peak
+      // sits at the slot-tip raiser and already carries the concentration, and
+      // once a crack exists it — not the notch — is the dominant feature, so
+      // driving K with the concentrated value counts the concentration twice.
+      const nb2 = wm.site_nbands[si];
+      if (nf > 0 && nf < nb2) {
+        const front = new Uint8Array(nb2);
+        for (let b = 0; b < nb2; b++) if (bf[b]) {
+          if (b > 0) front[b - 1] = 1;
+          if (b < nb2 - 1) front[b + 1] = 1;
+        }
+        for (let b = 0; b < nb2; b++) if (bf[b]) front[b] = 0;
+        let drive = 0;
+        for (let q = 0; q < fs.length; q++) {
+          const v = sigma[fs[q]] / Math.max(wm.scf_in[fs[q]], 1e-6);
+          if (v > drive) drive = v;
+        }
+        const kEff = drive * CRACK_GEOM_Y * Math.sqrt(nf);
+        for (let q = 0; q < fs.length; q++) crackTip[fs[q]] = front[bands[q]] ? kEff : 0;
+      } else {
+        for (let q = 0; q < fs.length; q++) crackTip[fs[q]] = 0;
+      }
       if (sitePhi[si] >= sp.span_frac && !isFinite(activation[si])) { activation[si] = t; order.push(si); }
     }
     sigSeries[t - 1] = isFinite(govNow) ? govNow : peakThisStep;
@@ -894,19 +1102,31 @@ function seamScoreSweep(wm, res, ph, sp, pat) {
 // releases on whichever seam reaches that first. This is the number to compare
 // against material strength when asking "will it open?".
 function governingSeamStress(wm, res, sp) {
-  let out = Infinity;
+  // The number to compare against material strength when asking "will it open?".
+  // A crack no longer has to be initiated across a seam — it starts at the worst
+  // spot and PROPAGATES (see the K term in runSimulation), so what decides a seam
+  // is the peak NOMINAL driving stress it carries, sigma/SCF, de-concentrated for
+  // the same reason the crack driver is. Keying this to band SPAN — as it did
+  // when failure needed a crack present across the section — reports 0 for a
+  // discrete load, where most bands legitimately carry nothing.
+  const drives = [];
   for (let si = 0; si < wm.n_sites; si++) {
     if (!wm.is_lig[si]) continue;
-    const fs = wm.site_faces[si], bands = wm.site_band[si], nb = wm.site_nbands[si];
+    const fs = wm.site_faces[si];
     if (!fs.length) continue;
-    const bandMax = new Float64Array(nb);
-    for (let q = 0; q < fs.length; q++) { const b = bands[q], v = res.sigmaPeak[fs[q]]; if (v > bandMax[b]) bandMax[b] = v; }
-    const sorted = Array.from(bandMax).sort((a, b) => b - a);
-    const idx = clip(Math.ceil(sp.span_frac * nb) - 1, 0, nb - 1);
-    if (sorted[idx] < out) out = sorted[idx];
+    let d = 0;
+    for (let q = 0; q < fs.length; q++) {
+      const v = res.sigmaPeak[fs[q]] / Math.max(wm.scf_in[fs[q]], 1e-6);
+      if (v > d) d = v;
+    }
+    drives.push(d);
   }
-  return isFinite(out) ? out : 0;
+  if (!drives.length) return 0;
+  drives.sort((a, b) => b - a);
+  const needed = Math.max(1, Math.ceil(drives.length * sp.breakthrough_frac));
+  return drives[Math.min(needed - 1, drives.length - 1)];
 }
+
 // Net wall left at the seam for a given scoring depth, in mm — the number a
 // designer actually has to draw.
 function seamThicknessAt(wm, score) {
@@ -1253,10 +1473,13 @@ let _rzCache = null;
 // a few arches at continuously-accumulating, irregular azimuths so generations
 // interleave and the landing points form an irregular ~360° circle. Each grounded
 // arch adds one short underground planting root; some upper arches stay aerial.
-function _rzForest() {
-  if (_rzCache) return _rzCache;
+function _rzForest(seedOverride) {
+  // seedOverride lets the SIMULATION build its own cage per run (Monte Carlo
+  // resamples root azimuths) without disturbing the cached one the scene draws.
+  if (seedOverride === undefined && _rzCache) return _rzCache;
   const P = _rzParams, H = POD.features.height, footR = rOuterAt(0.05 * H), gz = groundZ();
-  const rng = mulberry32(P.seed), strands = [], landings = [], nL = P.levels.length;
+  const rng = mulberry32(seedOverride === undefined ? P.seed : seedOverride),
+        strands = [], landings = [], nL = P.levels.length;
   // per-level counts, clamped so the total visible arch count lands in [min,max]
   const counts = P.levels.map(() => P.rootsPerLevel[0] +
     Math.floor(rng() * (P.rootsPerLevel[1] - P.rootsPerLevel[0] + 1)));
@@ -1279,15 +1502,18 @@ function _rzForest() {
       const a = _archStrand({ hz, az: az + (rng() - 0.5) * 0.12, stemR, reach, baseR, gz,
         twistSign: rng() < 0.5 ? -1 : 1, sway: 0.6 + 0.8 * rng(), phase, rng, short });
       strands.push({ pts: a.pts, colA: _tint(_RZ.barkDark, tint), colB: _tint(_RZ.barkTan, tint),
-        phase, birthP, span: span * 0.62 });
+        phase, birthP, span: span * 0.62, underground: false });
       if (!short && a.land) {
         landings.push(a.land);
         strands.push({ pts: _ugPlunge(a.land, a.landDir, a.tipR, rng, phase, reach),
           colA: _tint(_RZ.soilDark, tint), colB: _RZ.soilDeep,
-          phase, birthP: clip(birthP + span * 0.55, 0, 0.95), span: span * 0.5 });
+          phase, birthP: clip(birthP + span * 0.55, 0, 0.95), span: span * 0.5,
+          // below the mud and outside the pod: never a wall load
+          underground: true });
       }
     }
   }
+  if (seedOverride !== undefined) return { strands, landings };
   _rzCache = { strands, landings };
   return _rzCache;
 }
@@ -1369,6 +1595,109 @@ function stageRootMesh(p) {
 // ---------------------------------------------------------------------------
 // mud surface sits just ABOVE the foot tips (which bottom out at z=0) so the 4
 // feet visibly press into / are partly embedded in the mud, not floating over it
+// ---------------------------------------------------------------------------
+//  The prop-root cage AS THE LOAD SOURCE  (port of proproots.py)
+// ---------------------------------------------------------------------------
+//  These are the roots the tool draws, and now the ones the physics runs on.
+//  Each stilt root leaves the stem at r~6 mm — INSIDE the bore — sweeps outward
+//  and drops into the mud a foot-radius away, so its intended path crosses the
+//  wall at z~34-107 mm: the slot->foot ligament and base-split band, exactly
+//  where the pod is designed to release. The load is therefore ~8 directed
+//  beams on specific wall patches, not a diffuse cloud.
+//
+//  A root cannot pass through an intact wall, so the indentation driving contact
+//  pressure is how far past the bore the intended path has grown, capped at the
+//  wall. Points still inside the bore, and points already beyond the outer
+//  surface (they have left through the gaps between the feet), carry no load.
+// ---------------------------------------------------------------------------
+function propRootSystem(seed) {
+  const F = _rzForest(seed);
+  const nx = [], ny = [], nz = [], parent = [], birth = [], radius = [];
+  const birthFrac = [], thickenP = [], fullR = [];
+  for (const st of F.strands) {
+    if (st.underground) continue;
+    for (const q of st.pts) {
+      const r = Math.hypot(q[0], q[1]), rIn = rInnerAt(q[2]), rOut = rOuterAt(q[2]);
+      if (!(r > rIn && r <= rOut)) continue;      // not bearing on the wall
+      const u = q[4];
+      nx.push(q[0]); ny.push(q[1]); nz.push(q[2]);
+      parent.push(-1); radius.push(q[3]);
+      birth.push(Math.round((st.birthP + st.span * u) * 1000));
+      birthFrac.push(st.birthP + st.span * u);
+      thickenP.push(st.birthP + st.span * 1.35);
+      fullR.push(q[3]);
+    }
+  }
+  const n = nx.length;
+  return {
+    nx, ny, nz, parent, birth, radius: Float64Array.from(radius), n,
+    strands: F.strands,
+    // the prop root's own growth law: the tip EXTENDS to a station first, then
+    // the root THICKENS behind it — not the generic maturation/swelling curve
+    // real step at which each station's root tip actually reaches it
+    birthTime(T) {
+      const out = new Float64Array(n);
+      for (let i = 0; i < n; i++) out[i] = birthFrac[i] * T;
+      return out;
+    },
+    radiusAt(t, T) {
+      const p = t / Math.max(T, 1), out = new Float64Array(n);
+      for (let i = 0; i < n; i++) {
+        if (p < birthFrac[i]) { out[i] = 0; continue; }
+        const span = Math.max(thickenP[i] - birthFrac[i], 1e-6);
+        out[i] = fullR[i] * (0.5 + 0.5 * clip((p - birthFrac[i]) / span, 0, 1));
+      }
+      return out;
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------
+//  The HYPOCOTYL as the load source  (port of hypocotyl.py)
+// ---------------------------------------------------------------------------
+//  The propagule spans the full pod; its radicle emerges at the base and fans
+//  into the mud, so the roots barely touch the wall. What IS in contact along
+//  the whole bore is the stem itself. At the pod's true scale (25.6 mm bore) a
+//  20-36 mm propagule is an interference fit from planting, and thickens into
+//  the wall from there.
+//
+//  Stations sit ON the axis carrying the stem's own radius, so the engine's
+//  penetration test (r_node + radius) - r_inner(z) reduces exactly to
+//  r_stem(z,t) - r_inner(z). Radius is in MODEL UNITS, not mm.
+// ---------------------------------------------------------------------------
+const HYPO_DEFAULT = {
+  initial_diameter_mm: 24.0,   // R. mangle runs 20-36 mm (0.8-1.4 in)
+  growth_mm_per_year: 3.0,     // secondary thickening of a seedling stem
+  tip_taper: 0.55, widest_frac: 0.30, shoot_taper: 0.35,
+  z_lo_frac: 0.05, z_hi_frac: 0.95, n_stations: 60,
+};
+function hypocotylSystem(hp, windowMonths) {
+  const p = Object.assign({}, HYPO_DEFAULT, hp || {});
+  const H = POD.features.height, n = p.n_stations;
+  const nx = [], ny = [], nz = [], parent = [], birth = [], taper = [], r0 = [];
+  for (let i = 0; i < n; i++) {
+    const f = i / (n - 1), z = (p.z_lo_frac + (p.z_hi_frac - p.z_lo_frac) * f) * H;
+    // widest in the lower third (the brown region above the root collar), so
+    // that widest point sits at the WAIST - the tightest part of the bore
+    const t = f <= p.widest_frac
+      ? p.tip_taper + (1 - p.tip_taper) * (f / Math.max(p.widest_frac, 1e-9))
+      : 1 - (1 - p.shoot_taper) * ((f - p.widest_frac) / Math.max(1 - p.widest_frac, 1e-9));
+    nx.push(0); ny.push(0); nz.push(z); parent.push(-1); birth.push(0);
+    taper.push(t); r0.push(toUnits(0.5 * p.initial_diameter_mm) * t);
+  }
+  return {
+    nx, ny, nz, parent, birth, n, radius: Float64Array.from(r0),
+    birthTime(T) { return new Float64Array(n); },   // present from planting
+    radiusAt(t, T) {
+      const months = windowMonths * t / Math.max(T, 1);
+      const added = toUnits(0.5 * p.growth_mm_per_year) * (months / 12);
+      const out = new Float64Array(n);
+      for (let i = 0; i < n; i++) out[i] = r0[i] + added * taper[i];
+      return out;
+    },
+  };
+}
+
 function groundZ() { return 0.03 * POD.features.height; }
 function rootLandings() { return _rzForest().landings; }
 // --- deterministic value-noise FBM (procedural mudflat terrain + texture) -----
@@ -1761,11 +2090,12 @@ function patternFromCfg(cfg) {
     const pat = detectedPattern();
     if (cfg.seam_score !== "" && cfg.seam_score != null) pat.seam_score = +cfg.seam_score;
     if (cfg.seam_width_deg !== "" && cfg.seam_width_deg != null) pat.seam_width_deg = +cfg.seam_width_deg;
+    if (cfg.seam_bond_efficiency !== "" && cfg.seam_bond_efficiency != null) pat.seam_bond_efficiency = +cfg.seam_bond_efficiency;
     pat.name = "as-drawn"; return pat;
   }
   const o = { name: cfg.name || "custom", align: cfg.align || "feet" };
   for (const key of ["n_slots"]) if (cfg[key] != null && cfg[key] !== "") o[key] = Math.round(+cfg[key]);
-  for (const key of ["slot_length_frac", "slot_width_deg", "slot_z_center_frac", "theta_offset_deg", "split_score", "split_depth_frac", "seam_score", "seam_width_deg"])
+  for (const key of ["slot_length_frac", "slot_width_deg", "slot_z_center_frac", "theta_offset_deg", "split_score", "split_depth_frac", "seam_score", "seam_width_deg", "seam_bond_efficiency"])
     if (cfg[key] != null && cfg[key] !== "") o[key] = +cfg[key];
   return parametricPattern(o);
 }
@@ -1788,7 +2118,9 @@ function simFromCfg(cfg) {
 function simulate(cfg) {
   const pat = patternFromCfg(cfg), gp = growthFromCfg(cfg), sp = simFromCfg(cfg), ph = physFromCfg(cfg);
   const wall = buildFields(pat), wm = buildWallModel(wall);
-  const roots = grow(gp, +(cfg.seed || 1));
+  const roots = hypocotylSystem(
+    { initial_diameter_mm: cfg.propagule_mm != null ? +cfg.propagule_mm : 24.0 },
+    +(cfg.window_months || 36));
   const res = runSimulation(wm, roots, sp, ph);
   const { intensity, cmax } = vertexIntensity(res.faceField, !!cfg.project_outer, res.sigma_f_end_mpa);
   const roots_payload = rootTubeMesh(roots);
@@ -1849,7 +2181,7 @@ function* montecarloIter(cfg, nRuns) {
   const nArch = Math.min(n, 12), archPool = [];
   // The reported mechanics must be the NOMINAL design, not whichever random
   // draw happened to be first.
-  archPool[0] = grow(gp, +(cfg.seed || 1));
+  archPool[0] = hypocotylSystem({}, +(cfg.window_months || 36));
   const nomRes = runSimulation(wm, archPool[0], sp, ph0);
   yield { done: 0, total: n, phase: "nominal design" };
   for (let kk = 0; kk < n; kk++) {
@@ -1858,7 +2190,9 @@ function* montecarloIter(cfg, nRuns) {
       const g = Object.assign({}, gp);
       g.slot_bias = Math.max(0.2, gp.slot_bias * (1 + 0.5 * jNorm() * 0.3));
       g.down_bias = clip(gp.down_bias * (1 + 0.5 * jNorm() * 0.3), 0.1, 1);
-      archPool[ai] = grow(g, kk);
+      archPool[ai] = hypocotylSystem(
+        { initial_diameter_mm: clip(24 + 3.5 * jNorm(), 18, 34) },
+        +(cfg.window_months || 36));
     }
     // physical uncertainty for this draw
     const ph = Object.assign({}, ph0);
@@ -1902,7 +2236,7 @@ function* montecarloIter(cfg, nRuns) {
   for (const o of orders) if (o.length) { const key = o.slice(0, 3).map(s => wm.labels[s]).join(" → "); oc[key] = (oc[key] || 0) + 1; }
   const topOrders = Object.entries(oc).sort((a, b) => b[1] - a[1]).slice(0, 5);
   const { intensity, cmax } = vertexIntensity(cumAccum, !!cfg.project_outer, nomRes.sigma_f_end_mpa);
-  const rep = grow(gp, 7), roots_payload = rootTubeMesh(rep);
+  const roots_payload = stageRootMesh(1);
   const pct = (a, p) => { const s = a.filter(isFinite).sort((x, y) => x - y); return s.length ? +s[clip(Math.round((p / 100) * (s.length - 1)), 0, s.length - 1)].toFixed(2) : null; };
   const stats = {
     pattern: pat.name, n_runs: n, reliability,
@@ -1945,7 +2279,9 @@ function montecarlo(cfg, nRuns) {
 function simulateFrames(cfg) {
   const pat = patternFromCfg(cfg), gp = growthFromCfg(cfg), sp = simFromCfg(cfg), ph = physFromCfg(cfg);
   const wall = buildFields(pat), wm = buildWallModel(wall);
-  const roots = grow(gp, +(cfg.seed || 1));
+  const roots = hypocotylSystem(
+    { initial_diameter_mm: cfg.propagule_mm != null ? +cfg.propagule_mm : 24.0 },
+    +(cfg.window_months || 36));
   const capFrames = [];
   const res = runSimulation(wm, roots, sp, ph, capFrames);
   const T = sp.n_time_steps, projectOuter = cfg.project_outer !== false;
@@ -2164,12 +2500,14 @@ function* crackReportIter(cfg, nRuns) {
     const g = Object.assign({}, gp);
     g.slot_bias = Math.max(0.2, gp.slot_bias * (1 + 0.5 * jNorm() * 0.3));
     g.down_bias = clip(gp.down_bias * (1 + 0.5 * jNorm() * 0.3), 0.1, 1);
-    rootSys.push(grow(g, kk));
+    rootSys.push(hypocotylSystem(
+      { initial_diameter_mm: clip(24 + 3.5 * jNorm(), 18, 34) },
+      +(cfg.window_months || 36)));
     yield { done: kk + 1, total: nArch + 4, phase: "growing roots" };
   }
   // the nominal architecture, for the headline mechanics numbers — reporting
   // whichever random draw happened to be last would swing them wildly
-  const nomRoots = grow(gp, +(cfg.seed || 1));
+  const nomRoots = hypocotylSystem({}, +(cfg.window_months || 36));
   const mats = ["pha", "pla", "clay", "concrete"], byMat = {};
   const finite = a => a.filter(v => isFinite(v)), mean = a => a.length ? a.reduce((s, x) => s + x, 0) / a.length : Infinity;
   for (const mk of mats) {

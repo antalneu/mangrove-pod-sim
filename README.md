@@ -7,17 +7,18 @@ tears apart** at its perforations — so you can tune the slot/split pattern for
 pod that reliably breaks away as the sapling establishes (naturally or with a
 gentle pull from a planting team).
 
-> **Model status:** this is a transparent *reduced-order* engineering surrogate,
-> not finite-element analysis. It is calibrated to be physically sensible and to
-> respond correctly to design changes, and every assumption is exposed as a
-> tunable parameter. Use it for *relative* comparison of perforation/material/
-> species designs and for locating failure hot-spots — not for absolute load
-> numbers.
+> **Model status:** this is a transparent *reduced-order* shell-mechanics model,
+> not finite-element analysis. It works in real MPa (hoop + plate bending on the
+> net scored section), but those absolute numbers rest on the model's unit scale
+> and on estimated material constants, and every assumption is exposed as a
+> tunable parameter. Trust it for comparing perforation/material/species designs
+> and locating failure hot-spots; confirm absolute margins with FEA and physical
+> testing before a production decision.
 >
 > **Honesty first (industry design tool).** Every physical constant is tagged in a
 > permanent **Data-provenance panel** as *Literature-sourced*, *Estimated — needs
-> lab validation*, *Measured off the 3-D model*, or *Calibrated (relative
-> surrogate)*. Nothing assumed is presented as verified fact. In particular, there
+> lab validation*, *Measured off the 3-D model*, or *Calibrated (modelling
+> choice)*. Nothing assumed is presented as verified fact. In particular, there
 > is **no mangrove-specific root-force data in the literature**, so the root
 > pressure default (0.5–1.0 MPa) is an estimate borrowed from general tree-root
 > biomechanics — see the **Validation roadmap** below.
@@ -33,9 +34,11 @@ gentle pull from a planting team).
    opening, the narrow waist, the **4 vertical slot perforations**, the **4
    splayed base feet**, the **split-lines** between the feet, and a per-face
    **wall-thickness** field.
-3. **Simulate root growth.** Space-colonization branching from the top opening,
-   growing down through the waist and out into the feet, with configurable growth
-   rate, branching, and bias toward the slots/feet.
+3. **Grow the seedling's roots, paced to real growth stages.** Over a 12-month
+   window a *Rhizophora* has a **primary root and little else** — laterals only
+   begin at 1–2 years, prop roots at 3–5. `growth.py` gates branch order by the
+   plant's age, so the pod is not loaded years early. (`proproots.py` builds the
+   prop-root cage for multi-year windows, where it is the right structure.)
 4. **Compute wall stress over time.** Roots swell each time-step; where a root
    body reaches the inner wall it bears outward at its turgor-limited growth
    pressure. That pressure is mapped onto the real inner-wall faces and turned
@@ -132,17 +135,27 @@ adjustable **seam depth / width / rotational offset**.
 
 ### 1 · Material presets — *all values are engineering estimates, lab-verification required*
 
-| material | fracture strength (flexural) | stiffness | wet/tidal loss | biodegradable |
+| material | fracture strength | fatigue *n* | wet loss → floor | biodegradable |
 |---|---|---|---|---|
-| **Bioplastic** (marine-degradable PHA/PLA) | ~55 MPa (40–75) | ~2 800 MPa | ~5 %/mo | ✅ marine-biodegradable |
-| **Clay** (low-fired earthenware) | ~15 MPa (8–25) | ~8 000 MPa | ~3 %/mo | ✅ inert mineral, benign |
-| **Concrete** (unreinforced, thin-wall) | ~4 MPa (3–6) | ~25 000 MPa | ~0.4 %/mo | ⚠️ **not biodegradable — persistent** |
+| **PHA / PHBV** (marine-degradable) | **32 MPa (25–58)** | 12 | 6 %/mo → holds 68% | ✅ marine-biodegradable |
+| **PLA** (industrial-compost only) | **55 MPa (45–70)** | 14 | 0.4 %/mo → holds 90% | ⚠️ **not marine-degradable** |
+| **Clay** (low-fired earthenware) | **5.5 MPa (2.0–9.5)** | 30 | 3 %/mo → holds 55% | ✅ inert mineral, benign |
+| **Concrete** (unreinforced, thin-wall) | **3.2 MPa (2.2–4.2)** | 24 | 0.6 %/mo → holds 72% | ⚠️ **not biodegradable — persistent** |
 
-Concrete carries a visible **UI warning**: it is the least biodegradable option,
-persists in the marine environment, and can leach alkalinity — it may crack at a
-scored seam, but the fragments stay behind. A material acts on the physics through
-two *relative* multipliers (capacity ∝ strength, and a wet-degradation term over
-elapsed time), anchored so **bioplastic reproduces the original calibration**.
+All four are now **published values**, not class-level guesses: measured PHBV is
+27–33 MPa (neat PHA reaches ~58); clay flexural spans 2.0–9.5; unreinforced
+concrete tensile 2.2–4.2. Degradation **plateaus** rather than sliding to zero —
+marine PHBV drops ~25% early then holds 17–22 MPa of an initial 27 — so each
+material carries a strength floor.
+
+PHA and PLA are **separate presets with separate claims**: PHA genuinely
+biodegrades in seawater, PLA needs industrial-composting heat and persists over
+the establishment window. Both PLA and concrete carry a visible **UI warning**.
+A material enters the physics directly, in real units: its fracture strength *is*
+the wall capacity the computed stress is compared against, decaying over elapsed
+time with wet degradation, and its fatigue exponent *n* decides whether a wall
+held just under strength eventually fails (low *n*, polymers) or effectively never
+does (high *n*, ceramics).
 
 ### 2 · Species growth calibration (real time, slow-start roots)
 
@@ -190,7 +203,7 @@ this relative design explorer into a quantitatively validated predictor.
 
 ## Detected geometry (from your model)
 
-| feature | value (model units, ~11× a real 30 cm propagule) |
+| feature | value (model units, read as **millimetres**) |
 |---|---|
 | height | 333.7 |
 | waist outer / inner radius | 35.3 / 12.8 |
@@ -232,14 +245,14 @@ See `outputs/04_perforation_comparison.png` and `outputs/03_results_analysis.png
 ```
 mangrovesim/
   podmesh.py      load .3dm -> mesh, detect waist/slots/feet/thickness, region masks
-  growth.py       space-colonization root growth (GrowthParams)
-  perforation.py  parametric slots + base split-lines + quarter-piece seams -> strength field
-  pressure.py     inflate roots over time -> wall stress -> failure (SimParams, optional phys)
-  montecarlo.py   many randomized runs -> aggregated statistics; compare_patterns
-  materials.py    Clay / Concrete / Bioplastic presets (all engineering estimates)
+  growth.py       architectural seedling-root growth: taproot + acropetal laterals
+  perforation.py  parametric slots + base split-lines + quarter-piece seams -> net scored section
+  pressure.py     inflate roots over time -> wall stress in MPa -> failure (SimParams, phys)
+  montecarlo.py   many randomized runs (architecture + strength + pressure + wall tolerance)
+  materials.py    PHA / PLA / Clay / Concrete presets (all engineering estimates)
   species.py      Rhizophora / Avicennia growth calibration (real-time, slow-start ramp)
-  physical.py     material/species/root-pressure -> per-step drive & capacity multipliers; Calibration Mode
-  provenance.py   registry of every constant tagged proven vs. estimated; validation roadmap
+  physical.py     material/species/root-pressure -> per-step drive & capacity in MPa; Calibration Mode
+  provenance.py   mechanics constants + registry of every constant tagged proven vs. estimated
   viz.py          matplotlib renders + Plotly interactive heatmaps
 run_01..run_05    scripts for the pipeline stages (05 = per-material/species report)
 webapp/           Flask web app (app.py) + static/ + templates/
@@ -250,12 +263,16 @@ outputs/          all generated figures, interactive HTML, and pod_features.json
 
 ## How the failure model works (so you can trust / tune it)
 
-> **Two engines, and they are no longer the same model.** The live browser tool
-> (`docs/static/engine.js`) runs the **shell-mechanics model (v2)** described
-> below, in real MPa. The Python package under `mangrovesim/` still runs the
-> original cumulative-impulse surrogate and is kept for the offline render
-> pipeline (`run_01`..`run_05`) — it has **not** been ported to v2, so its
-> numbers will not match the website. Trust the browser tool for mechanics.
+> **Two engines, one model.** The live browser tool (`docs/static/engine.js`) and
+> the Python package under `mangrovesim/` run the same shell-mechanics model in
+> real MPa, on the same year-one root system (125 nodes, primary root only), and
+> agree on every release verdict: PHA and PLA never open inside 12 months, clay
+> and concrete only late and marginally.
+>
+> **Known gap:** absolute governing seam stress still differs — ~3.7 MPa in the
+> browser against ~1.6–1.8 MPa in Python. The two are not yet doing identical
+> arithmetic on the loaded-width calculation. Material *ranking* is unaffected;
+> do not quote either to the megapascal until this is closed.
 
 ### Why v2 replaced the original surrogate
 
@@ -292,9 +309,16 @@ provenance panel as the tool's single most load-bearing assumption.
   eventually; one held well under it never does. `σ_f` decays over the window
   with wet degradation, so a biodegradable pod releases because **the wall
   weakens into the root load** — the actual design mechanism.
-- **Crack propagation.** Once a fraction φ of a seam's z-bands have cracked, the
-  survivors carry the whole section (`σ ×= 1/(1−φ)`, capped at 8×). A crack
-  initiates at the slot-tip stress raiser and then *runs* across the ligament.
+- **Crack propagation.** Two mechanisms. Once a fraction φ of a seam's z-bands
+  have cracked the survivors carry the whole section (`σ ×= 1/(1−φ)`, capped at
+  8×); and the band at a crack *front* is driven by the stress **intensity**
+  there, `K = Y·σ_drive·√a`, where `a` is the crack already formed and `σ_drive`
+  is the **nominal** section stress `σ/SCF` — not the peak, which sits at the
+  slot-tip raiser and already carries the concentration. Net-section alone cannot
+  propagate a crack started by a *discrete* load: one cracked band of eight gives
+  only 1.14×, and the bands either side of a point load carry almost no stress.
+  The K term is what lets a single prop root punching through the wall open a
+  whole seam.
 - **Break sites.** A **slot→foot ligament** tears when cracking spans
   `span_frac` of its stacked z-bands. Base **split-lines** are banded and judged
   by the same rule.
@@ -308,50 +332,146 @@ provenance panel as the tool's single most load-bearing assumption.
 - **Design guidance.** When a design does not release, the tool back-solves the
   **seam scoring depth** that would release it and reports the net wall in mm.
 
-### What v2 concludes
+### The root system that loads the wall
 
-As moulded, the ~24 mm wall sees only ~0.2 MPa at the seam against 22 MPa of
-remaining strength — **no material releases without deep scoring**. Required
-scoring depth: concrete/clay ≈ 55%, PHA ≈ 85% (3.6 mm of wall), PLA ≈ 95%. At
-the 85% default, PHA releases at ~month 9 while PLA never does and clay/concrete
-release around month 6–7, early enough to flag against the ~12-month
-outplant-readiness window.
+**Root development is paced to real growth stages, and this dominates
+everything else.** Field stages for *Rhizophora*: 0–1 yr the **primary root**
+develops; 1–2 yr lateral roots *begin* to form; 2–3 yr they become numerous;
+3–5 yr prop roots start. Branch order is therefore gated by the plant's age, not
+by arc length — otherwise a 12-month window grows a three-year root system and
+loads the pod years early.
+
+Over a 12-month window the model produces what a 12-month plant actually has:
+**125 nodes, branch order 0 only, the primary root, 2.4 mm at its thickest.**
+Within that, the architecture is still explicit — a steeply gravitropic taproot
+relaxing toward its set-point angle, correlated-random-walk tortuosity, and
+mechanical deflection along the wall (a root cannot bore through it, so it
+deflects and slides, with friction damping the slide).
+
+Two timing corrections matter as much as the architecture:
+
+- **Roots do not appear on contact.** Field observation puts emergence at
+  **19–68 days** after stranding, sooner on sediment than in standing water. The
+  pod carries *no* root load for the first ~6 weeks.
+- **A root does not pressurise a whole panel.** The plate-bending term
+  `β·(L/t)²` is Roark's case for pressure spread *uniformly* over a panel of
+  width L. A root bears on a patch a few mm across, so the bending span is
+  capped at the width actually loaded. Using the full 39 mm sector width
+  overstated bending by ~4×, and worst exactly when the seedling is youngest.
+
+`proproots.py` still builds the prop-root cage, bit-identically in both engines,
+but it is a **3–5 year** structure and is not the load source for a 12-month
+window.
+
+### Four bonded pieces, and what the holes actually do
+
+The pod is moulded as **4 quarter-pieces bonded along the seams**, not carved
+from one shell, and a joint reaches only a fraction of the parent wall's
+strength. That fraction — `seam_bond_efficiency` — is what the seam fails at,
+and it is a strong lever:
+
+| bond efficiency | effect |
+|---|---|
+| 1.00 (a perfect weld — i.e. monolithic) | no benefit at all |
+| 0.55 (typical adhesive/weld, the default) | seam fails at ~55% of parent strength |
+| 0.25 (weak mortar / slip joint) | seam fails at ~25% |
+
+Note the top row: **four pieces do not help on their own.** At 100% joint
+efficiency the pod behaves exactly like a one-piece shell. A bonded seam buys a
+*deliberately weak* line — but with a year-one root system the wall is nowhere
+near failing anyway, so bond efficiency shifts nothing inside 12 months. It
+becomes a real lever only once the load is large enough to threaten the seam,
+i.e. over a multi-year window.
+
+**The slots** help in two ways the model already counts: they remove
+load-bearing section, and their tips carry a 3x stress raiser that initiates the
+crack. But they help through slot **length** — a longer slot leaves a shorter
+ligament to tear — *not* width. Once a wide seam is scored, the seam and not the
+slot sets the ligament, which is why `wider-slots` and `narrower-slots` return
+identical results in `run_04` (in both engines — it is a real property of the
+model, not a bug).
+
+### What the model now concludes
+
+**A first-year root system cannot open this pod.** With root development paced
+to real growth stages, the governing seam stress is **~1.6–1.8 MPa** against
+21.8 MPa of remaining PHA strength — the wall is loaded to about **8%** of
+capacity. Over a 12-month window, at the 85% seam-scoring default:
+
+| material | strength at 12 mo | releases in 12 months |
+|---|---|---|
+| **PHA / PHBV** | 21.8 MPa | **never** |
+| **PLA** | 52.4 MPa | **never** |
+| **clay** | 3.5 MPa | only late and marginally (~8–10 mo) |
+| **concrete** | 3.0 MPa | only late and marginally (~8–9 mo) |
+
+Nothing cracks before ~4.5 months in any material, and at 3–4 months the pod is
+intact everywhere — consistent with a real 4-month-old propagule, which has a
+primary root and little else.
+
+**This moves the design question.** Release inside a 12-month window has to come
+from **the wall degrading on schedule, not from the roots pushing** — the root
+load is an order of magnitude short. Seam scoring, the strongest geometric lever
+in the model, cannot bridge that gap on its own. Either:
+
+- the pod is engineered to **dissolve** on schedule, making wall thickness and
+  the PHA formulation the design variables (note PHA's marine degradation is
+  *surface erosion*, ~0.1–0.15 mm/month per exposed face, which on a 3.75 mm
+  scored seam removes most of the section in a year — a thinning mechanism the
+  model does **not** yet include); or
+- the release window is **2–3 years**, by which point laterals and then prop
+  roots genuinely exist and root pressure becomes a real actuator.
+
+Earlier versions of this README reported release at ~month 4–6. Those numbers
+credited the seedling with years of root development it has not done.
 
 ### Main tunable knobs
 
-`GrowthParams`: `step_size`, `influence_radius`, `kill_radius`, `n_attractors`,
-`down_bias`, `slot_bias`, `wall_bias`, `tip_radius`, `pipe_exponent`,
-`radius_gain`.
+`GrowthParams`: `step_size`, `n_attractors` (overall root *density*), `n_seeds`,
+`down_bias` (gravitropism strength), `slot_bias`, `wall_bias`, `jitter`
+(tortuosity); architecture — `max_order`, `branch_angle_deg`, `lateral_spacing`,
+`length_falloff`, `apical_unbranched`; the basal anchoring zone —
+`basal_zone_frac`, `basal_flare`, `basal_branch_factor`, `basal_lateral_len`;
+wall interaction — `wall_friction`, `wall_seek_frac`; thickening — `tip_radius`,
+`pipe_exponent`, `radius_gain`, `order_radius_falloff`.
 
 `SimParams`: `n_time_steps`, `maturation`, `swell_rate`, `max_swell`,
-`contact_stiffness` (in the browser engine this sets the indentation δ₀ at which
-a root reaches full bearing pressure), `base_wedge`, `span_frac`,
-`breakthrough_frac`, `pull_assist` (an extra bearing pressure in MPa below the
-waist, modelling a planting team helping the pod open).
+`contact_stiffness` (sets the indentation δ₀ at which a root reaches full bearing
+pressure), `base_wedge`, `span_frac`, `breakthrough_frac`, `pull_assist` (an extra
+bearing pressure in MPa below the waist, modelling a planting team helping the pod
+open).
 
-Browser-engine mechanics constants: `MM_PER_UNIT` (unit scale), `PLATE_BETA`,
-`T_REF_MONTHS` (static-fatigue reference), `NET_SECTION_FLOOR`, and each
+Mechanics constants (`mangrovesim/provenance.py`, mirrored at the top of
+`engine.js`): `MM_PER_UNIT` (unit scale), `PLATE_BETA`, `T_REF_MONTHS`
+(static-fatigue reference), `MIN_T_EFF_MM`, `NET_SECTION_FLOOR`, and each
 material's `fatigue_exponent`.
 
 `PerforationPattern.parametric(...)`: `n_slots`, `slot_length_frac`,
 `slot_width_deg`, `slot_z_center_frac`, `theta_offset_deg`, `align` ("feet" or
-"split"), `split_depth_frac`, `split_score`.
+"split"), `split_depth_frac`, `split_score`, `seam_score`, `seam_width_deg`.
+
+**Scoring dominates.** Because stress goes as 1/t for hoop and 1/t² for bending,
+`seam_score` is by far the strongest lever — and once a wide seam band is scored
+it, not the slot, sets the ligament, so `slot_width_deg` and `split_score` stop
+moving the release at all. Both engines behave this way; `run_04` includes
+`shallow-seam` / `deeper-seam` variants to show the effect that does matter.
 
 ---
 
 ## Caveats
 
-- The browser engine reads the model's units as **millimetres** (334 mm pod,
-  ⌀26 mm bore, ~24 mm wall). Every stress it reports is a real MPa and every
-  one of them scales with that assumption, so confirm it against the physical
-  prototype before quoting a number. Breakthrough is reported both as a
-  time-step and as real elapsed months of the species growth window.
+- Both engines read the model's units as **millimetres** (334 mm pod, ⌀26 mm
+  bore, ~21 mm wall). Every stress they report is a real MPa and every one of
+  them scales with that assumption, so confirm it against the physical prototype
+  before quoting a number. Breakthrough is reported both as a time-step and as
+  real elapsed months of the species growth window.
 - The extracted mesh is Rhino's render tessellation and is not watertight at the
   slot cuts; this is fine for wall-contact pressure but means volumes/normals near
   slot edges are approximate.
-- Absolute stiffness/strength constants are calibrated for sensible *relative*
-  behaviour, not measured material properties. Plug in real values (and ideally a
-  real FEA cross-check) before trusting absolute margins.
+- Material strengths, the root pressure and the fatigue exponents are engineering
+  estimates for a material *class*, not measured properties of your formulation.
+  Plug in real values (and ideally an FEA cross-check) before trusting absolute
+  margins.
 - The **material and species constants are engineering estimates**, not datasheet
   or pod-measured values; the material→physics coupling is a *relative* mapping,
   not calibrated absolute physics. The Data-provenance panel tags each constant,

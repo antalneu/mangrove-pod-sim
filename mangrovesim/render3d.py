@@ -147,22 +147,47 @@ def _smooth_positions(P, parent, children, iters=2, w=0.45):
     return Q
 
 
-def root_tube_mesh(roots, sides=6, radius_scale=1.35, r_min=0.8, r_max=7.0,
-                   smooth_iters=2):
-    """Build a single tapered-tube mesh for the whole root system."""
+def _build_root_tubes(roots, sides, radius_scale, r_min, r_max, smooth_iters):
+    """Shared tube builder. Returns (accumulator, per-frustum mean radius)."""
     P = np.asarray(roots.nodes, float)
     if len(P) < 2 or roots.radius is None:
-        return None
+        return None, None
     parent = np.asarray(roots.parent_arr, int)
     ch = _children(parent)
     Q = _smooth_positions(P, parent, ch, iters=smooth_iters)
     rad = np.clip(np.asarray(roots.radius, float) * radius_scale, r_min, r_max)
     acc = _TubeAccum(sides=sides)
+    seg_r = []
     for i in range(len(P)):
         p = parent[i]
         if p >= 0:
+            before = len(acc.F)
             acc.add_frustum(Q[p], Q[i], rad[p], rad[i])
-    return acc.payload()
+            seg_r.extend([0.5 * (rad[p] + rad[i])] * (len(acc.F) - before))
+    return acc, np.asarray(seg_r, float)
+
+
+def root_tube_mesh(roots, sides=6, radius_scale=1.35, r_min=0.8, r_max=7.0,
+                   smooth_iters=2):
+    """Build a single tapered-tube mesh for the whole root system."""
+    acc, _ = _build_root_tubes(roots, sides, radius_scale, r_min, r_max, smooth_iters)
+    return acc.payload() if acc is not None else None
+
+
+def root_tube_arrays(roots, sides=8, radius_scale=1.0, r_min=0.35, r_max=12.0,
+                     smooth_iters=2):
+    """Same tapered tubes as `root_tube_mesh`, but as raw (V, F, face_radius)
+    arrays so matplotlib can draw them as shaded polygons instead of hairlines.
+
+    Defaults draw the tube at *exactly* the radius the pressure model inflates
+    (no cosmetic scaling and effectively no clipping), so what you see is what
+    the simulation is actually pressing against the wall with."""
+    acc, seg_r = _build_root_tubes(roots, sides, radius_scale, r_min, r_max, smooth_iters)
+    if acc is None or not acc.V:
+        return None, None, None
+    V = np.concatenate(acc.V, axis=0)
+    F = np.asarray(acc.F, int)
+    return V, F, seg_r
 
 
 # --------------------------------------------------------------------------- #

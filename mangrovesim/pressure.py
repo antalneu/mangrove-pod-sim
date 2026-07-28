@@ -1,45 +1,83 @@
 """
 pressure.py
 ===========
-Turn a grown root system into time-resolved pressure on the pod's inner wall,
-accumulate stress, and decide when each perforation "break site" tears through.
+Turn a grown root system into a time-resolved **wall stress in real MPa**, and
+decide when each perforation "break site" tears through.
 
-Model (reduced-order, not FEA - a transparent engineering surrogate)
---------------------------------------------------------------------
-Over `n_time_steps` the root network *inflates*: every node was born at a growth
+This is the shell-mechanics model (v2) — the same model the browser engine in
+`docs/static/engine.js` runs, so the offline renders and the website agree.
+
+The physical scale
+------------------
+The Rhino model is authored in MILLIMETRES (see provenance.MM_PER_UNIT): the pod
+is 334 mm tall around a ~26 mm bore with a ~21 mm wall. Every pressure and stress
+below is therefore a real MPa (N/mm^2), not a surrogate unit.
+
+Pressure — turgor-bounded
+-------------------------
+Over `n_time_steps` the root network inflates: every node was born at a growth
 step; as it ages its radius grows toward its pipe-model value and then keeps
-swelling. At each step a node whose swollen body reaches the inner wall exerts a
-radial contact pressure
+swelling. Radial indentation into the bore is
 
-    pressure_node = contact_stiffness * penetration
-    penetration   = (r_node + radius_node) - r_inner(z_node)      [>0 only]
+    delta = (r_node + radius_node) - r_inner(z_node)          [>0 only]
 
-plus, in the conical base, a wedging term (the root ball splaying the feet). Each
-node's pressure lands on the nearest inner-wall face. Per face we track the
-instantaneous pressure and the time-integral (cumulative stress ~ fatigue/creep).
+but a root's bearing pressure *saturates* at its turgor-limited growth pressure:
 
-Failure. Every face has a capacity `strength` and a concentration factor `scf`
-from the perforation pattern (perforation.py). A break site (a slot->foot
-ligament or a base split-line) *activates* when the stress driving it exceeds its
-summed capacity:
+    p_node = p_root * (1 - exp(-delta / delta0))
 
-    drive_site(t)  = sum_faces( cumulative_stress * scf )
-    activate when  drive_site >= capacity_site = sum_faces( strength )
+However far a root swells it can never bear harder than ~1 MPa. `delta0` comes
+from the contact-stiffness control (provenance.contact_ref_mm). In the conical
+base a wedging term (the root ball splaying the feet) scales this up.
 
-"First crack" = first site to activate. "Breakthrough" = when a configurable
-fraction of the slot->foot ligaments have activated (the pod can split into
-petals / fall away). A `pull_assist` term adds a steady external stress to model
-a planting team pulling the pod apart.
+Stress — hoop + plate bending on the net section
+------------------------------------------------
+Each node's pressure lands on the wall patch its swollen body touches (a sparse
+node->face matrix; the kernel is a spatial falloff and is deliberately NOT
+normalised — pressure is not divided between the faces a root bears on, it acts
+across all of them). Per inner face,
+
+    sigma = SCF * p * [ r_bore / t_eff  +  PLATE_BETA * (span / t_eff)^2 ]
+                       ^ membrane hoop     ^ transverse plate bending
+
+with `t_eff`, `span` and `r_bore` the net scored section from perforation.py.
+
+Failure — brittle overload + static fatigue
+-------------------------------------------
+Two paths, both against the material's *remaining* strength sigma_f(t) (which
+decays with wet degradation over the real elapsed months):
+
+    brittle   sigma >= sigma_f                       -> that face cracks now
+    fatigue   damage += (sigma/sigma_f)^n * dt / T_REF_MONTHS
+
+so a wall held just under strength still fails eventually and one held well under
+it never does. `n` is the material's fatigue_exponent.
+
+Once a fraction phi of a site's z-bands have cracked, the survivors carry the
+whole section, so the stress driving further DAMAGE is amplified by 1/(1-phi)
+(floored at NET_SECTION_FLOOR). That is what makes a crack initiate at the
+slot-tip hot spot and then RUN across the ligament rather than stalling. The
+reported/heatmap stress stays the nominal demand on the intact section.
+
+Break sites
+-----------
+Every site — slot->foot ligament AND base split-line — is banded up its height
+and fails by the same physical rule: a crack has to *span* `span_frac` of the
+bands, not just nick the section somewhere. "First crack" is the first site to
+tear; "breakthrough" is when `breakthrough_frac` of the slot ligaments have torn
+(the point the pod can split into petals / fall away). `pull_assist` adds a
+steady bearing pressure below the waist to model a planting team helping it open.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import List, Optional
 
 import numpy as np
 from scipy.spatial import cKDTree
 
-from .perforation import WallFields
+from .perforation import WallFields, _sstep
+from .provenance import (MM_PER_UNIT, PLATE_BETA, T_REF_MONTHS, MIN_T_EFF_MM,
+                         NET_SECTION_FLOOR, CRACK_GEOM_Y, contact_ref_mm, to_units)
 
 
 @dataclass
@@ -49,15 +87,14 @@ class SimParams:
     maturation: float = 30.0          # steps for a root to reach full pipe radius
     swell_rate: float = 0.012         # continued girth swelling per step after maturity
     max_swell: float = 2.6            # cap on swelling multiplier
-    contact_stiffness: float = 20.0   # pressure per unit radial penetration
+    contact_stiffness: float = 20.0   # sets delta0, the indentation for full bearing
     base_wedge: float = 0.6           # extra outward push from the base root ball
     contact_patch_factor: float = 1.6  # wall contact radius as multiple of root girth
-    min_patch_radius: float = 7.0     # floor on the contact-patch radius
+    min_patch_radius: float = 7.0     # floor on the contact-patch radius, MM
     dt: float = 1.0
-    span_frac: float = 0.6            # frac of ligament z-bands cracked -> it tears
-    hoop_factor: float = 0.9          # feet-splaying tension delivered to split-lines
+    span_frac: float = 0.6            # frac of a site's z-bands cracked -> it tears
     breakthrough_frac: float = 0.75   # frac of slot->foot ligaments that must tear
-    pull_assist: float = 0.0          # steady external stress (planting-team pull)
+    pull_assist: float = 0.0          # steady external bearing pressure, MPa
 
 
 class WallModel:
@@ -70,8 +107,15 @@ class WallModel:
         self.inner_idx = np.where(pod.inner_mask)[0]
         self.Cin = pod.face_centers[self.inner_idx]
         self.tree = cKDTree(self.Cin)
-        self.strength_in = wall.strength[self.inner_idx]
         self.scf_in = wall.scf[self.inner_idx]
+        self.t_in = wall.t_eff[self.inner_idx]          # net section, mm
+        self.span_in = wall.span[self.inner_idx]        # bending span, mm
+        self.rb_in = wall.r_bore[self.inner_idx]        # bore radius, mm
+        self.open_in = wall.open_frac[self.inner_idx]
+        self.score_in = wall.weaken[self.inner_idx]
+        # bonded-joint capacity: a seam face fails at the JOINT's strength,
+        # not the parent wall's, so capacity is scaled per face
+        self.bond_in = wall.bond[self.inner_idx]
         self.z_in = pod.z_face[self.inner_idx]
         self.r_in = pod.r_face[self.inner_idx]
         lig = wall.ligament[self.inner_idx]
@@ -91,16 +135,16 @@ class WallModel:
             self.is_ligament.append(False)
         self.is_ligament = np.array(self.is_ligament)
 
-        # For ligaments: bin faces into constant-height z-bands. A ligament tears
-        # only when a crack SPANS the bridge (a failed face in ~every band), so a
-        # taller bridge (shorter slot) is genuinely harder to sever than a short
-        # one (longer slot). Band count therefore encodes slot length.
-        band_h = 12.0
+        # Every site (slot ligament AND base split) is banded up its height, so
+        # both fail by the same physical rule: a crack has to run across the
+        # section, not just nick it somewhere. Band count encodes site height, so
+        # a taller bridge (shorter slot) is genuinely harder to sever.
+        band_h = to_units(12.0)      # mm -> model units
         self.site_band = [None] * self.n_sites
         self.site_nbands = np.ones(self.n_sites, int)
         for si in range(self.n_sites):
             fs = self.site_faces[si]
-            if not self.is_ligament[si] or len(fs) == 0:
+            if len(fs) == 0:
                 continue
             zf = self.z_in[fs]
             zlo, zhi = zf.min(), zf.max()
@@ -109,42 +153,55 @@ class WallModel:
             self.site_band[si] = b
             self.site_nbands[si] = K
 
-        # For split-lines: capacity = summed strength of the (possibly scored)
-        # split faces; driven by feet-splaying hoop tension (see run_simulation).
-        self.split_capacity = np.full(self.n_sites, np.inf)
+        # reverse index: which site (if any) each inner face belongs to, so the
+        # net-section amplification can be looked up per face in the time loop
+        self.face_site = np.full(len(self.inner_idx), -1, int)
         for si in range(self.n_sites):
-            if self.is_ligament[si]:
-                continue
-            fs = self.site_faces[si]
-            if len(fs):
-                cap = np.sum(np.where(np.isfinite(self.strength_in[fs]),
-                                      self.strength_in[fs], 0.0))
-                self.split_capacity[si] = cap if cap > 0 else np.inf
+            self.face_site[self.site_faces[si]] = si
 
     def map_nodes(self, positions):
         _, loc = self.tree.query(positions, k=1)
         return loc
 
+    def wall_stress(self, p, amp=1.0, thickness_factor=1.0, span=None):
+        """Wall stress (MPa) per inner face under bearing pressure `p` (MPa):
+        membrane hoop on the net section + transverse plate bending over its
+        reacting span, amplified by the local stress-concentration factor and by
+        `amp` (net-section loss where part of the site has already cracked).
+        `thickness_factor` is a moulding tolerance (1 = nominal)."""
+        te = np.maximum(self.t_in * thickness_factor, MIN_T_EFF_MM)
+        sl = (self.span_in if span is None else span) / te
+        s = self.scf_in * amp * p * (self.rb_in / te + PLATE_BETA * sl * sl)
+        return np.where((p > 0) & (self.open_in <= 0.5), s, 0.0)
+
 
 @dataclass
 class SimResult:
-    cum_stress_in: np.ndarray            # cumulative stress per inner face
-    peak_pressure_in: np.ndarray
+    stress_in: np.ndarray                # wall stress per inner face, MPa (final step)
+    stress_peak_in: np.ndarray           # peak wall stress ever seen, MPa
+    peak_pressure_in: np.ndarray         # peak bearing pressure, MPa
     inner_idx: np.ndarray
     n_faces: int
     site_labels: List[str]
     site_activation_step: np.ndarray     # step each site activated (inf if never)
-    site_ratio_history: np.ndarray       # [n_steps, n_sites] drive/capacity
+    site_phi_history: np.ndarray         # [n_steps, n_sites] cracked-band fraction
     first_crack_step: float
     first_crack_site: int
     breakthrough_step: float
     activation_order: List[int]
+    # per-step traces, in real units
+    stress_series: np.ndarray            # governing seam stress per step, MPa
+    strength_series: np.ndarray          # remaining fracture strength per step, MPa
+    months: np.ndarray                   # real elapsed months per step
+    seam_peak_mpa: float                 # worst stress anywhere on a release seam
+    sigma_f_end_mpa: float               # remaining strength at the end of the window
+    utilisation: float                   # seam_peak / sigma_f_end
     roots: object = None
 
-    def cum_stress_faces(self):
-        """Scatter inner-face cumulative stress back to a full per-face array."""
+    def stress_faces(self):
+        """Scatter inner-face wall stress (MPa) back to a full per-face array."""
         v = np.zeros(self.n_faces)
-        v[self.inner_idx] = self.cum_stress_in
+        v[self.inner_idx] = self.stress_in
         return v
 
     def peak_pressure_faces(self):
@@ -163,114 +220,209 @@ def _node_radius(pipe_r, age, sp: SimParams):
 
 def run_simulation(pod, wallmodel: WallModel, roots, sparams: Optional[SimParams] = None,
                    phys=None):
-    """Run the time-stepped pressure/failure simulation.
+    """Run the time-stepped stress/failure simulation.
 
-    `phys` (optional physical.PhysicalContext) applies *relative* per-step
-    multipliers derived from the chosen material/species/root-pressure:
-        drive    scales the applied wall pressure (root pressure x growth ramp)
-        capacity scales the wall strength (material strength x wet degradation)
-    With phys=None both default to 1.0 and the engine behaves exactly as before.
+    `phys` (a physical.PhysicalContext) supplies the absolute per-step drive
+    (MPa of available root bearing pressure) and capacity (MPa of remaining
+    fracture strength after wet degradation), plus the real elapsed months each
+    step lands on. Without one, a default PHA / Rhizophora context is used, since
+    the model has no meaningful dimensionless mode.
     """
     sp = sparams or SimParams()
     wm = wallmodel
     T = sp.n_time_steps
 
-    if phys is not None:
-        drive_mult, cap_mult, _months = phys.per_step(T)
-    else:
-        drive_mult = np.ones(T)
-        cap_mult = np.ones(T)
+    if phys is None:
+        from .physical import PhysicalContext
+        phys = PhysicalContext.default()
+    drive, cap, months = phys.per_step(T)
+    n_exp = phys.fatigue_n
+    tf = phys.thickness_factor
 
     P = roots.positions()
     pipe = roots.radius
     birth = roots.birth_arr.astype(float)
-    # map growth steps onto the first `growth_fraction` of the time axis
-    max_birth = max(birth.max(), 1.0)
-    birth_time = birth / max_birth * (sp.growth_fraction * T)
+    radius_at = getattr(roots, "radius_at", None)
+    # A root system may know its own real growth timing (the prop-root cage
+    # carries a growth fraction per station); otherwise map arbitrary birth
+    # steps onto the first `growth_fraction` of the time axis. Renormalising the
+    # cage would squeeze its true schedule - the last roots emerge at ~0.8 of the
+    # window - forward into 0.6, loading the wall before those roots exist.
+    birth_time_fn = getattr(roots, "birth_time", None)
+    if birth_time_fn is not None:
+        birth_time = birth_time_fn(T)
+    else:
+        max_birth = max(birth.max(), 1.0)
+        birth_time = birth / max_birth * (sp.growth_fraction * T)
 
     r_node = np.hypot(P[:, 0], P[:, 1])
     r_inner_here = pod.r_inner_at(P[:, 2])
     z_base = pod.features.z_base_top
     base_node = P[:, 2] < z_base * 1.25
+    wedge_mult = np.where(base_node, 1.0 + sp.base_wedge, 1.0)
 
-    # precompute each node's wall contact patch (the faces its swollen body
-    # touches) as a sparse node->face weight matrix, so pressure spreads over an
-    # area instead of a single face.
+    # Contact kernel: each node's wall contact patch (the faces its swollen body
+    # touches) as a sparse node->face weight matrix. A spatial falloff, NOT
+    # normalised to 1 — pressure is not divided between the faces a root bears
+    # on, it acts across all of them.
     import scipy.sparse as spr
-    patch_r = np.maximum(sp.contact_patch_factor * pipe, sp.min_patch_radius)
+    patch_r = np.maximum(sp.contact_patch_factor * pipe,
+                         to_units(sp.min_patch_radius))
     patches = wm.tree.query_ball_point(P, patch_r)
     rows, cols, data = [], [], []
     for j, fs in enumerate(patches):
         if len(fs) == 0:
             fs = [int(wm.tree.query(P[j], k=1)[1])]
         d = np.linalg.norm(wm.Cin[fs] - P[j], axis=1)
-        w = np.maximum(1.0 - d / max(patch_r[j], 1e-6), 0.05)
-        w = w / w.sum()
+        w = np.clip(1.0 - d / max(patch_r[j], 1e-6), 0.05, 1.0)
         rows.extend(fs)
         cols.extend([j] * len(fs))
         data.extend(w.tolist())
     n_in = len(wm.inner_idx)
     M = spr.csr_matrix((data, (rows, cols)), shape=(n_in, len(P)))
 
-    cum = np.zeros(n_in)
-    peak = np.zeros(n_in)
-    ratio_hist = np.zeros((T, wm.n_sites))
+    # --- how WIDE the load actually is ----------------------------------------
+    # The plate-bending term beta*(L/t)^2 is derived for pressure spread
+    # uniformly over a panel of width L. A root does not do that: it bears on a
+    # patch a few mm across. Using the full hinged-sector width with a point-ish
+    # contact overstates bending by (L/w)^2 - about 8x for a 14 mm patch on a
+    # 39 mm sector - and that error is worst exactly when the seedling is young
+    # and its roots are thinnest. Cap the bending span at the loaded width.
+    load_w = np.zeros(n_in)
+    wsum = np.zeros(n_in)
+    for j, fs in enumerate(patches):
+        if len(fs) == 0:
+            continue
+        load_w[fs] += 2.0 * patch_r[j]
+        wsum[fs] += 1.0
+    load_w = np.where(wsum > 0, load_w / np.maximum(wsum, 1e-9), wm.span_in)
+    span_eff = np.minimum(wm.span_in, load_w)
+
+    delta0 = contact_ref_mm(sp.contact_stiffness)   # mm of indentation for full bearing
+    pull_mpa = max(sp.pull_assist, 0.0)             # planting-team assist, MPa
+    below_waist = wm.z_in < pod.features.z_waist_hi
+
+    sigma = np.zeros(n_in)
+    sigma_peak = np.zeros(n_in)
+    p_peak = np.zeros(n_in)
+    dmg = np.zeros(n_in)
+    # Effective crack-tip stress on the bands at a crack front, from the K-based
+    # propagation rule. Zero where there is no front. Carried into the next step,
+    # exactly like site_phi.
+    crack_tip = np.zeros(n_in)
+    site_phi = np.zeros(wm.n_sites)
+    phi_hist = np.zeros((T, wm.n_sites))
+    band_failed = [np.zeros(wm.site_nbands[si], bool) for si in range(wm.n_sites)]
     activation_step = np.full(wm.n_sites, np.inf)
     activation_order = []
-    base_wedge_cum = 0.0
+    # per-step traces for the results panel: the seam stress that governs release
+    # and the remaining strength it is racing against, both in MPa
+    stress_series = np.zeros(T)
+    strength_series = np.zeros(T)
 
     n_lig = wm.n_slots
     breakthrough_needed = max(1, int(np.ceil(n_lig * sp.breakthrough_frac)))
     breakthrough_step = np.inf
 
     for t in range(1, T + 1):
-        alive = birth_time <= t
-        if not np.any(alive):
-            ratio_hist[t - 1] = 0
-            continue
+        p_max = drive[t - 1]
+        sig_f = cap[t - 1]
+        d_months = max(months[t - 1] - (months[t - 2] if t > 1 else 0.0), 0.0)
+
+        # --- 1. bearing pressure per root node (MPa, turgor-bounded) ---
         age = t - birth_time
-        rad = _node_radius(pipe, age, sp)
-        # radial penetration of the swollen root into the wall
+        # A root system may carry its own thickening law (the prop-root cage
+        # extends its tip first, then thickens behind it); otherwise use the
+        # generic maturation + swelling curve.
+        if radius_at is not None:
+            rad = radius_at(t, T)
+        else:
+            rad = _node_radius(pipe, age, sp)
         pen = (r_node + rad) - r_inner_here
-        radial_press = sp.contact_stiffness * np.maximum(pen, 0.0)
-        # base wedging: root ball splaying the conical base / feet
-        wedge = np.where(base_node, sp.base_wedge * rad, 0.0)
-        # per-step drive multiplier: root pressure (MPa/reference) x growth ramp
-        dmult = drive_mult[t - 1]
-        press_node = np.where(alive, radial_press + wedge, 0.0) * dmult
-        # spread each node's pressure over its wall contact patch
-        step_press = M.dot(press_node)
-        # optional external pull assist (planting team) on the upper wall
-        if sp.pull_assist > 0:
-            step_press = step_press + sp.pull_assist * (wm.z_in < pod.features.z_waist_hi)
+        # engagement saturates: once the root has indented the bore by a few
+        # delta0 it is bearing at its full growth pressure and can push no harder
+        engage = 1.0 - np.exp(-np.maximum(pen, 0.0) * MM_PER_UNIT / delta0)
+        press_node = np.where((birth_time <= t) & (pen > 0),
+                              p_max * engage * wedge_mult, 0.0)
 
-        peak = np.maximum(peak, step_press)
-        cum += step_press * sp.dt
-        # cumulative feet-splaying wedge load -> hoop tension at the split-lines
-        base_wedge_cum += float(np.where(alive, wedge, 0.0).sum()) * dmult * sp.dt
+        # --- 2. face pressure -> stress -> damage ---
+        p_face = M.dot(press_node)
+        if pull_mpa > 0:
+            p_face = p_face + pull_mpa * below_waist
+        # overlapping roots still cannot exceed turgor
+        np.minimum(p_face, p_max + pull_mpa, out=p_face)
+        np.maximum(p_peak, p_face, out=p_peak)
 
-        # per-step capacity multiplier: material strength x wet/tidal degradation
-        cmult = cap_mult[t - 1]
-        eff_strength = wm.strength_in * cmult
-        # per-face failure: local stress (x concentration) exceeds local capacity.
-        face_failed = (cum * wm.scf_in) >= eff_strength
+        # NOMINAL stress on the intact section — this is the design demand, and
+        # what the heatmap and the reported numbers show.
+        sigma = wm.wall_stress(p_face, 1.0, tf, span_eff)
+        np.maximum(sigma_peak, sigma, out=sigma_peak)
+
+        # Damage sees the net-section amplification instead: once bands of this
+        # site have cracked, the survivors carry the whole section.
+        amp = np.ones(n_in)
+        has_site = wm.face_site >= 0
+        amp[has_site] = 1.0 / np.maximum(1.0 - site_phi[wm.face_site[has_site]],
+                                         NET_SECTION_FLOOR)
+        # A band at a crack front is driven by the stress INTENSITY there, which
+        # comes from the load applied to the seam and the crack already formed —
+        # not from the local stress ahead of the tip. Whichever is worse governs.
+        s_amp = np.maximum(sigma * amp, crack_tip)
+        live = (s_amp > 0) & (dmg < 1.0)
+        cap_face = sig_f * wm.bond_in              # joints fail before parent
+        brittle = live & (s_amp >= cap_face)       # brittle overload
+        dmg[brittle] = 1.0
+        if d_months > 0:                            # subcritical crack growth
+            fat = live & ~brittle
+            dmg[fat] += (s_amp[fat] / cap_face[fat]) ** n_exp * d_months / T_REF_MONTHS
+        strength_series[t - 1] = sig_f
+
+        # --- 3. site state: which bands have cracked, and has the site torn? ---
+        gov_now = np.inf
         for si in range(wm.n_sites):
             fs = wm.site_faces[si]
             if len(fs) == 0:
                 continue
+            bands = wm.site_band[si]
+            nb = wm.site_nbands[si]
+            # the stress that decides this seam: the span_frac-th highest band stress
             if wm.is_ligament[si]:
-                # crack must span the bridge: a failed face in a fraction of bands
-                bands = wm.site_band[si]
-                failed_bands = np.unique(bands[face_failed[fs]])
-                ratio = len(failed_bands) / wm.site_nbands[si]
+                band_max = np.zeros(nb)
+                np.maximum.at(band_max, bands, sigma[fs])
+                order = np.sort(band_max)[::-1]
+                gi = int(np.clip(np.ceil(sp.span_frac * nb) - 1, 0, nb - 1))
+                gov_now = min(gov_now, order[gi])
+            bf = band_failed[si]
+            bf[bands[dmg[fs] >= 1.0]] = True
+            site_phi[si] = bf.sum() / nb
+            # --- crack propagation, K = Y * sigma_drive * sqrt(a) ------------
+            # sigma_drive is the load this seam is actually carrying (the wedging
+            # root), a is the crack length in bands. Only the bands at the front
+            # advance, so the crack runs a band at a time rather than all at once.
+            n_cracked = int(bf.sum())
+            if 0 < n_cracked < nb:
+                idx = np.arange(nb)
+                at_front = np.zeros(nb, bool)
+                cracked = np.where(bf)[0]
+                at_front[np.clip(cracked - 1, 0, nb - 1)] = True
+                at_front[np.clip(cracked + 1, 0, nb - 1)] = True
+                at_front &= ~bf
+                # The driver is the NOMINAL stress on the section, not the peak.
+                # The peak sits at the slot-tip raiser and already carries the
+                # SCF; once a crack exists it, not the notch, is the dominant
+                # feature, so feeding the concentrated value into K would count
+                # the concentration twice and make every seam cascade at once.
+                sigma_drive = float((sigma[fs] / wm.scf_in[fs]).max())
+                k_eff = sigma_drive * CRACK_GEOM_Y * np.sqrt(n_cracked)
+                crack_tip[fs] = np.where(at_front[bands], k_eff, 0.0)
             else:
-                # split-line: feet-splaying hoop tension vs (scored, degraded) capacity
-                ratio = (sp.hoop_factor * base_wedge_cum) / (wm.split_capacity[si] * cmult)
-            ratio_hist[t - 1, si] = ratio
-            thresh = sp.span_frac if wm.is_ligament[si] else 1.0
-            if ratio >= thresh and not np.isfinite(activation_step[si]):
+                crack_tip[fs] = 0.0
+            if site_phi[si] >= sp.span_frac and not np.isfinite(activation_step[si]):
                 activation_step[si] = t
                 activation_order.append(si)
+        phi_hist[t - 1] = site_phi
+        stress_series[t - 1] = gov_now if np.isfinite(gov_now) else sigma.max()
+
         # breakthrough when enough slot->foot ligaments have torn
         n_lig_active = np.sum(np.isfinite(activation_step[:n_lig]))
         if n_lig_active >= breakthrough_needed and not np.isfinite(breakthrough_step):
@@ -283,17 +435,153 @@ def run_simulation(pod, wallmodel: WallModel, roots, sparams: Optional[SimParams
     else:
         first_site, first_step = -1, np.inf
 
+    # headline engineering numbers: worst stress anywhere on a release seam, and
+    # how much of the material's remaining strength that uses up
+    seam_peak = 0.0
+    for si in range(wm.n_sites):
+        fs = wm.site_faces[si]
+        if len(fs):
+            seam_peak = max(seam_peak, float(sigma_peak[fs].max()))
+    sig_f_end = float(cap[T - 1])
+
     return SimResult(
-        cum_stress_in=cum,
-        peak_pressure_in=peak,
+        stress_in=sigma,
+        stress_peak_in=sigma_peak,
+        peak_pressure_in=p_peak,
         inner_idx=wm.inner_idx,
         n_faces=len(pod.F),
         site_labels=wm.labels,
         site_activation_step=activation_step,
-        site_ratio_history=ratio_hist,
+        site_phi_history=phi_hist,
         first_crack_step=first_step,
         first_crack_site=first_site,
         breakthrough_step=float(breakthrough_step),
         activation_order=activation_order,
+        stress_series=stress_series,
+        strength_series=strength_series,
+        months=months,
+        seam_peak_mpa=seam_peak,
+        sigma_f_end_mpa=sig_f_end,
+        utilisation=seam_peak / max(sig_f_end, 1e-9),
         roots=roots,
     )
+
+
+# --------------------------------------------------------------------------- #
+#  reporting: the numbers a designer actually acts on
+# --------------------------------------------------------------------------- #
+def governing_seam_stress(wm: WallModel, res: SimResult, sp: SimParams) -> float:
+    """The stress that GOVERNS release: the number to compare against material
+    strength when asking "will it open?".
+
+    A crack no longer has to be initiated across a seam — it initiates at the
+    worst-loaded spot and then *propagates* (see the K term in run_simulation).
+    So what decides a seam is the peak NOMINAL driving stress it carries,
+    `sigma/SCF`, de-concentrated for the same reason the crack driver is: the
+    slot-tip raiser starts the crack, it does not have to sustain it.
+
+    The pod needs `breakthrough_frac` of its seams to go, so the governing value
+    is the corresponding order statistic across seams — the weakest seam that
+    still has to open. Keying this to band *span* (as it did when failure needed
+    a crack present across the section) reports 0 for a discrete load, where most
+    bands legitimately carry nothing."""
+    drives = []
+    for si in range(wm.n_sites):
+        if not wm.is_ligament[si]:
+            continue
+        fs = wm.site_faces[si]
+        if len(fs) == 0:
+            continue
+        drives.append(float((res.stress_peak_in[fs] / np.maximum(wm.scf_in[fs], 1e-6)).max()))
+    if not drives:
+        return 0.0
+    needed = max(1, int(np.ceil(len(drives) * sp.breakthrough_frac)))
+    return float(np.sort(drives)[::-1][min(needed - 1, len(drives) - 1)])
+
+
+def seam_thickness_at(wm: WallModel, score: float):
+    """Net wall left at the release seams for a given scoring depth, in mm — the
+    number a designer actually has to draw."""
+    tot, n = 0.0, 0
+    for si in range(wm.n_sites):
+        if not wm.is_ligament[si]:
+            continue
+        fs = wm.site_faces[si]
+        if len(fs) == 0:
+            continue
+        tot += float((wm.t_in[fs] / np.maximum(1.0 - wm.score_in[fs], 0.02)).sum())
+        n += len(fs)
+    return (tot / n) * (1.0 - score) if n else None
+
+
+def seam_score_sweep(wm: WallModel, res: SimResult, sp: SimParams, pattern):
+    """How deep would the seams have to be scored?
+
+    Stress scales as 1/t for hoop and 1/t^2 for bending, so scoring is by far the
+    strongest lever the designer has. Using the bearing pressure the run actually
+    delivered to each ligament face, re-evaluate the section analytically for a
+    sweep of candidate scoring depths and report the shallowest one at which
+    enough seams would tear. Cheap — no extra simulation."""
+    sig_f = res.sigma_f_end_mpa
+    n_pieces = max(len(pattern.slots), 2)
+    sector_rad = 2.0 * np.pi / n_pieces
+    sweep = []
+    for s in np.round(np.arange(0.0, 0.9501, 0.05), 2):
+        torn = 0
+        for si in range(wm.n_sites):
+            if not wm.is_ligament[si]:
+                continue
+            fs = wm.site_faces[si]
+            if len(fs) == 0:
+                continue
+            p = res.peak_pressure_in[fs]
+            t0 = wm.t_in[fs] / np.maximum(1.0 - wm.score_in[fs], 0.02)  # gross wall
+            te = np.maximum(t0 * (1.0 - s), MIN_T_EFF_MM)
+            hinge = _sstep(s / 0.6)
+            l_shell = np.sqrt(wm.rb_in[fs] * t0)
+            l_sector = sector_rad * (wm.rb_in[fs] + 0.5 * t0)
+            sl = (l_shell + (l_sector - l_shell) * hinge) / te
+            cracked = (p > 0) & (wm.scf_in[fs] * p *
+                                 (wm.rb_in[fs] / te + PLATE_BETA * sl * sl) >= sig_f)
+            nb = wm.site_nbands[si]
+            bf = np.zeros(nb, bool)
+            bf[wm.site_band[si][cracked]] = True
+            if bf.sum() / nb >= sp.span_frac:
+                torn += 1
+        sweep.append({"score": float(s), "seams_torn": torn})
+    needed = max(1, int(np.ceil(wm.n_slots * sp.breakthrough_frac)))
+    hit = next((o for o in sweep if o["seams_torn"] >= needed), None)
+    return {"sweep": sweep, "required_score": hit["score"] if hit else None,
+            "seams_needed": needed}
+
+
+def mechanics_summary(res: SimResult, wm: WallModel, phys, pattern,
+                      sp: Optional[SimParams] = None) -> dict:
+    """Headline engineering numbers, matching the browser tool's results panel."""
+    t_all = []
+    for si in range(wm.n_sites):
+        if wm.is_ligament[si] and len(wm.site_faces[si]):
+            t_all.append(wm.t_in[wm.site_faces[si]] * phys.thickness_factor)
+    t_all = np.concatenate(t_all) if t_all else np.array([])
+    guide = seam_score_sweep(wm, res, sp, pattern) if sp is not None else None
+    gov = governing_seam_stress(wm, res, sp) if sp is not None else res.seam_peak_mpa
+    sf = res.sigma_f_end_mpa / gov if gov > 0 else np.inf
+    req = guide["required_score"] if guide else None
+    return {
+        "unit_mm": MM_PER_UNIT,
+        "seam_stress_mpa": round(gov, 2),               # governs whether the seam tears
+        "peak_stress_mpa": round(res.seam_peak_mpa, 2),  # local peak at the slot tip
+        "tip_utilisation": round(res.utilisation, 3),
+        "strength_start_mpa": round(phys.sigma_f_mpa, 2),
+        "strength_end_mpa": round(res.sigma_f_end_mpa, 2),
+        "utilisation": round(gov / max(res.sigma_f_end_mpa, 1e-9), 3),
+        "safety_factor": round(sf, 2) if np.isfinite(sf) else None,
+        "seam_thickness_mm": round(float(t_all.mean()), 2) if len(t_all) else None,
+        "seam_thickness_min_mm": round(float(t_all.min()), 2) if len(t_all) else None,
+        "seam_score": pattern.seam_score or 0.0,
+        "fatigue_n": phys.fatigue_n,
+        "required_score": req,
+        "required_seam_thickness_mm": (round(seam_thickness_at(wm, req), 2)
+                                       if req is not None else None),
+        "seams_needed": guide["seams_needed"] if guide else None,
+    }

@@ -115,14 +115,17 @@ def fig_json(fig):
     return json.loads(fig.to_json())
 
 
-def vertex_intensity(field, project_outer=False, log=False):
-    """Per-vertex scalar (rounded to keep the payload small) + colour scale max."""
+def vertex_intensity(field, project_outer=False, log=False, cmax=None):
+    """Per-vertex scalar (rounded to keep the payload small) + colour scale max.
+    `cmax` anchors the ramp to the material's remaining fracture strength, so the
+    top of the scale means "at fracture" (what the docs/ tool does)."""
     f = field
     if project_outer:
         f = viz.project_inner_to_outer(POD, np.asarray(field, float))
     vv = viz.face_field_to_vertex(POD, f, log=log)
-    vmax = float(np.percentile(vv[vv > 0], 99)) if np.any(vv > 0) else 1.0
-    return np.round(vv, 2).tolist(), max(vmax, 1e-9)
+    if cmax is None:
+        cmax = float(np.percentile(vv[vv > 0], 99)) if np.any(vv > 0) else 1.0
+    return np.round(vv, 2).tolist(), max(cmax, 1e-9)
 
 
 def root_tubes(roots):
@@ -236,8 +239,9 @@ def api_simulate():
     roots = growth.grow(POD, gp, seed=seed)
     res = pr.run_simulation(POD, wm, roots, sp, phys=phys)
 
-    field = res.cum_stress_faces()
-    intensity, cmax = vertex_intensity(field, project_outer=project_outer)
+    field = res.stress_faces()
+    intensity, cmax = vertex_intensity(field, project_outer=project_outer,
+                                       cmax=res.sigma_f_end_mpa)
     # always return the root tubes; the client toggles their visibility
     roots_payload = root_tubes(roots)
 
@@ -252,6 +256,7 @@ def api_simulate():
         })
     stats = {
         "n_nodes": int(len(roots.nodes)),
+        "mechanics": pr.mechanics_summary(res, wm, phys, pattern, sp),
         "first_crack_step": None if not np.isfinite(res.first_crack_step) else int(res.first_crack_step),
         "first_crack_site": res.site_labels[res.first_crack_site] if res.first_crack_site >= 0 else None,
         "breakthrough_step": None if not np.isfinite(res.breakthrough_step) else int(res.breakthrough_step),
@@ -285,7 +290,7 @@ def api_montecarlo():
     r = mc.run_montecarlo(POD, pattern, n_runs=n_runs, gparams=gp, sparams=sp,
                           growth_jitter_scale=0.5, phys=phys)
     rep = growth.grow(POD, gp, seed=7)
-    intensity, cmax = vertex_intensity(r.mean_cum_stress_faces)
+    intensity, cmax = vertex_intensity(r.mean_stress_faces)
     roots_payload = root_tubes(rep)
 
     from collections import Counter

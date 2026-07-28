@@ -147,20 +147,28 @@ def project_inner_to_outer(pod, face_field):
 
 
 def render_pressure_outer(pod, inner_field, path, title="wall stress (outer view)",
-                          cmap="inferno", views=((16, -60), (16, 60), (16, 180))):
+                          cmap="inferno", views=((16, -60), (16, 60), (16, 180)),
+                          vmax=None):
     """Opaque outer-surface heatmap of an inner-wall scalar field."""
     proj = project_inner_to_outer(pod, inner_field)
-    return render_pressure_png(pod, proj, path, title=title, cmap=cmap, views=views)
+    return render_pressure_png(pod, proj, path, title=title, cmap=cmap,
+                               views=views, vmax=vmax)
 
 
-def render_pressure_png(pod, face_values, path, title="wall pressure",
+def render_pressure_png(pod, face_values, path, title="wall stress",
                         cmap="inferno", views=((18, -65), (18, 115)),
-                        roots=None, log=False):
-    """Render the pod coloured by a per-face scalar (e.g. cumulative stress)."""
+                        roots=None, log=False, vmax=None):
+    """Render the pod coloured by a per-face scalar (wall stress in MPa).
+
+    Pass `vmax` (normally the material's remaining fracture strength) to anchor
+    the colour ramp so the top of the scale literally means "at fracture" — this
+    is what the browser tool does, so the two read the same way."""
     v = np.asarray(face_values, float).copy()
     if log:
         v = np.log1p(np.maximum(v, 0))
-    vmax = np.percentile(v[v > 0], 99) if np.any(v > 0) else 1.0
+        vmax = np.log1p(vmax) if vmax is not None else None
+    if vmax is None:
+        vmax = np.percentile(v[v > 0], 99) if np.any(v > 0) else 1.0
     vmax = max(vmax, 1e-9)
     norm = matplotlib.colors.Normalize(0, vmax)
     cm = matplotlib.colormaps[cmap]
@@ -179,32 +187,79 @@ def render_pressure_png(pod, face_values, path, title="wall pressure",
     sm = plt.cm.ScalarMappable(norm=norm, cmap=cm)
     sm.set_array([])
     cbar = fig.colorbar(sm, ax=fig.axes, shrink=0.55, pad=0.02)
-    cbar.set_label(("log " if log else "") + "cumulative stress")
+    cbar.set_label(("log " if log else "") + "wall stress (MPa)")
     fig.suptitle(title, fontsize=13)
     fig.savefig(path, dpi=120, bbox_inches="tight")
     plt.close(fig)
     return path
 
 
-def _add_roots(ax, roots, color="#f5f0d0"):
-    segs = roots.segments()
-    if len(segs):
-        lc = Line3DCollection(segs, colors=color, linewidths=0.6, alpha=0.9)
-        ax.add_collection3d(lc)
+#  Root wood ramp: pale sapwood at the fine tips -> dark bark on the thick
+#  taproot, so branch hierarchy reads at a glance.
+ROOT_WOOD = matplotlib.colors.LinearSegmentedColormap.from_list(
+    "rootwood", ["#e8d6a8", "#c89a5b", "#96602f", "#5c3618"])
 
 
-def render_root_system(pod, roots, path, title="root growth in pod"):
+def _add_roots(ax, roots, color=None, alpha=1.0, shade=True):
+    """Draw the root system as tapered, shaded woody tubes.
+
+    The browser tool has always drawn tubes (render3d.root_tube_mesh); the
+    offline figures used to draw hairlines that ignored the pipe-model radius
+    entirely, so a thick taproot looked identical to a fine feeder root. This
+    uses the same tube geometry so the two surfaces agree."""
+    from . import render3d
+    V, F, face_r = render3d.root_tube_arrays(roots)
+    if V is None:
+        segs = roots.segments()
+        if len(segs):
+            ax.add_collection3d(Line3DCollection(segs, colors=color or "#8a5a2b",
+                                                 linewidths=0.6, alpha=0.9))
+        return
+
+    tris = V[F]                                   # (nF, 3, 3)
+    if color is None:                             # colour by thickness
+        t = face_r - face_r.min()
+        t = t / max(t.max(), 1e-9)
+        rgba = ROOT_WOOD(t ** 0.65)
+    else:
+        rgba = np.tile(matplotlib.colors.to_rgba(color), (len(F), 1))
+
+    if shade:
+        # cheap lambertian shading so the tubes read as round rather than flat
+        n = np.cross(tris[:, 1] - tris[:, 0], tris[:, 2] - tris[:, 0])
+        ln = np.linalg.norm(n, axis=1, keepdims=True)
+        n = n / np.maximum(ln, 1e-12)
+        light = np.array([0.35, 0.55, 0.75])
+        light = light / np.linalg.norm(light)
+        lam = 0.55 + 0.45 * np.clip(n @ light, 0, 1)
+        rgba[:, :3] *= lam[:, None]
+    rgba[:, 3] = alpha
+
+    pc = Poly3DCollection(tris, facecolors=rgba, edgecolors="none",
+                          linewidths=0, zsort="average")
+    ax.add_collection3d(pc)
+
+
+def render_root_system(pod, roots, path, title="root growth in pod",
+                       views=((14, -65), (14, 25), (14, 115))):
+    """Root architecture inside a ghosted pod.
+
+    The pod is kept very faint: the point of this figure is the root structure —
+    the dominant taproot, the acropetal laterals spiralling off it, and the
+    basal flare into the feet — and a heavier shell hides all of it."""
     lab = pod.region_labels()
     fcolors = np.array([matplotlib.colors.to_rgba(REGION_COLORS[l]) for l in lab])
-    fcolors[:, 3] = 0.18
-    fig = plt.figure(figsize=(14, 8))
-    for i, (el, az) in enumerate([(15, -65), (15, 115)]):
-        ax = fig.add_subplot(1, 2, i + 1, projection="3d")
-        _add_mesh(ax, pod, fcolors, alpha=0.18)
-        _add_roots(ax, roots, color="#8a5a2b")
+    fcolors[:, 3] = 0.07
+    fig = plt.figure(figsize=(6 * len(views), 8))
+    for i, (el, az) in enumerate(views):
+        ax = fig.add_subplot(1, len(views), i + 1, projection="3d")
+        _add_mesh(ax, pod, fcolors, alpha=0.07)
+        _add_roots(ax, roots)
         _set_equal_pod_axes(ax, pod)
         ax.view_init(elev=el, azim=az)
-    fig.suptitle(title, fontsize=13)
+    n = len(roots.nodes)
+    rmax = float(np.max(roots.radius)) if roots.radius is not None else 0.0
+    fig.suptitle(f"{title}   ({n} nodes, taproot ⌀{2*rmax:.1f} mm)", fontsize=13)
     fig.tight_layout()
     fig.savefig(path, dpi=120, bbox_inches="tight")
     plt.close(fig)
@@ -216,7 +271,7 @@ def render_results_analysis(pod, mcresult, pattern, path,
     """4-panel results figure for one Monte-Carlo batch:
     outer heatmap, unwrapped stress with slot boxes, per-site activation, and a
     breakthrough-time histogram."""
-    field = mcresult.mean_cum_stress_faces
+    field = mcresult.mean_stress_faces
     proj = project_inner_to_outer(pod, field)
 
     fig = plt.figure(figsize=(16, 9))
@@ -232,7 +287,7 @@ def render_results_analysis(pod, mcresult, pattern, path,
     _add_mesh(axA, pod, fcolors, alpha=1.0)
     _set_equal_pod_axes(axA, pod)
     axA.view_init(elev=16, azim=-60)
-    axA.set_title("mean cumulative wall stress (outer surface)", fontsize=10)
+    axA.set_title("mean wall stress, MPa (outer surface)", fontsize=10)
 
     # B: unwrapped inner-wall stress with slot + ligament overlay
     axB = fig.add_subplot(2, 2, 2)
@@ -251,7 +306,7 @@ def render_results_analysis(pod, mcresult, pattern, path,
     axB.set_xlabel("theta (deg)")
     axB.set_ylabel("z")
     axB.set_title("unwrapped inner-wall stress (slots cyan)", fontsize=10)
-    fig.colorbar(sc, ax=axB, shrink=0.8, label="cum. stress")
+    fig.colorbar(sc, ax=axB, shrink=0.8, label="wall stress (MPa)")
 
     # C: per-site activation rate + mean activation step
     axC = fig.add_subplot(2, 2, 3)
@@ -310,17 +365,25 @@ def face_field_to_vertex(pod, face_values, log=False):
 
 
 def build_pressure_figure(pod, face_values, title="Mangrove pod wall stress",
-                          roots=None, log=False, project_to_outer=False):
+                          roots=None, log=False, project_to_outer=False,
+                          vmax=None):
     """Return a Plotly Figure of the pod coloured by a per-face scalar field
     (optionally with the root network overlaid). Reused by the HTML export and
-    the web app."""
+    the web app.
+
+    `vmax` anchors the colour ramp — pass the material's remaining fracture
+    strength so the top of the scale means "at fracture", as the browser tool
+    does. Left None, it falls back to the 99th percentile of the field."""
     import plotly.graph_objects as go
 
     field = face_values
     if project_to_outer:
         field = project_inner_to_outer(pod, np.asarray(face_values, float))
     vert_val = face_field_to_vertex(pod, field, log=log)
-    vmax = np.percentile(vert_val[vert_val > 0], 99) if np.any(vert_val > 0) else 1.0
+    if vmax is None:
+        vmax = np.percentile(vert_val[vert_val > 0], 99) if np.any(vert_val > 0) else 1.0
+    elif log:
+        vmax = np.log1p(vmax)
 
     # 4-stop calm -> warning -> critical scale (reads clearly at a glance)
     stress_scale = [[0.0, "#2f6f5e"], [0.35, "#e9c46a"],
@@ -330,7 +393,7 @@ def build_pressure_figure(pod, face_values, title="Mangrove pod wall stress",
         i=pod.F[:, 0], j=pod.F[:, 1], k=pod.F[:, 2],
         intensity=vert_val, colorscale=stress_scale, cmin=0, cmax=max(vmax, 1e-9),
         showscale=True, opacity=1.0,
-        colorbar=dict(title=("log stress" if log else "stress")),
+        colorbar=dict(title=("log stress" if log else "stress (MPa)")),
         lighting=dict(ambient=0.42, diffuse=0.9, specular=0.18,
                       roughness=0.55, fresnel=0.15),
         lightposition=dict(x=180, y=260, z=520),
@@ -354,8 +417,9 @@ def build_pressure_figure(pod, face_values, title="Mangrove pod wall stress",
 
 
 def pressure_heatmap_html(pod, face_values, path, title="Mangrove pod wall stress",
-                          roots=None, log=False):
+                          roots=None, log=False, vmax=None):
     """Self-contained interactive Plotly 3-D heatmap written to `path`."""
-    fig = build_pressure_figure(pod, face_values, title=title, roots=roots, log=log)
+    fig = build_pressure_figure(pod, face_values, title=title, roots=roots,
+                                log=log, vmax=vmax)
     fig.write_html(path, include_plotlyjs=True, full_html=True)
     return path

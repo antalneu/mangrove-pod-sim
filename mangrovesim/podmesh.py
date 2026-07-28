@@ -20,8 +20,9 @@ Detected features
 - per-inner-face wall-thickness field (ray-cast outward to the outer wall)
 
 Everything downstream (growth, pressure, perforation variants) is expressed in
-model units (this file is in centimetres per the Rhino header, though the model
-is drawn ~11x larger than a real ~30 cm propagule - see PodMesh.summary()).
+model units, which the mechanics read as MILLIMETRES (provenance.MM_PER_UNIT):
+a 334 mm pod around a ~26 mm bore with a ~21 mm wall. That unit scale is the
+single most load-bearing assumption in the tool - every stress scales with it.
 """
 from __future__ import annotations
 
@@ -284,7 +285,12 @@ class PodMesh:
         z0, z1 = z_lo - pad, z_hi + pad
         # slice thick enough to average over the mesh's alternating dense/sparse
         # vertex rows (thin slices produce false gaps in the sparse rows)
-        step = max(13.0, (z1 - z0) / 12.0)
+        # MM, converted: a slice thick enough to average over the mesh's
+        # alternating dense/sparse vertex rows. Hardcoded in model units this
+        # was 13 units, which on a centimetre-authored mesh is 130 mm - two
+        # thirds of the pod in a single slice.
+        from .provenance import to_units
+        step = max(to_units(13.0), (z1 - z0) / 12.0)
         raw = []   # (center_deg, width_deg, z_slice)
         z = z0
         while z < z1:
@@ -322,7 +328,14 @@ class PodMesh:
             ws = np.array([it[1] for it in items])
             zss = np.array([it[2] for it in items])
             # a real slot persists over a genuine z-range; drop single-slice noise
-            if len(items) < 3 or (zss.max() - zss.min()) < 25:
+            # A real slot persists over a genuine z-range; drop single-slice
+            # noise. Expressed as a FRACTION of the band being scanned rather
+            # than an absolute length, so it survives a change of model scale.
+            # (As a hardcoded 25 model units it demanded a slot taller than the
+            # whole 19.7-unit pod and rejected every candidate; as 25 mm it
+            # still rejected three of four, because the slices that survive the
+            # outer-wall filter land ~6.5 mm apart and four of them span 19.5.)
+            if len(items) < 3 or (zss.max() - zss.min()) < 0.15 * (z1 - z0):
                 continue
             center = np.degrees(np.arctan2(np.sin(np.radians(cs)).mean(),
                                            np.cos(np.radians(cs)).mean()))
@@ -434,11 +447,24 @@ class PodMesh:
         self._ri_prof = ri
         return zc, ri
 
+    def bore_calibration(self):
+        """Ratio correcting the auto-detected bore to the MEASURED one.
+
+        The mesh detection under-reports the narrowest inner diameter (it finds
+        a tighter internal surface than the real bore), so every inner-radius
+        query is scaled to match the pod that was actually built."""
+        if not hasattr(self, "_bore_cal"):
+            from .provenance import MM_PER_UNIT, MEASURED_WAIST_BORE_MM
+            detected = 2.0 * self.features.inner_r_waist * MM_PER_UNIT
+            self._bore_cal = (MEASURED_WAIST_BORE_MM / detected) if detected > 1e-6 else 1.0
+        return self._bore_cal
+
     def r_inner_at(self, z):
-        """Interpolated inner-cavity radius at height(s) z."""
+        """Interpolated inner-cavity radius at height(s) z, calibrated to the
+        measured bore."""
         if not hasattr(self, "_zc_prof"):
             self.inner_radius_profile()
-        return np.interp(z, self._zc_prof, self._ri_prof)
+        return np.interp(z, self._zc_prof, self._ri_prof) * self.bore_calibration()
 
     def wall_thickness_field(self):
         """Per-face wall thickness (0 for non-inner faces), cast into material.
@@ -448,7 +474,17 @@ class PodMesh:
         t = np.zeros(len(self.F))
         inner = np.where(self.inner_mask)[0]
         if len(inner):
-            origins = self.face_centers[inner] - self.face_normals[inner] * 0.02
+            # The accept window below is in MILLIMETRES and converted, because
+            # it decides whether a ray hit is the outer wall or something much
+            # further away. Hardcoded in model units it was 0.1-60 units, which
+            # on a centimetre-authored mesh means 1-600 mm: rays that miss the
+            # outer surface and cross the whole pod were being accepted, so
+            # "thickness" came back as a chord across the cavity (18-38 mm) on a
+            # 6.5 mm wall.
+            from .provenance import to_units
+            offset = to_units(0.2)          # step off the surface, mm
+            t_min, t_max = to_units(0.2), to_units(30.0)
+            origins = self.face_centers[inner] - self.face_normals[inner] * offset
             dirs = -self.face_normals[inner]
             locs, ray_idx, _ = self.mesh.ray.intersects_location(
                 origins, dirs, multiple_hits=False)
@@ -456,7 +492,7 @@ class PodMesh:
             if len(locs):
                 dist = np.linalg.norm(locs - origins[ray_idx], axis=1)
                 for ri, dd in zip(ray_idx, dist):
-                    if 0.1 < dd < 60:
+                    if t_min < dd < t_max:
                         d[ri] = dd
             t[inner] = d
         self._thickness_field = t
@@ -512,7 +548,8 @@ class PodMesh:
         lines.append(f"Source                 : {os.path.basename(self.source)}")
         lines.append(f"Triangles / vertices   : {len(self.F)} / {len(self.V)}")
         lines.append(f"Height (model units)   : {f.height:.1f}")
-        lines.append(f"  (real propagule ~30 cm -> model is ~{f.height/30:.0f}x scale)")
+        lines.append(f"  (read as millimetres -> a {f.height:.0f} mm pod around a "
+                     f"{2*f.inner_r_waist:.0f} mm propagule)")
         lines.append(f"Waist outer / inner R  : {f.outer_r_waist:.1f} / {f.inner_r_waist:.1f}")
         lines.append(f"Waist z-band           : {f.z_waist_lo:.0f} .. {f.z_waist_hi:.0f} (mid {f.z_waist_mid:.0f})")
         lines.append(f"Base/feet below z      : {f.z_base_top:.0f}")

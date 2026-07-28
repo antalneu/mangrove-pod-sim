@@ -116,6 +116,9 @@ class GrowthParams:
     # so its base sits below this and a root reaching it has left into the
     # substrate. Raising the mud level buries more of the pod.
     mud_level_frac: float = 0.02
+    # The pod's own lowest extent. Roots stay in contact with the pod (its feet)
+    # until they are below THIS, regardless of where the mud line sits.
+    pod_base_z_frac: float = -0.02
     # How far a root runs out into the mud in its FIRST year. Once the radicle
     # exits at the base this is where essentially all of the growth happens, so
     # it rides the same length trajectory as the axes - a five-year root system
@@ -351,8 +354,17 @@ def grow(pod, params: Optional[GrowthParams] = None, seed: int = 0) -> RootSyste
             # inside of the base - a root that has left the pod cannot push on
             # it, and trapping it invents load at the feet that is not real.
             newp[2] = float(min(newp[2], 0.99 * H))
-            below_pod = newp[2] < p.mud_level_frac * H
+            # A root is free only once it is clear of the POD, not once it is
+            # below the mud line. The feet are buried in the mud too, so a root
+            # spreading horizontally down there runs straight into them - which
+            # is exactly where the pod gets loaded. Keying this to the mud level
+            # switched contact off precisely where it happens.
+            below_pod = newp[2] < p.pod_base_z_frac * H
             r_here = pod.r_inner_at(max(newp[2], p.mud_level_frac * H))
+            # inside the splayed base the wall is the FOOT, much further out
+            if newp[2] < pod.features.z_base_top:
+                from .render3d import _outer_r_at
+                r_here = max(r_here, float(_outer_r_at(pod, max(newp[2], 1.0))) * 0.9)
             rr = np.hypot(newp[0], newp[1])
             limit = 0.985 * r_here
             if below_pod:

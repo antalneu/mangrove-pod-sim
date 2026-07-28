@@ -83,15 +83,15 @@ class Constant:
 # ----------------------------------------------------------------------------- #
 #  physical scale + wall-mechanics constants
 # ----------------------------------------------------------------------------- #
-# MEASURED off the physical pod, not assumed. The owner's CAD dimensions give a
-# 197 mm tall pod with a 126 mm foot span and a 51.4 mm top opening. Against the
-# 333.7-unit model that fixes the scale at 0.5904 mm per unit, and the other two
-# dimensions then land within 3-5% - three independent confirmations.
-# At that scale the WAIST BORE is only ~15 mm, against a 20-36 mm propagule.
+# The updated model (mangrovepod11.3dm) is authored in CENTIMETRES, so one unit
+# is 10 mm. It parses to a 197.4 mm pod with a 25.6 mm waist bore, a 130 mm foot
+# span and a 6.5 mm wall - matching the owner's measured 197 / 26 / 126 mm
+# directly, with no correction needed. The earlier model was a different, larger
+# geometry and had to be scaled and bore-corrected to fit; this one does not.
 # Every pressure and stress in pressure.py is therefore a real MPa (N/mm^2).
 # THIS IS THE SINGLE MOST LOAD-BEARING ASSUMPTION IN THE TOOL: every stress
 # scales with it, so confirm it against the physical prototype.
-MM_PER_UNIT = 0.5904
+MM_PER_UNIT = 10.0
 # Clamped rectangular plate, peak bending stress sigma = beta*p*(L/t)^2
 # (Roark's Formulas for Stress and Strain, clamped edges, a/b ~ 1 -> beta ~ 0.308).
 PLATE_BETA = 0.31
@@ -110,6 +110,11 @@ NET_SECTION_FLOOR = 0.12       # cap on net-section amplification (~8x)
 # Expressed per band, with the first cracked band as the reference flaw:
 #     amplification = CRACK_GEOM_Y * sqrt(bands already cracked)
 CRACK_GEOM_Y = 1.15            # geometry factor Y (edge-crack-ish, order 1)
+
+# Narrowest inner-wall diameter as measured on the pod. The updated model parses
+# to 25.6 mm on its own, so the calibration below is ~1.0 and is kept only as a
+# check that the mesh still agrees with the physical object.
+MEASURED_WAIST_BORE_MM = 25.6
 
 REF_ROOT_PRESSURE_MPA = 0.75   # mid of the grounded 0.5-1.0 MPa working range
 

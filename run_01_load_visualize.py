@@ -7,8 +7,8 @@ import os
 from mangrovesim.podmesh import PodMesh
 from mangrovesim import viz
 
-SRC = "mangrovepod.3dm"
-PLY = "pod_mesh.ply"
+SRC = "mangrovepod11.3dm"
+PLY = "pod_mesh11.ply"
 os.makedirs("outputs", exist_ok=True)
 
 if os.path.exists(PLY):

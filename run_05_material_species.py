@@ -36,8 +36,8 @@ N_RUNS = int(sys.argv[1]) if len(sys.argv) > 1 else 20
 
 
 def main():
-    ply = os.path.join(ROOT, "pod_mesh.ply")
-    src = os.path.join(ROOT, "mangrovepod.3dm")
+    ply = os.path.join(ROOT, "pod_mesh11.ply")
+    src = os.path.join(ROOT, "mangrovepod11.3dm")
     pod = PodMesh.from_ply(ply) if os.path.exists(ply) else PodMesh.from_3dm(src, cache_ply=ply)
     pod.wall_thickness_field()
     print(pod.summary())

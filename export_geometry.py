@@ -27,8 +27,8 @@ from mangrovesim import render3d
 
 
 def main():
-    ply = os.path.join(ROOT, "pod_mesh.ply")
-    src = os.path.join(ROOT, "mangrovepod.3dm")
+    ply = os.path.join(ROOT, "pod_mesh11.ply")
+    src = os.path.join(ROOT, "mangrovepod11.3dm")
     pod = PodMesh.from_ply(ply) if os.path.exists(ply) else PodMesh.from_3dm(src, cache_ply=ply)
     pod.wall_thickness_field()
     zc_in, ri = pod.inner_radius_profile()

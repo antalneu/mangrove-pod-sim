@@ -18,7 +18,7 @@ from mangrovesim import perforation as perf, montecarlo as mc, viz
 os.makedirs("outputs", exist_ok=True)
 n_runs = int(sys.argv[1]) if len(sys.argv) > 1 else 24
 
-pod = PodMesh.from_ply("pod_mesh.ply")
+pod = PodMesh.from_ply("pod_mesh11.ply")
 Hf = pod.features.height
 
 # ---- define the variants to test (edit these to explore your own designs) ----

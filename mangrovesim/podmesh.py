@@ -435,11 +435,24 @@ class PodMesh:
         self._ri_prof = ri
         return zc, ri
 
+    def bore_calibration(self):
+        """Ratio correcting the auto-detected bore to the MEASURED one.
+
+        The mesh detection under-reports the narrowest inner diameter (it finds
+        a tighter internal surface than the real bore), so every inner-radius
+        query is scaled to match the pod that was actually built."""
+        if not hasattr(self, "_bore_cal"):
+            from .provenance import MM_PER_UNIT, MEASURED_WAIST_BORE_MM
+            detected = 2.0 * self.features.inner_r_waist * MM_PER_UNIT
+            self._bore_cal = (MEASURED_WAIST_BORE_MM / detected) if detected > 1e-6 else 1.0
+        return self._bore_cal
+
     def r_inner_at(self, z):
-        """Interpolated inner-cavity radius at height(s) z."""
+        """Interpolated inner-cavity radius at height(s) z, calibrated to the
+        measured bore."""
         if not hasattr(self, "_zc_prof"):
             self.inner_radius_profile()
-        return np.interp(z, self._zc_prof, self._ri_prof)
+        return np.interp(z, self._zc_prof, self._ri_prof) * self.bore_calibration()
 
     def wall_thickness_field(self):
         """Per-face wall thickness (0 for non-inner faces), cast into material.

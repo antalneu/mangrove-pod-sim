@@ -14,7 +14,7 @@ from mangrovesim import perforation as perf, montecarlo as mc, growth, viz
 os.makedirs("outputs", exist_ok=True)
 n_runs = int(sys.argv[1]) if len(sys.argv) > 1 else 40
 
-pod = PodMesh.from_ply("pod_mesh.ply")
+pod = PodMesh.from_ply("pod_mesh11.ply")
 pattern = perf.PerforationPattern.detected(pod)
 # Design point: seams scored 85% over a 50-degree band. The pod is a
 # PROTECTIVE shell first - it has to survive waves and animals while the

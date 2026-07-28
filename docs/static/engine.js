@@ -143,7 +143,7 @@ function buildPod(raw) {
   };
   return POD;
 }
-function rInnerAt(z) { return interp(POD.innerProf.z, POD.innerProf.r, z); }
+function rInnerAt(z) { return interp(POD.innerProf.z, POD.innerProf.r, z) * boreCalibration(); }
 function rOuterAt(z) { return interp(POD.outerProf.z, POD.outerProf.r, z); }
 
 // ---------------------------------------------------------------------------
@@ -202,7 +202,20 @@ const MAT_PARAMS = {
 //  the hinge. L_b blends between the two with scoring depth. This is what gives
 //  scoring its real, dominant t⁻² leverage.
 // ---------------------------------------------------------------------------
-const MM_PER_UNIT = 1.0;
+// MEASURED off the physical pod: 197 mm tall, 126 mm foot span, 51.4 mm top
+// opening. Height fixes the scale; the other two then agree within 3-5%.
+const MM_PER_UNIT = 0.5904;
+// The mesh auto-detection under-reports the narrowest bore (~15 mm) against the
+// measured 26 mm, so every inner-radius query is corrected by this ratio.
+const MEASURED_WAIST_BORE_MM = 26.0;
+let _boreCal = null;
+function boreCalibration() {
+  if (_boreCal === null) {
+    const detected = 2 * POD.features.inner_r_waist * MM_PER_UNIT;
+    _boreCal = detected > 1e-6 ? MEASURED_WAIST_BORE_MM / detected : 1;
+  }
+  return _boreCal;
+}
 // Clamped rectangular plate, peak bending stress σ = β·p·(L/t)² (Roark, clamped
 // edges, a/b ≈ 1 → β ≈ 0.308).
 const PLATE_BETA = 0.31;

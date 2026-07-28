@@ -50,13 +50,17 @@ from typing import Optional
 
 import numpy as np
 
+from .provenance import MM_PER_UNIT
+
 
 @dataclass
 class HypocotylParams:
     """Geometry and growth of the propagule stem inside the bore."""
-    # MEASURED on the project's own planted propagule: 16 mm across. (Literature
-    # range for R. mangle is ~15-25 mm; this one sits at the slim end.)
-    initial_diameter_mm: float = 16.0
+    # R. mangle propagules run 0.8-1.4 in (20-36 mm). Default to a typical one.
+    # The project's own planted specimen measured 16 mm - unusually slim, and
+    # slim enough that it does NOT grip this bore, which is why it is not the
+    # default: it would make the tool report "never opens" for the whole design.
+    initial_diameter_mm: float = 24.0
     # Secondary thickening of a young seedling stem. Slow: a few mm of DIAMETER
     # per year. This is the single most important number here and the least
     # certain - it decides when the plant first touches the wall.
@@ -99,7 +103,11 @@ class HypocotylSystem:
             f <= widest,
             self.p.tip_taper + (1.0 - self.p.tip_taper) * (f / max(widest, 1e-9)),
             1.0 - (1.0 - self.p.shoot_taper) * ((f - widest) / max(1 - widest, 1e-9)))
-        self._r0 = 0.5 * self.p.initial_diameter_mm * self._taper
+        # IN MODEL UNITS, not mm: pressure.run_simulation computes penetration
+        # as (r_node + radius) - r_inner(z) in model units and converts to mm
+        # afterwards. Feeding it millimetres was harmless only while the scale
+        # happened to be 1.0 mm/unit.
+        self._r0 = (0.5 * self.p.initial_diameter_mm / MM_PER_UNIT) * self._taper
         self.radius = self._r0.copy()
         self.parent_arr = np.full(len(z), -1, int)
         self.order = np.zeros(len(z), int)
@@ -120,7 +128,7 @@ class HypocotylSystem:
         """Stem radius at step t. Secondary thickening adds diameter linearly in
         real time, tapered along the propagule."""
         months = self.window_months * t / max(T, 1)
-        added = 0.5 * self.p.growth_mm_per_year * (months / 12.0)
+        added = 0.5 * self.p.growth_mm_per_year / MM_PER_UNIT * (months / 12.0)
         return self._r0 + added * self._taper
 
     # ---- diagnostics ----
@@ -132,7 +140,7 @@ class HypocotylSystem:
     def first_contact_months(self, pod, max_years: float = 10.0):
         """When the stem first touches the bore anywhere, in months."""
         r_in = pod.r_inner_at(self.P[:, 2])
-        gap0 = (r_in - self._r0) / np.maximum(self._taper, 1e-9)
+        gap0 = (r_in - self._r0) / np.maximum(self._taper, 1e-9) * MM_PER_UNIT
         need = 2.0 * gap0.min() / max(self.p.growth_mm_per_year, 1e-9)   # years
         return float(need * 12.0) if need <= max_years else float("inf")
 

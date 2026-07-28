@@ -27,22 +27,21 @@ pressure-vessel action rather than a point poke.
 
 Timing
 ------
-The project's measured propagule is **16 mm** across, against a **25.6 mm** bore
-at the waist — **4.8 mm of radial clearance**. It is loose in the bore, not a
-press fit. At a seedling stem thickening of 2-5 mm of diameter per year, first
-contact lands at **4-10 years**:
+At the pod's TRUE scale (197 mm tall, 0.5904 mm per model unit) the waist bore
+is only **~15 mm**, against a propagule of **20-36 mm** (0.8-1.4 in). The stem
+is therefore an **interference fit the day it is planted** — it grips the bore
+immediately and loads it as it thickens. This is not the loose fit with
+millimetres of clearance that an assumed 334 mm pod produced.
 
-    2 mm/yr -> ~9.9 yr    3 mm/yr -> ~6.6 yr
-    4 mm/yr -> ~5.0 yr    5 mm/yr -> ~4.0 yr
+    propagule 24 mm -> 46.6 MPa wall stress  -> clay opens ~1.4 yr
+    propagule 28 mm -> 109.6 MPa             -> clay opens ~0.3 yr
 
-So the hypocotyl cannot open this pod within the establishment window either,
-and the bore may simply be oversized for a 16 mm propagule: a looser fit both
-delays contact and holds the seedling less securely, which is the pod's other
-job.
+Taper matters as much as diameter: the propagule is widest in its lower third
+(the brown region above the root collar) and narrows upward to the slim shoot,
+so the widest part sits at the WAIST — the tightest point of the bore.
 
-The propagule diameter is now MEASURED. The thickening rate is still an estimate
-and is what the remaining 4-10 year spread is made of - measuring the stem again
-in a year would collapse it.
+The propagule diameter and the pod geometry are now MEASURED. The stem
+thickening rate remains an estimate.
 """
 from __future__ import annotations
 

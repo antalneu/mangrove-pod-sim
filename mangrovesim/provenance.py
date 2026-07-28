@@ -83,12 +83,15 @@ class Constant:
 # ----------------------------------------------------------------------------- #
 #  physical scale + wall-mechanics constants
 # ----------------------------------------------------------------------------- #
-# The Rhino model is authored in MILLIMETRES: the pod is 333.7 units tall
-# (334 mm), its bore is ~25.6 mm across at the waist and the wall is ~21 mm.
+# MEASURED off the physical pod, not assumed. The owner's CAD dimensions give a
+# 197 mm tall pod with a 126 mm foot span and a 51.4 mm top opening. Against the
+# 333.7-unit model that fixes the scale at 0.5904 mm per unit, and the other two
+# dimensions then land within 3-5% - three independent confirmations.
+# At that scale the WAIST BORE is only ~15 mm, against a 20-36 mm propagule.
 # Every pressure and stress in pressure.py is therefore a real MPa (N/mm^2).
 # THIS IS THE SINGLE MOST LOAD-BEARING ASSUMPTION IN THE TOOL: every stress
 # scales with it, so confirm it against the physical prototype.
-MM_PER_UNIT = 1.0
+MM_PER_UNIT = 0.5904
 # Clamped rectangular plate, peak bending stress sigma = beta*p*(L/t)^2
 # (Roark's Formulas for Stress and Strain, clamped edges, a/b ~ 1 -> beta ~ 0.308).
 PLATE_BETA = 0.31
